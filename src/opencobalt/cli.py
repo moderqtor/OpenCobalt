@@ -392,9 +392,20 @@ def route(
 ) -> None:
     """Return a routing recommendation with full score table. Logs to ledger by default."""
     with console.status("[dim]Scoring...[/dim]", spinner="dots"):
-        decision = route_task(task, record=not no_record)
+        decision = route_task(task, record=False)
 
-    console.print(f'\n  [bold]Routing:[/bold] [dim]"{task}"[/dim]\n')
+    # Tag with active session if one is running, then record
+    from .core.session import SessionManager
+    session_name = SessionManager(_DB_PATH).active()
+    if session_name:
+        decision.metadata["_session"] = session_name
+    if not no_record:
+        _ledger().insert_route_decision(decision)
+
+    header = f'\n  [bold]Routing:[/bold] [dim]"{task}"[/dim]'
+    if session_name:
+        header += f'  [dim](session: {session_name})[/dim]'
+    console.print(header + "\n")
 
     table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
     table.add_column("Tool")
@@ -1109,19 +1120,26 @@ def session_show() -> None:
     if started:
         console.print(f"  [dim]started:[/dim]  {started[:16]}")
 
-    # Show recent decisions recorded during this session
+    # Show decisions tagged with this session
     ledger = _ledger()
-    decisions = ledger.list_route_decisions(limit=10)
+    all_decisions = ledger.list_route_decisions(limit=200)
+    decisions = [d for d in all_decisions if d.metadata.get("_session") == name]
+
     if decisions:
+        console.print(f"  [dim]{len(decisions)} route decision(s) this session[/dim]")
         console.print()
         table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
         table.add_column("Time", style="dim")
         table.add_column("Tool", style=f"{_COBALT}")
+        table.add_column("Tier", style="dim")
         table.add_column("Task")
         for d in decisions:
             ts = d.timestamp.strftime("%H:%M") if hasattr(d.timestamp, "strftime") else str(d.timestamp)[:5]
-            table.add_row(ts, d.recommended_tool, d.task[:55])
+            table.add_row(ts, d.recommended_tool, d.tier, d.task[:50])
         console.print(table)
+    else:
+        console.print("  [dim]No route decisions yet in this session.[/dim]")
+        console.print("  [dim]Run: opencobalt route \"your task\"[/dim]")
     console.print()
 
 
