@@ -1,6 +1,6 @@
 # Demo Script
 
-Target: under 3 minutes. No slides. Just terminal and code.
+Target: 3 to 5 minutes. No slides. Just terminal and code.
 
 ---
 
@@ -8,48 +8,92 @@ Target: under 3 minutes. No slides. Just terminal and code.
 
 "I built OpenCobalt because I was using five different AI tools every day -- Claude Code, Codex, Gemini, Cursor, and local Ollama -- and I had no memory of what happened, no log of what each tool produced, and no consistent way to decide which tool to use for a given task. This is what I built to solve that."
 
-## What It Is (20 seconds)
+---
+
+## Status (20 seconds)
 
 Show: `opencobalt status`
 
-"This is the status command. It shows me Python version, whether Ollama is running and what models are installed, the state of the local ledger, and a public safety scan -- whether there are any secrets or private paths in the repo."
+"This is the status command. It shows Python version, whether Ollama is running and what models are installed, the state of the local ledger, and a public safety scan. The health bar at the top gives you a quick visual read of system state."
 
-"All of this is local. No cloud, no API calls, no setup beyond installing Python."
+"All of this is local. No cloud, no API calls beyond what you explicitly route."
 
-## Routing (40 seconds)
+---
 
-Show: `opencobalt route "design the architecture for the new auth module"`
+## Routing: Executive Tier (30 seconds)
 
-"I tell it what I need to do. It returns a routing recommendation with a score and reasoning. This task is architecture work -- executive tier. It routes to Claude Code."
+Show: `opencobalt route "design the auth module"`
 
-Show: `opencobalt route "summarize these session logs"`
+"I tell it what I need to do. It returns a score table showing how each tool scored against this task. Architecture work scores as executive tier and routes to Claude Code."
 
-"Now a summarization task. That routes to Ollama -- local model, worker tier. Cheap, fast, no API costs. The system distinguishes between tasks that need a serious model and tasks that don't."
+Show: `opencobalt route "summarize the logs"`
 
-"The router is deterministic. Keyword scoring, no LLM in the loop. That means it is fast, testable, and I can explain every decision."
+"Now a summarization task. That routes to Ollama -- local model, worker tier. The system distinguishes between tasks that need a serious model and tasks that don't."
 
-## Ledger and Memory (30 seconds)
+"The router is deterministic. Keyword scoring, no LLM in the loop. Fast, testable, and every decision is explainable."
 
-Show: `opencobalt log --summary "reviewed auth module design with Claude Code"`
+---
 
-Show: `opencobalt memory status`
+## Benchmark (20 seconds)
 
-"Every meaningful action gets logged to a local SQLite database. Session events, tool runs, route decisions, verification results. This is the memory spine -- it is the source of truth, not a markdown file I might delete."
+Show: `opencobalt benchmark`
 
-## What AI Got Wrong (30 seconds)
+"Benchmark runs a standard set of tasks through the router and shows the tier breakdown. This is how I verify that routing behavior has not drifted as I add new task patterns."
 
-"When I was building this, the first version of the public safety scanner was flagging its own source code -- the test file that checks for secret patterns was itself matching the secret pattern regex, and the scanner flagged it. The scanner was scanning itself."
+---
 
-Show: relevant test code briefly
+## Agents (40 seconds)
 
-"I caught it by reading the test output, tracing the path, and fixing the regex to be more specific about what counts as a path reference versus a string literal in a pattern list. This is what real AI-assisted development looks like -- not autonomous, verified."
+Show: `opencobalt agents list`
 
-## Why It Maps to AI-Native Work (20 seconds)
+"Four registered agents: code-reviewer, summarizer, tagger, and file-reader. Each has a tier assignment and a description."
 
-"What I am demonstrating here is not the AI tools themselves. It is infrastructure for working with AI tools: routing, logging, verification, public hygiene. That is the engineering problem that exists at any company using AI-assisted development at scale."
+Show: `opencobalt agents run code-reviewer src/opencobalt/core/router.py`
+
+"This runs the code-reviewer agent against a real file. It uses the file-reader skill under the hood to extract actual metrics: line count, function count, and a complexity estimate from the source. Not stub output."
+
+---
+
+## Session Tracking (30 seconds)
+
+Show: `opencobalt session start "demo"`
+
+Show: `opencobalt route "refactor the ledger module"`
+
+Show: `opencobalt route "write unit tests for the router"`
+
+Show: `opencobalt session show`
+
+"Sessions tag every route decision with a session ID. At the end of a session I can see exactly what was routed, in order, with scores and tool assignments. That is the audit trail."
+
+---
+
+## Analytics (20 seconds)
+
+Show: `opencobalt stats`
+
+"Stats pulls from the ledger. Tool usage breakdown, tier distribution, recent route decisions. This is what makes the ledger useful -- not just storage, but something you can query."
+
+---
+
+## Verification (20 seconds)
+
+Show: `opencobalt verify`
+
+"174 tests. Units, ledger integration, router logic, CLI commands. The verify command runs the full suite and shows pass or fail."
+
+---
+
+## Doctor (15 seconds)
+
+Show: `opencobalt doctor`
+
+"Doctor checks Python version, Ollama availability, ledger integrity, and public safety scan. All green."
+
+---
+
+## Close (20 seconds)
+
+"What I am demonstrating is not the AI tools themselves. It is infrastructure for working with AI tools: routing, logging, session tracking, verification, public hygiene. That engineering problem exists at any company using AI-assisted development at scale."
 
 "The skills here are systems design, test discipline, and understanding what AI tools are good at versus where they need oversight."
-
-## B2B Pitch (20 seconds)
-
-"A procurement or contractor operations team using AI coding tools has the same problem I had: no audit trail of what AI agents did, no consistent routing policy, no pre-push safety check. OpenCobalt's ledger and routing tier system are the foundation for exactly that kind of governance infrastructure."

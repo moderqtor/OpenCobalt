@@ -273,17 +273,79 @@ $ opencobalt route "summarize this log file"
 ```
 
 ```
-$ opencobalt context
+$ opencobalt benchmark
 
-  Context pack written  .opencobalt/context/latest.md
-  files          :  16
-  token estimate :  ~16,219
+  Benchmark  10 tasks
+
+   Task                                      Tool            Tier        Score
+  ──────────────────────────────────────────────────────────────────────────────
+   design the authentication module arch...  claude-code     executive     94
+   summarize this session log                ollama          worker        78
+   write unit tests for the router           codex-cli       manager       73
+   fix the null pointer exception in ev...   claude-code     executive     78
+   tag these meeting notes for the kno...    ollama          worker        78
+   analyze all files in the codebase f...    gemini-cli      executive     84
+   refactor the context compiler module      claude-code     executive     86
+   extract key decisions from this tra...    ollama          worker        78
+   review the public safety scanner fo...    claude-code     executive     70
+   implement the agent registry API          claude-code     executive     86
+
+  executive: 6  manager: 1  worker: 3
+```
+
+```
+$ opencobalt agents run code-reviewer src/opencobalt/core/router.py
+
+  code-reviewer  manager tier
+
+  Code review: src/opencobalt/core/router.py
+  ============================================================
+  File metrics
+    lines      : 125
+    functions  : 2
+    classes    : 0
+    comments   : 2
+    size       : 4796 bytes
+
+  Finding 1
+    Check all public functions have descriptive docstrings.
+
+  Finding 2
+    Verify error paths raise or return a typed result rather than returning None silently.
+
+  Escalation note: medium/high findings should be reviewed by an executive-tier
+  tool before automated changes are applied.
+```
+
+```
+$ opencobalt session start "auth-refactor"
+
+  Session started  auth-refactor
+
+$ opencobalt route "design the auth module"
+
+  Routing: "design the auth module"  (session: auth-refactor)
+
+   Tool            Tier       Score
+  ──────────────────────────────────────────────────────
+   claude-code     executive    86   recommended
+   cursor          manager      68
+
+$ opencobalt session show
+
+  Session  auth-refactor
+  started:  2026-05-29T14:22
+  1 route decision(s) this session
+
+   Time    Tool         Tier       Task
+  ─────────────────────────────────────────────────────
+   14:22   claude-code  executive  design the auth module
 ```
 
 ```
 $ opencobalt verify
 
-  PASS  pytest: 167 passed in 1.06s
+  PASS  pytest: 174 passed in 1.09s
   PASS  public-check: No public-safety issues detected.
 
   All checks passed.

@@ -1,6 +1,7 @@
 """Example: programmatic task routing with OpenCobalt."""
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from opencobalt.core.router import route_task

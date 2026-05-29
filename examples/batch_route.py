@@ -1,9 +1,11 @@
 """Example: batch routing -- route a list of tasks and summarize results."""
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from collections import Counter
+
 from opencobalt.core.router import route_task
 
 tasks = [
