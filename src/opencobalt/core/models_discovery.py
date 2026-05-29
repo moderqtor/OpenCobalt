@@ -42,7 +42,8 @@ def _parse_ollama_list(output: str) -> list[ModelInfo]:
     for line in lines[1:]:  # skip header row
         parts = line.split()
         if len(parts) >= 3:
-            models.append(ModelInfo(name=parts[0], model_id=parts[1], size=parts[2]))
+            size = f"{parts[2]} {parts[3]}" if len(parts) >= 4 else parts[2]
+            models.append(ModelInfo(name=parts[0], model_id=parts[1], size=size))
     return models
 
 

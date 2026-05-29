@@ -81,14 +81,17 @@ opencobalt public-check
 
 # Full health check
 opencobalt doctor
+
+# Live terminal dashboard
+opencobalt tui
 ```
 
 ---
 
 ## What Works Today
 
-- CLI with all commands above
-- Deterministic task router (keyword-based, no LLM calls)
+- CLI with all commands above, including a live terminal dashboard (`opencobalt tui`)
+- Deterministic task router (keyword-based, no LLM calls) with full score table output
 - SQLite ledger: events, verification results, route decisions, memory records
 - Ollama model discovery with graceful fallback
 - Context pack compiler
@@ -116,11 +119,19 @@ opencobalt doctor
 
 ---
 
-## Screenshot
+## Screenshots
 
-![OpenCobalt status command](assets/readme/status-placeholder.png)
+`opencobalt status` -- system health with grouped categories and health bar:
 
-*(screenshot placeholder -- run `opencobalt status` to see the live output)*
+![OpenCobalt status](assets/screenshots/status.png)
+
+`opencobalt route` -- full score table across all tools:
+
+![OpenCobalt route](assets/screenshots/route.png)
+
+Status with public safety scan output:
+
+![OpenCobalt status with safety](assets/screenshots/status-2.png)
 
 ---
 

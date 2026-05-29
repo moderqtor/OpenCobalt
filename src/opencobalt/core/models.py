@@ -67,6 +67,7 @@ class RouteDecision(BaseModel):
     score: int
     reasoning: str
     tier: Literal["executive", "manager", "worker"]
+    scores: dict[str, int] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

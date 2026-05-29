@@ -16,6 +16,8 @@ Routing tiers:
 
 from __future__ import annotations
 
+from typing import cast, Literal
+
 from .models import RouteDecision
 
 _TOOL_PROFILES: dict[str, dict] = {
@@ -91,7 +93,7 @@ def route_task(task: str, *, record: bool = False) -> RouteDecision:
 
     best_tool = max(scores, key=lambda t: scores[t])
     profile = _TOOL_PROFILES[best_tool]
-    tier = profile["tier"]
+    tier = cast(Literal["executive", "manager", "worker"], profile["tier"])
 
     reasoning = _build_reasoning(task_lower, best_tool, scores)
 
@@ -100,7 +102,8 @@ def route_task(task: str, *, record: bool = False) -> RouteDecision:
         recommended_tool=best_tool,
         score=scores[best_tool],
         reasoning=reasoning,
-        tier=tier,  # type: ignore[arg-type]
+        tier=tier,
+        scores=scores,
     )
 
     if record:
