@@ -163,6 +163,7 @@ class Ledger:
     # --- Route decisions ---
 
     def insert_route_decision(self, decision: RouteDecision) -> None:
+        meta = {**decision.metadata, "_scores": decision.scores}
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO route_decisions VALUES (?,?,?,?,?,?,?,?)",
@@ -174,9 +175,29 @@ class Ledger:
                     decision.score,
                     decision.reasoning,
                     decision.tier,
-                    json.dumps(decision.metadata),
+                    json.dumps(meta),
                 ),
             )
+
+    def list_route_decisions(self, *, limit: int = 20) -> list[RouteDecision]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM route_decisions ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            RouteDecision(
+                id=r["id"],
+                timestamp=r["timestamp"],
+                task=r["task"],
+                recommended_tool=r["recommended_tool"],
+                score=r["score"],
+                reasoning=r["reasoning"],
+                tier=r["tier"],
+                metadata=json.loads(r["metadata"]),
+            )
+            for r in rows
+        ]
 
     # --- Memory records ---
 

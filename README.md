@@ -1,5 +1,9 @@
 # OpenCobalt
 
+[![CI](https://github.com/moderqtor/OpenCobalt/actions/workflows/ci.yml/badge.svg)](https://github.com/moderqtor/OpenCobalt/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Local-first AI orchestration and memory control plane.**
 
 OpenCobalt routes work across coding agents, local models, session logs, project context, and verification workflows. It is not a chatbot. It is not a generic AI assistant wrapper. It is a control plane that coordinates AI tools you already use.
@@ -13,6 +17,17 @@ OpenCobalt routes work across coding agents, local models, session logs, project
 - Compiles context packs from project docs and source files for agent consumption
 - Scans for public-safety issues before any push: secrets, private paths, oversized artifacts
 - Runs verification pipelines and records results
+
+---
+
+## Why Not a Wrapper?
+
+- **Deterministic routing.** No LLM calls are made to decide which tool handles a task. Routing is keyword-scored and fully reproducible without API cost.
+- **Durable SQLite ledger.** Session state is written to disk immediately. It does not vanish when the process exits and can be inspected with any SQLite browser.
+- **Tiered model discipline.** Ollama handles cheap, local tasks (summarization, tagging, extraction). Architecture, security, and public-facing decisions route to executive-tier tools only.
+- **Public safety enforcement.** Every push path runs a scanner that catches secrets, private vault paths, and oversized artifacts before they leave the machine.
+- **Explicit opt-in for APIs.** No API adapter activates unless configured in `.env`. All defaults are local and offline.
+- **Modular registry pattern.** Agents, skills, and integrations register into a slot system. Adding a new tool does not require editing core logic.
 
 ---
 
@@ -35,6 +50,25 @@ graph TD
 ```
 
 Ollama models are **worker-tier only**: summarization, tagging, extraction, rough drafts. Serious decisions (architecture, security, public docs) route to executive-tier tools only.
+
+The router is deterministic because routing decisions must be reproducible, cost nothing to make, and carry no hallucination risk. A keyword scorer returns the same answer for the same input every time. SQLite is the source of truth because it requires zero infrastructure, the file is portable across machines, and any SQLite browser can inspect or query the ledger without custom tooling. Ollama is restricted to the worker tier to enforce cost discipline: keeping local models out of architecture and security decisions ensures those tasks always go to the highest-quality tools available.
+
+---
+
+## Project Structure
+
+```
+src/opencobalt/
+  cli.py          CLI entry point
+  core/           ledger, router, context, public_safety, cost, models
+  agents/         BaseAgent ABC + 4 concrete agents
+  skills/         BaseSkill ABC + file-reader, diff-writer
+  integrations/   BaseIntegration ABC + aider, ollama stubs
+ui/               React + Tailwind dashboard shell (run: cd ui && npm run dev)
+tests/            144 tests
+.github/          CI workflow (ubuntu-latest, Python 3.11)
+docs/             Architecture, design system, integrations, roadmap
+```
 
 ---
 
@@ -59,9 +93,16 @@ opencobalt status
 # List installed Ollama models
 opencobalt models
 
-# Route a task to the right tool
+# Route a task -- deterministic, no LLM calls, logs to ledger by default
 opencobalt route "design the event spine architecture"
 opencobalt route "summarize this log file"
+
+# Show routing history from the ledger
+opencobalt history
+opencobalt history --limit 50
+
+# Route 10 representative tasks and show tier breakdown
+opencobalt benchmark
 
 # Write a session event to the ledger
 opencobalt log --summary "reviewed auth module"
@@ -76,14 +117,37 @@ opencobalt context
 # Run tests + public safety scan, record results
 opencobalt verify
 
+# Export full ledger to a timestamped markdown report
+opencobalt export
+
 # Pre-push hygiene scan
 opencobalt public-check
 
 # Full health check
 opencobalt doctor
 
-# Live terminal dashboard
+# Live terminal dashboard (4 panels: status, routes, events, cost)
 opencobalt tui
+
+# Agent system -- 4 agents: summarizer, tagger, code-reviewer, context-builder
+opencobalt agents list
+opencobalt agents run summarizer "explain the router module"
+opencobalt agents run summarizer --dry-run "explain the router module"
+
+# External integrations (aider, ollama)
+opencobalt integrations list
+
+# Cost control
+opencobalt cost status
+opencobalt cost set-mode cheap    # cheap | standard | frontier
+
+# Config
+opencobalt config set api_enabled true
+opencobalt config get api_enabled
+opencobalt config list
+
+# UI shell (React + Tailwind, backend not yet wired)
+opencobalt ui
 ```
 
 ---
@@ -96,7 +160,12 @@ opencobalt tui
 - Ollama model discovery with graceful fallback
 - Context pack compiler
 - Public safety scanner: .env detection, secret patterns, oversized files, private vault paths
-- 58 passing tests
+- Cost control module with per-run and monthly budget caps
+- Subagent and skill library system with 4 agents, 2 skills
+- External integration registry (aider, ollama stubs)
+- CI workflow via GitHub Actions
+- UI dashboard shell (React + Tailwind, `cd ui && npm run dev`)
+- 144 passing tests
 
 ---
 
@@ -198,7 +267,7 @@ $ opencobalt context
 ```
 $ opencobalt verify
 
-  PASS  pytest: 58 passed in 0.12s
+  PASS  pytest: 144 passed in 0.33s
   PASS  public-check: No public-safety issues detected.
 
   All checks passed.

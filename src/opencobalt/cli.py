@@ -3,15 +3,27 @@
 Usage:
   opencobalt status
   opencobalt models
+  opencobalt route TASK
+  opencobalt history [--limit N]
+  opencobalt benchmark
   opencobalt log [--summary TEXT]
   opencobalt memory status
   opencobalt memory export
   opencobalt context
-  opencobalt route TASK
   opencobalt verify
+  opencobalt export
   opencobalt doctor
   opencobalt public-check
   opencobalt tui
+  opencobalt agents list
+  opencobalt agents run NAME TASK
+  opencobalt integrations list
+  opencobalt cost status
+  opencobalt cost set-mode MODE
+  opencobalt config get KEY
+  opencobalt config set KEY VALUE
+  opencobalt config list
+  opencobalt ui
   opencobalt design brief
 """
 
@@ -58,6 +70,9 @@ app.add_typer(agents_app, name="agents")
 
 integrations_app = typer.Typer(help="Integration commands.")
 app.add_typer(integrations_app, name="integrations")
+
+config_app = typer.Typer(help="Configuration commands.")
+app.add_typer(config_app, name="config")
 
 console = Console()
 err = Console(stderr=True)
@@ -300,10 +315,13 @@ def context_build() -> None:
 
 
 @app.command()
-def route(task: str = typer.Argument(..., help="Task description to route")) -> None:
-    """Return a routing recommendation with full score table."""
+def route(
+    task: str = typer.Argument(..., help="Task description to route"),
+    no_record: bool = typer.Option(False, "--no-record", help="Skip writing decision to ledger"),
+) -> None:
+    """Return a routing recommendation with full score table. Logs to ledger by default."""
     with console.status("[dim]Scoring...[/dim]", spinner="dots"):
-        decision = route_task(task, record=False)
+        decision = route_task(task, record=not no_record)
 
     console.print(f'\n  [bold]Routing:[/bold] [dim]"{task}"[/dim]\n')
 
@@ -402,7 +420,7 @@ def tui() -> None:
     def _make_events_panel() -> Panel:
         try:
             ledger = _ledger()
-            events = ledger.list_events(limit=8)
+            events = ledger.list_events(limit=6)
         except Exception:
             events = []
 
@@ -412,10 +430,48 @@ def tui() -> None:
             rows = []
             for e in reversed(events):
                 ts = e.timestamp.strftime("%H:%M") if hasattr(e.timestamp, "strftime") else str(e.timestamp)[:5]
-                rows.append(f"[dim]{ts}[/dim]  {e.event_type:<18}  {e.summary[:40]}")
+                rows.append(f"[dim]{ts}[/dim]  {e.event_type:<18}  {e.summary[:38]}")
             body = "\n".join(rows)
 
         return Panel(body, title="[dim]Recent Events[/dim]", border_style="dim", expand=True)
+
+    def _make_routes_panel() -> Panel:
+        try:
+            ledger = _ledger()
+            decisions = ledger.list_route_decisions(limit=6)
+        except Exception:
+            decisions = []
+
+        if not decisions:
+            body = "[dim]No route decisions yet.[/dim]\n[dim]Run: opencobalt route \"your task\"[/dim]"
+        else:
+            rows = []
+            for d in decisions:
+                ts = d.timestamp.strftime("%H:%M") if hasattr(d.timestamp, "strftime") else str(d.timestamp)[:5]
+                tc = _tier_color(d.tier)
+                tool = f"[{tc}]{d.recommended_tool:<13}[/{tc}]" if tc != "dim" else f"[dim]{d.recommended_tool:<13}[/dim]"
+                rows.append(f"[dim]{ts}[/dim]  {tool}  {d.task[:28]}")
+            body = "\n".join(rows)
+
+        return Panel(body, title="[dim]Route Decisions[/dim]", border_style="dim", expand=True)
+
+    def _make_cost_panel() -> Panel:
+        try:
+            tracker = CostTracker(_DB_PATH)
+            spend = tracker.monthly_spend()
+            cap = tracker.monthly_cap()
+            mode = tracker.get_routing_mode()
+            over = tracker.is_over_budget()
+            spend_color = _RED if over else _GREEN
+            body = (
+                f"{_dot(not over)}  spend    [{spend_color}]${spend:.4f}[/{spend_color}] / ${cap:.2f}\n"
+                f"{_dot(True)}   mode     {mode}\n"
+                f"{_dot(True)}   api      [dim]disabled (default)[/dim]"
+            )
+        except Exception:
+            body = "[dim]Cost tracker unavailable.[/dim]"
+
+        return Panel(body, title="[dim]Cost Control[/dim]", border_style="dim", expand=True)
 
     def _make_layout() -> Layout:
         layout = Layout()
@@ -423,9 +479,17 @@ def tui() -> None:
             Layout(name="header", size=3),
             Layout(name="body"),
         )
-        layout["body"].split_row(
+        layout["body"].split_column(
+            Layout(name="top"),
+            Layout(name="bottom"),
+        )
+        layout["body"]["top"].split_row(
             Layout(name="status"),
+            Layout(name="routes"),
+        )
+        layout["body"]["bottom"].split_row(
             Layout(name="events"),
+            Layout(name="cost"),
         )
         return layout
 
@@ -436,8 +500,10 @@ def tui() -> None:
         with Live(layout, refresh_per_second=1, screen=True):
             while True:
                 layout["header"].update(_make_header())
-                layout["status"].update(_make_status_panel())
-                layout["events"].update(_make_events_panel())
+                layout["body"]["top"]["status"].update(_make_status_panel())
+                layout["body"]["top"]["routes"].update(_make_routes_panel())
+                layout["body"]["bottom"]["events"].update(_make_events_panel())
+                layout["body"]["bottom"]["cost"].update(_make_cost_panel())
                 time.sleep(_REFRESH)
     except KeyboardInterrupt:
         pass
@@ -571,6 +637,195 @@ def ui_shell() -> None:
     console.print(f"\n    [dim]cd ui && npm install && npm run dev[/dim]\n")
     console.print(f"  Then open [dim]http://localhost:5173[/dim]\n")
     console.print(f"  [dim]Note: backend not wired. Future phase.[/dim]\n")
+
+
+# ── History command ───────────────────────────────────────────────────────────
+
+@app.command()
+def history(
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of decisions to show"),
+) -> None:
+    """Show recent route decisions from the ledger."""
+    ledger = _ledger()
+    decisions = ledger.list_route_decisions(limit=limit)
+
+    if not decisions:
+        console.print(f"\n  [dim]No route decisions recorded yet.[/dim]")
+        console.print(f"  [dim]Run: opencobalt route \"your task\"[/dim]\n")
+        return
+
+    console.print()
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Time", style="dim")
+    table.add_column("Tool", style=f"{_COBALT}")
+    table.add_column("Tier", style="dim")
+    table.add_column("Score", justify="right", style="dim")
+    table.add_column("Task")
+
+    for d in decisions:
+        ts = d.timestamp.strftime("%m-%d %H:%M") if hasattr(d.timestamp, "strftime") else str(d.timestamp)[:11]
+        tc = _tier_color(d.tier)
+        tool_str = f"[{tc}]{d.recommended_tool}[/{tc}]" if tc != "dim" else f"[dim]{d.recommended_tool}[/dim]"
+        task_short = d.task[:55] + "..." if len(d.task) > 55 else d.task
+        table.add_row(ts, tool_str, d.tier, str(d.score), task_short)
+
+    console.print(table)
+    console.print(f"  [dim]{len(decisions)} decision(s). Run with --limit N for more.[/dim]\n")
+
+
+# ── Config commands ───────────────────────────────────────────────────────────
+
+@config_app.command("get")
+def config_get(
+    key: str = typer.Argument(..., help="Config key to read"),
+) -> None:
+    """Get a config value."""
+    from .core.config import Config
+    cfg = Config(_DB_PATH)
+    val = cfg.get(key)
+    if val is None:
+        err.print(f"\n[{_YELLOW}]Key not set:[/{_YELLOW}]  {key}\n")
+        raise typer.Exit(1)
+    console.print(f"\n  [dim]{key}[/dim]  {val}\n")
+
+
+@config_app.command("set")
+def config_set(
+    key: str = typer.Argument(..., help="Config key"),
+    value: str = typer.Argument(..., help="Value to store"),
+) -> None:
+    """Set a config value."""
+    from .core.config import Config
+    cfg = Config(_DB_PATH)
+    cfg.set(key, value)
+    console.print(f"\n  [{_GREEN}]Set[/{_GREEN}]  [dim]{key}[/dim]  =  {value}\n")
+
+
+@config_app.command("list")
+def config_list() -> None:
+    """Show all config keys and values."""
+    from .core.config import Config
+    cfg = Config(_DB_PATH)
+    all_cfg = cfg.list_all()
+
+    if not all_cfg:
+        console.print(f"\n  [dim]No config values set.[/dim]\n")
+        return
+
+    console.print()
+    table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+    table.add_column("Key", style="dim")
+    table.add_column("Value")
+    for k, v in all_cfg.items():
+        table.add_row(k, v)
+    console.print(table)
+    console.print()
+
+
+# ── Benchmark command ─────────────────────────────────────────────────────────
+
+_BENCHMARK_TASKS = [
+    "design the authentication module architecture",
+    "summarize this session log",
+    "write unit tests for the router",
+    "fix the null pointer exception in events.py",
+    "tag these meeting notes for the knowledge base",
+    "analyze all files in the codebase for security issues",
+    "refactor the context compiler module",
+    "extract key decisions from this transcript",
+    "review the public safety scanner for edge cases",
+    "implement the agent registry API",
+]
+
+
+@app.command()
+def benchmark() -> None:
+    """Route a set of representative tasks and show the full scoring breakdown."""
+    console.print(f"\n  [bold {_COBALT}]Benchmark[/bold {_COBALT}]  [dim]{len(_BENCHMARK_TASKS)} tasks[/dim]\n")
+
+    with console.status("[dim]Routing all tasks...[/dim]", spinner="dots"):
+        decisions = [route_task(t, record=False) for t in _BENCHMARK_TASKS]
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Task", no_wrap=False)
+    table.add_column("Tool")
+    table.add_column("Tier", style="dim")
+    table.add_column("Score", justify="right", style="dim")
+
+    from collections import Counter
+    tier_counts: Counter = Counter()
+
+    for d in decisions:
+        tc = _tier_color(d.tier)
+        tool_str = f"[{tc}]{d.recommended_tool}[/{tc}]" if tc != "dim" else f"[dim]{d.recommended_tool}[/dim]"
+        task_short = d.task[:50] + "..." if len(d.task) > 50 else d.task
+        table.add_row(task_short, tool_str, d.tier, str(d.score))
+        tier_counts[d.tier] += 1
+
+    console.print(table)
+
+    summary = "  ".join(f"[dim]{tier}:[/dim] {count}" for tier, count in sorted(tier_counts.items()))
+    console.print(f"  {summary}\n")
+
+
+# ── Export command ────────────────────────────────────────────────────────────
+
+@app.command()
+def export() -> None:
+    """Export the full ledger to a timestamped markdown report."""
+    from datetime import timezone
+    ledger = _ledger()
+    now = datetime.now(tz=timezone.utc)
+    slug = now.strftime("%Y-%m-%d-%H%M")
+    out_dir = _EXPORT_PATH
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"ledger-{slug}.md"
+
+    events = ledger.list_events(limit=200)
+    decisions = ledger.list_route_decisions(limit=100)
+    results = ledger.list_verification_results(limit=50)
+
+    lines: list[str] = [
+        f"# OpenCobalt Ledger Export",
+        f"",
+        f"Generated: {now.strftime('%Y-%m-%d %H:%M UTC')}",
+        f"",
+        f"## Summary",
+        f"",
+        f"| Table | Count |",
+        f"|-------|-------|",
+        f"| Events | {len(events)} |",
+        f"| Route decisions | {len(decisions)} |",
+        f"| Verification results | {len(results)} |",
+        f"",
+    ]
+
+    if decisions:
+        lines += [f"## Route Decisions", f"", f"| Time | Task | Tool | Tier | Score |", f"|------|------|------|------|-------|"]
+        for d in decisions:
+            ts = d.timestamp.strftime("%Y-%m-%d %H:%M") if hasattr(d.timestamp, "strftime") else str(d.timestamp)[:16]
+            lines.append(f"| {ts} | {d.task[:60]} | {d.recommended_tool} | {d.tier} | {d.score} |")
+        lines.append("")
+
+    if events:
+        lines += [f"## Events", f"", f"| Time | Type | Summary |", f"|------|------|---------|"]
+        for e in events:
+            ts = e.timestamp.strftime("%Y-%m-%d %H:%M") if hasattr(e.timestamp, "strftime") else str(e.timestamp)[:16]
+            lines.append(f"| {ts} | {e.event_type} | {e.summary[:80]} |")
+        lines.append("")
+
+    if results:
+        lines += [f"## Verification Results", f"", f"| Time | Command | Passed | Summary |", f"|------|---------|--------|---------|"]
+        for r in results:
+            ts = r.timestamp.strftime("%Y-%m-%d %H:%M") if hasattr(r.timestamp, "strftime") else str(r.timestamp)[:16]
+            passed = "yes" if r.passed else "no"
+            lines.append(f"| {ts} | {r.command} | {passed} | {r.output_summary[:60]} |")
+        lines.append("")
+
+    out.write_text("\n".join(lines))
+
+    console.print(f"\n  [{_GREEN}]Exported[/{_GREEN}]  {out}")
+    console.print(f"  [dim]{len(decisions)} decisions  {len(events)} events  {len(results)} results[/dim]\n")
 
 
 design_app = typer.Typer(help="Design commands.")

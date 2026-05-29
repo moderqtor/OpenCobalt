@@ -91,3 +91,28 @@ def test_insert_route_decision():
         tier="manager",
     )
     ledger.insert_route_decision(rd)
+
+
+def test_list_route_decisions_empty(tmp_path):
+    ledger = Ledger(tmp_path / "ledger.db")
+    assert ledger.list_route_decisions() == []
+
+
+def test_list_route_decisions_returns_inserted(tmp_path):
+    from opencobalt.core.router import route_task
+    ledger = Ledger(tmp_path / "ledger.db")
+    decision = route_task("design the auth module")
+    ledger.insert_route_decision(decision)
+    results = ledger.list_route_decisions()
+    assert len(results) == 1
+    assert results[0].task == "design the auth module"
+
+
+def test_route_decision_stores_scores_in_metadata(tmp_path):
+    from opencobalt.core.router import route_task
+    ledger = Ledger(tmp_path / "ledger.db")
+    decision = route_task("summarize this file")
+    ledger.insert_route_decision(decision)
+    results = ledger.list_route_decisions()
+    assert "_scores" in results[0].metadata
+    assert isinstance(results[0].metadata["_scores"], dict)
