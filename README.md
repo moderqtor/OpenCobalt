@@ -65,7 +65,7 @@ src/opencobalt/
   skills/         BaseSkill ABC + file-reader, diff-writer
   integrations/   BaseIntegration ABC + aider, ollama stubs
 ui/               React + Tailwind dashboard shell (run: cd ui && npm run dev)
-tests/            144 tests
+tests/            167 tests
 .github/          CI workflow (ubuntu-latest, Python 3.11)
 docs/             Architecture, design system, integrations, roadmap
 ```
@@ -96,10 +96,14 @@ opencobalt models
 # Route a task -- deterministic, no LLM calls, logs to ledger by default
 opencobalt route "design the event spine architecture"
 opencobalt route "summarize this log file"
+opencobalt route "design the auth module" --verbose   # show per-tool keyword matches
 
 # Show routing history from the ledger
 opencobalt history
 opencobalt history --limit 50
+
+# Ledger analytics: tier breakdown, top tools, recent activity
+opencobalt stats
 
 # Route 10 representative tasks and show tier breakdown
 opencobalt benchmark
@@ -109,6 +113,7 @@ opencobalt log --summary "reviewed auth module"
 
 # Memory
 opencobalt memory status
+opencobalt memory add "SQLite is the source of truth" --namespace architecture
 opencobalt memory export --project opencobalt
 
 # Build a context pack from docs + src
@@ -165,7 +170,7 @@ opencobalt ui
 - External integration registry (aider, ollama stubs)
 - CI workflow via GitHub Actions
 - UI dashboard shell (React + Tailwind, `cd ui && npm run dev`)
-- 144 passing tests
+- 167 passing tests
 
 ---
 
@@ -267,7 +272,7 @@ $ opencobalt context
 ```
 $ opencobalt verify
 
-  PASS  pytest: 144 passed in 0.33s
+  PASS  pytest: 167 passed in 1.06s
   PASS  public-check: No public-safety issues detected.
 
   All checks passed.

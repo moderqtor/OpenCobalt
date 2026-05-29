@@ -1,11 +1,10 @@
 # Quickstart
 
-## Requirements
+Get from clone to first useful output in under two minutes.
 
-- Python 3.11 or later
-- Ollama (optional, for local model commands)
+Requires Python 3.11+.
 
-## Install
+## 1. Install
 
 ```bash
 git clone https://github.com/moderqtor/OpenCobalt
@@ -13,76 +12,78 @@ cd OpenCobalt
 pip install -e ".[dev]"
 ```
 
-## Verify the install
+## 2. First run
 
 ```bash
 opencobalt status
 ```
 
-Expected output: repo path, Python version, Ollama availability, ledger status, docs check, public safety status.
+Shows: Python version, repo path, Ollama availability, ledger row counts, docs presence, and a public safety scan. A healthy system prints all green with a health bar at the bottom (`11/11 healthy`). If Ollama is not installed, those rows show as unavailable -- the rest of the system still works.
 
-## Check available models
-
-```bash
-opencobalt models
-```
-
-If Ollama is installed and running, this lists installed models. Worker-tier models are used for summarization and lightweight drafting only.
-
-## Route a task
+## 3. Route a task
 
 ```bash
-opencobalt route "write unit tests for the ledger module"
-opencobalt route "summarize the recent session logs"
-opencobalt route "design the router architecture"
+opencobalt route "design the event spine architecture"
+opencobalt route "summarize this log file"
 ```
 
-Each command returns a tool recommendation, tier, score, and reasoning.
+Each command prints a score table across all five tools (claude-code, codex-cli, gemini-cli, cursor, ollama), the recommended tool, matched keywords, and the runner-up.
 
-## Write to the ledger
+- Architecture, security, and public-facing tasks route to executive-tier tools (claude-code, gemini-cli).
+- Summarization, tagging, and extraction route to the worker tier (ollama, local only).
+- Refactoring with tests routes to the manager tier (codex-cli, cursor).
 
-```bash
-opencobalt log --summary "reviewed authentication design"
-opencobalt memory status
-```
+Route decisions are logged to the ledger by default.
 
-## Run verification
-
-```bash
-opencobalt verify
-```
-
-Runs pytest and public-check. Records results in the ledger.
-
-## Pre-push safety scan
-
-```bash
-opencobalt public-check
-```
-
-Scans for .env files, hardcoded secrets, private vault paths, oversized artifacts, node_modules.
-
-## Build a context pack
+## 4. Build a context pack
 
 ```bash
 opencobalt context
 ```
 
-Compiles README, docs, and src files into a single context pack at `.opencobalt/context/latest.md`. Token estimate included.
+Compiles README, docs, and src files into a single markdown file at `.opencobalt/context/latest.md`. The output shows the file count and a token estimate. Feed this file to any agent as a project briefing.
 
-## Configuration (optional)
-
-Copy `.env.example` to `.env` and add API keys only if you want optional API routing. OpenCobalt works fully without any API keys.
+## 5. Run verification
 
 ```bash
-cp .env.example .env
-# Edit .env as needed
+opencobalt verify
 ```
 
-The `.env` file is gitignored. Never commit it.
+Runs pytest and the public safety scanner. Records pass/fail results in the ledger. Fails loudly if any test fails or any safety issue is detected.
 
-## Run tests
+## 6. Benchmark the router
 
 ```bash
-pytest
+opencobalt benchmark
 ```
+
+Routes 10 representative tasks and prints a tier breakdown table. Use this to confirm the router is classifying tasks as expected after any config change.
+
+## 7. Optional: Ollama (local model agents)
+
+Install from [ollama.ai](https://ollama.ai), then:
+
+```bash
+ollama pull llama3
+```
+
+With Ollama running, `opencobalt models` lists available local models. The summarizer and tagger agents call Ollama directly for worker-tier tasks.
+
+## 8. Optional: UI dashboard shell
+
+```bash
+cd ui && npm install && npm run dev
+```
+
+Opens at `localhost:5173`. The React + Tailwind shell is a frontend scaffold -- the backend API is not yet wired.
+
+## What's next
+
+- Full command reference: `README.md`
+- Architecture and design decisions: `docs/`
+- Agent, skill, and integration examples: `examples/`
+- Live terminal dashboard: `opencobalt tui`
+- Full health check: `opencobalt doctor`
+- Ledger analytics: `opencobalt stats`
+- Store notes: `opencobalt memory add "your note" --namespace project`
+- Config: `opencobalt config set api_enabled true`

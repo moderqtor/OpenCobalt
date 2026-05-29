@@ -5,9 +5,11 @@ Usage:
   opencobalt models
   opencobalt route TASK
   opencobalt history [--limit N]
+  opencobalt stats
   opencobalt benchmark
   opencobalt log [--summary TEXT]
   opencobalt memory status
+  opencobalt memory add TEXT
   opencobalt memory export
   opencobalt context
   opencobalt verify
@@ -46,7 +48,7 @@ from rich.text import Text
 from .core.cost import CostTracker
 from .core.ledger import Ledger
 from .core.memory import MemoryStore
-from .core.models import SessionEvent
+from .core.models import MemoryRecord, SessionEvent
 from .core.models_discovery import discover_models, is_ollama_available
 from .core.public_safety import scan_directory
 from .agents.registry import get_agent, list_agents as _list_agents
@@ -273,6 +275,34 @@ def log_event(
     console.print(f"  [dim]db      :[/dim]  {_DB_PATH}\n")
 
 
+@app.command("log-list")
+def log_list(
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of events to show"),
+    project: str = typer.Option(None, "--project", "-p", help="Filter by project"),
+) -> None:
+    """List recent session events from the ledger."""
+    ledger = _ledger()
+    events = ledger.list_events(limit=limit, project=project)
+
+    if not events:
+        console.print(f"\n  [dim]No events recorded yet.[/dim]")
+        console.print(f"  [dim]Run: opencobalt log --summary \"your note\"[/dim]\n")
+        return
+
+    console.print()
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Time", style="dim")
+    table.add_column("Type", style="dim")
+    table.add_column("Summary")
+
+    for e in events:
+        ts = e.timestamp.strftime("%m-%d %H:%M") if hasattr(e.timestamp, "strftime") else str(e.timestamp)[:11]
+        table.add_row(ts, e.event_type, e.summary[:70])
+
+    console.print(table)
+    console.print(f"  [dim]{len(events)} event(s).[/dim]\n")
+
+
 @memory_app.command("status")
 def memory_status() -> None:
     """Show memory record counts and paths."""
@@ -289,6 +319,26 @@ def memory_status() -> None:
     console.print()
 
 
+@memory_app.command("add")
+def memory_add(
+    content: str = typer.Argument(..., help="Memory content to store"),
+    namespace: str = typer.Option("general", "--namespace", "-n", help="Memory namespace"),
+    project: str = typer.Option("opencobalt", "--project", "-p"),
+) -> None:
+    """Write a memory record to the ledger."""
+    ledger = _ledger()
+    record = MemoryRecord(
+        project=project,
+        namespace=namespace,
+        content=content,
+        source="cli",
+    )
+    ledger.insert_memory_record(record)
+    console.print(f"\n  [{_GREEN}]Stored[/{_GREEN}]  [dim]{record.id}[/dim]")
+    console.print(f"  [dim]namespace :[/dim]  {namespace}")
+    console.print(f"  [dim]content   :[/dim]  {content[:80]}\n")
+
+
 @memory_app.command("export")
 def memory_export(
     project: str = typer.Option("opencobalt", "--project", "-p"),
@@ -302,7 +352,9 @@ def memory_export(
 
 
 @app.command("context")
-def context_build() -> None:
+def context_build(
+    summarize: bool = typer.Option(False, "--summarize", "-s", help="Summarize the context pack via Ollama after building"),
+) -> None:
     """Build a context pack from README, docs, and src files."""
     from .core.context import build_context_pack
 
@@ -311,13 +363,28 @@ def context_build() -> None:
 
     console.print(f"\n  [{_GREEN}]Context pack written[/{_GREEN}]  {_CONTEXT_PATH}")
     console.print(f"  [dim]files          :[/dim]  {len(pack.sources)}")
-    console.print(f"  [dim]token estimate :[/dim]  ~{pack.token_estimate:,}\n")
+    console.print(f"  [dim]token estimate :[/dim]  ~{pack.token_estimate:,}")
+
+    if summarize:
+        agent = get_agent("summarizer")
+        if agent is None:
+            console.print(f"  [dim]summarizer agent not available[/dim]")
+        else:
+            # Use the first 2000 chars of the context pack as input (keep cost low)
+            snippet = pack.content[:2000]
+            with console.status("[dim]Summarizing via Ollama...[/dim]", spinner="dots"):
+                summary = agent.run(f"Summarize this project context in 3 sentences: {snippet}")
+            console.print(f"\n  [dim]Project summary (Ollama):[/dim]")
+            console.print(f"  {summary}")
+    console.print()
 
 
 @app.command()
 def route(
     task: str = typer.Argument(..., help="Task description to route"),
     no_record: bool = typer.Option(False, "--no-record", help="Skip writing decision to ledger"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show per-tool keyword matches"),
+    estimate: bool = typer.Option(False, "--estimate", help="Show estimated API cost per tier (assumes ~2K tokens)"),
 ) -> None:
     """Return a routing recommendation with full score table. Logs to ledger by default."""
     with console.status("[dim]Scoring...[/dim]", spinner="dots"):
@@ -329,8 +396,10 @@ def route(
     table.add_column("Tool")
     table.add_column("Tier", style="dim")
     table.add_column("Score", justify="right")
+    table.add_column("Matched keywords", style="dim")
     table.add_column("")
 
+    task_lower = task.lower()
     sorted_tools = sorted(decision.scores, key=lambda t: decision.scores[t], reverse=True)
     for tool_name in sorted_tools:
         s = decision.scores[tool_name]
@@ -340,10 +409,27 @@ def route(
         name_str = f"[{tc}]{tool_name}[/{tc}]" if tc != "dim" else f"[dim]{tool_name}[/dim]"
         marker = f"[{_GREEN}]recommended[/{_GREEN}]" if is_winner else ""
         score_str = f"[bold]{s}[/bold]" if is_winner else str(s)
-        table.add_row(name_str, tier, score_str, marker)
+        matched = [kw for kw in _TOOL_PROFILES[tool_name]["keywords"] if kw in task_lower]
+        kw_str = ", ".join(matched[:4]) if (matched and verbose) else ""
+        table.add_row(name_str, tier, score_str, kw_str, marker)
 
     console.print(table)
-    console.print(f"  [dim]{decision.reasoning}[/dim]\n")
+    console.print(f"  [dim]{decision.reasoning}[/dim]")
+
+    if estimate:
+        tracker = CostTracker(_DB_PATH)
+        # Estimate cost for ~2K input + ~500 output tokens per tier's representative model
+        est_models = [
+            ("claude-opus-4", "executive tier"),
+            ("claude-sonnet-4-6", "manager tier"),
+            ("ollama", "worker tier (free)"),
+        ]
+        console.print(f"\n  [dim]Cost estimate (~2K input / 500 output tokens):[/dim]")
+        for model_id, label in est_models:
+            cost = tracker.estimate_cost(model_id, input_tokens=2000, output_tokens=500)
+            cost_str = f"free" if cost == 0.0 else f"${cost:.4f}"
+            console.print(f"  [dim]{label:<22}[/dim]  {cost_str}")
+    console.print()
 
 
 @app.command()
@@ -637,6 +723,74 @@ def ui_shell() -> None:
     console.print(f"\n    [dim]cd ui && npm install && npm run dev[/dim]\n")
     console.print(f"  Then open [dim]http://localhost:5173[/dim]\n")
     console.print(f"  [dim]Note: backend not wired. Future phase.[/dim]\n")
+
+
+# ── Stats command ─────────────────────────────────────────────────────────────
+
+@app.command()
+def stats() -> None:
+    """Show analytics from the ledger: route counts, tier breakdown, top tools."""
+    from collections import Counter
+    from datetime import timezone, timedelta
+
+    ledger = _ledger()
+    decisions = ledger.list_route_decisions(limit=500)
+    events = ledger.list_events(limit=500)
+    results = ledger.list_verification_results(limit=50)
+
+    console.print(f"\n  [bold {_COBALT}]Ledger Stats[/bold {_COBALT}]\n")
+
+    # Overall counts
+    table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+    table.add_column("Metric", style="dim")
+    table.add_column("Value")
+    table.add_row("route decisions", str(len(decisions)))
+    table.add_row("session events", str(len(events)))
+    table.add_row("verifications run", str(len(results)))
+    passed = sum(1 for r in results if r.passed)
+    if results:
+        table.add_row("verification pass rate", f"{passed}/{len(results)}")
+    console.print(table)
+
+    if decisions:
+        # Tier breakdown
+        console.print(f"\n  [dim]Tier breakdown[/dim]")
+        tier_counts: Counter = Counter(d.tier for d in decisions)
+        tier_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+        tier_table.add_column("Tier", style="dim")
+        tier_table.add_column("Count", justify="right")
+        tier_table.add_column("Bar")
+        total = len(decisions)
+        for tier in ("executive", "manager", "worker"):
+            count = tier_counts.get(tier, 0)
+            bar_len = int(20 * count / total) if total else 0
+            tc = _tier_color(tier)
+            bar = f"[{tc}]{'█' * bar_len}[/{tc}][dim]{'░' * (20 - bar_len)}[/dim]"
+            tier_table.add_row(tier, str(count), bar)
+        console.print(tier_table)
+
+        # Top tools
+        console.print(f"\n  [dim]Top tools[/dim]")
+        tool_counts: Counter = Counter(d.recommended_tool for d in decisions)
+        tool_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+        tool_table.add_column("Tool")
+        tool_table.add_column("Count", justify="right", style="dim")
+        for tool, count in tool_counts.most_common(5):
+            tier = _TOOL_PROFILES.get(tool, {}).get("tier", "")
+            tc = _tier_color(tier)
+            name_str = f"[{tc}]{tool}[/{tc}]" if tc != "dim" else f"[dim]{tool}[/dim]"
+            tool_table.add_row(name_str, str(count))
+        console.print(tool_table)
+
+        # Recent activity (last 7 days)
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(days=7)
+        recent = [
+            d for d in decisions
+            if (d.timestamp if hasattr(d.timestamp, "tzinfo") and d.timestamp.tzinfo else d.timestamp) >= cutoff
+        ]
+        console.print(f"\n  [dim]Last 7 days:[/dim]  {len(recent)} route decision(s)\n")
+    else:
+        console.print(f"\n  [dim]No route decisions yet. Run: opencobalt route \"your task\"[/dim]\n")
 
 
 # ── History command ───────────────────────────────────────────────────────────
