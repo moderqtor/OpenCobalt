@@ -41,7 +41,7 @@ Ollama models are **worker-tier only**: summarization, tagging, extraction, roug
 ## Install
 
 ```bash
-git clone https://github.com/cmheenan/OpenCobalt
+git clone https://github.com/moderqtor/OpenCobalt
 cd OpenCobalt
 pip install -e ".[dev]"
 ```
