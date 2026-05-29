@@ -23,12 +23,13 @@ def test_env_example_is_not_flagged(tmp_path):
     assert not result.env_files_found
 
 
-def test_node_modules_is_flagged(tmp_path):
+def test_node_modules_is_skipped(tmp_path):
+    # node_modules is gitignored and never committed -- scanner skips it silently.
     nm = tmp_path / "node_modules"
     nm.mkdir()
+    (nm / "react.js").write_text('const password = "ignored"')
     result = scan_directory(tmp_path)
-    assert result.node_modules_found
-    assert not result.is_clean
+    assert result.is_clean
 
 
 def test_secret_pattern_in_python_file(tmp_path):

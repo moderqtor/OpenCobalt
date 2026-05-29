@@ -119,6 +119,93 @@ opencobalt tui
 
 ---
 
+## Demo
+
+```
+$ opencobalt status
+
+  OPENCOBALT  control plane · 2026-05-29 13:45
+
+  System
+  ──────────────────────────────────────────
+  ●  python      3.11.9
+  ●  repo        ~/dev/OpenCobalt
+
+  Models
+  ──────────────────────────────────────────
+  ●  ollama         available (worker-tier)
+  ●  llama3:latest  4.7 GB
+  ●  mistral:latest 4.4 GB
+
+  Ledger
+  ──────────────────────────────────────────
+  ●  database    5 events  ·  .opencobalt/ledger.db
+  ●  memory      2 records
+
+  Docs
+  ──────────────────────────────────────────
+  ●  README.md   present
+  ●  docs/       present
+  ●  context     .opencobalt/context/latest.md
+
+  Safety
+  ──────────────────────────────────────────
+  ●  scan        clean
+
+  ████████████████████████████████  11/11 healthy
+```
+
+```
+$ opencobalt route "refactor this Python CLI and verify tests"
+
+  Routing: "refactor this Python CLI and verify tests"
+
+   Tool            Tier          Score
+  ───────────────────────────────────────────────────
+   codex-cli       manager          81   recommended
+   claude-code     executive        78
+   gemini-cli      executive        60
+   cursor          manager          60
+   ollama          worker           40
+
+  Routed to codex-cli (score 81). Matched keywords: test, verify. Tier: manager. Runner-up: claude-code (score 78).
+```
+
+```
+$ opencobalt route "summarize this log file"
+
+  Routing: "summarize this log file"
+
+   Tool            Tier          Score
+  ───────────────────────────────────────────────────
+   ollama          worker           78   recommended
+   claude-code     executive        50
+   codex-cli       manager          45
+   gemini-cli      executive        40
+   cursor          manager          40
+
+  Routed to ollama (score 78). Matched keywords: summarize. Tier: worker. Runner-up: claude-code (score 50).
+```
+
+```
+$ opencobalt context
+
+  Context pack written  .opencobalt/context/latest.md
+  files          :  16
+  token estimate :  ~16,219
+```
+
+```
+$ opencobalt verify
+
+  PASS  pytest: 58 passed in 0.12s
+  PASS  public-check: No public-safety issues detected.
+
+  All checks passed.
+```
+
+---
+
 ## Screenshots
 
 `opencobalt status` -- system health with grouped categories and health bar:

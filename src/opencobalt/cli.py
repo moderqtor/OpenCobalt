@@ -31,11 +31,13 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from .core.cost import CostTracker
 from .core.ledger import Ledger
 from .core.memory import MemoryStore
 from .core.models import SessionEvent
 from .core.models_discovery import discover_models, is_ollama_available
 from .core.public_safety import scan_directory
+from .agents.registry import get_agent, list_agents as _list_agents
 from .core.router import _TOOL_PROFILES, route_task
 from .core.verify import run_all
 
@@ -47,6 +49,15 @@ app = typer.Typer(
 )
 memory_app = typer.Typer(help="Memory commands.")
 app.add_typer(memory_app, name="memory")
+
+cost_app = typer.Typer(help="Cost control commands.")
+app.add_typer(cost_app, name="cost")
+
+agents_app = typer.Typer(help="Agent commands.")
+app.add_typer(agents_app, name="agents")
+
+integrations_app = typer.Typer(help="Integration commands.")
+app.add_typer(integrations_app, name="integrations")
 
 console = Console()
 err = Console(stderr=True)
@@ -430,6 +441,136 @@ def tui() -> None:
                 time.sleep(_REFRESH)
     except KeyboardInterrupt:
         pass
+
+
+# ── Cost commands ─────────────────────────────────────────────────────────────
+
+@cost_app.command("status")
+def cost_status() -> None:
+    """Show monthly spend, per-run cap, available budget, and routing mode."""
+    tracker = CostTracker(_DB_PATH)
+    spend = tracker.monthly_spend()
+    cap = tracker.monthly_cap()
+    remaining = tracker.budget_remaining()
+    per_run = tracker.per_run_cap()
+    mode = tracker.get_routing_mode()
+    over = tracker.is_over_budget()
+
+    console.print()
+    table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+    table.add_column("Metric", style="dim")
+    table.add_column("Value")
+
+    spend_color = _RED if over else _GREEN
+    table.add_row("monthly spend", f"[{spend_color}]${spend:.4f}[/{spend_color}]")
+    table.add_row("monthly cap", f"${cap:.2f}")
+    table.add_row("per-run cap", f"${per_run:.2f}")
+    remaining_color = _RED if remaining < 0 else _YELLOW if remaining < 1.0 else _GREEN
+    table.add_row("remaining", f"[{remaining_color}]${remaining:.4f}[/{remaining_color}]")
+    table.add_row("routing mode", mode)
+
+    console.print(table)
+    console.print()
+
+
+@cost_app.command("set-mode")
+def cost_set_mode(
+    mode: str = typer.Argument(..., help="Routing mode: cheap, standard, or frontier"),
+) -> None:
+    """Change the active routing mode (cheap | standard | frontier)."""
+    tracker = CostTracker(_DB_PATH)
+    try:
+        tracker.set_routing_mode(mode)
+        console.print(f"\n  [{_GREEN}]Routing mode set to[/{_GREEN}]  {mode}\n")
+    except ValueError as exc:
+        err.print(f"\n[{_RED}]Error:[/{_RED}]  {exc}\n")
+        raise typer.Exit(1) from exc
+
+
+# ── Agents commands ───────────────────────────────────────────────────────────
+
+@agents_app.command("list")
+def agents_list() -> None:
+    """Show all registered agents with tier and capabilities."""
+    profiles = _list_agents()
+    console.print()
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Name", style=f"{_COBALT}")
+    table.add_column("Tier", style="dim")
+    table.add_column("Capabilities")
+    table.add_column("Local", style="dim")
+
+    for p in profiles:
+        tc = _tier_color(p.tier)
+        name_str = f"[{tc}]{p.name}[/{tc}]" if tc != "dim" else f"[dim]{p.name}[/dim]"
+        caps = ", ".join(p.capabilities) if p.capabilities else "--"
+        local = "yes" if p.local_only else "no"
+        table.add_row(name_str, p.tier, caps, local)
+
+    console.print(table)
+    console.print(f"  [dim]{len(profiles)} agent(s) registered.[/dim]\n")
+
+
+@agents_app.command("run")
+def agents_run(
+    agent_name: str = typer.Argument(..., help="Name of the agent to run"),
+    task: str = typer.Argument(..., help="Task description to pass to the agent"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Describe what would happen without calling external services"),
+) -> None:
+    """Run a named agent against a task description."""
+    agent = get_agent(agent_name)
+    if agent is None:
+        err.print(f"\n[{_RED}]Unknown agent: {agent_name}[/{_RED}]")
+        err.print(f"  Run: opencobalt agents list\n")
+        raise typer.Exit(1)
+
+    with console.status(f"[dim]Running {agent_name}...[/dim]", spinner="dots"):
+        result = agent.run(task, dry_run=dry_run)
+
+    console.print(
+        f"\n  [bold {_COBALT}]{agent_name}[/bold {_COBALT}]"
+        f"  [dim]{agent.tier} tier[/dim]\n"
+    )
+    console.print(result)
+    console.print()
+
+
+# ── Integrations commands ─────────────────────────────────────────────────────
+
+@integrations_app.command("list")
+def integrations_list() -> None:
+    """List all registered integrations and their install status."""
+    from .integrations.registry import list_integrations
+    profiles = list_integrations()
+    console.print()
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Name", style=f"{_COBALT}")
+    table.add_column("Installed", style="dim")
+    table.add_column("Description")
+    table.add_column("Source", style="dim")
+
+    for p in profiles:
+        installed = f"[{_GREEN}]yes[/{_GREEN}]" if p.installed else f"[{_YELLOW}]no[/{_YELLOW}]"
+        table.add_row(p.name, installed, p.description, p.source_url)
+
+    console.print(table)
+    console.print(f"  [dim]{len(profiles)} integration(s) registered.[/dim]\n")
+
+
+# ── UI command ────────────────────────────────────────────────────────────────
+
+@app.command("ui")
+def ui_shell() -> None:
+    """Print instructions for starting the UI shell."""
+    console.print(
+        f"\n  [bold {_COBALT}]OpenCobalt UI[/bold {_COBALT}]"
+        f"  [dim]web dashboard shell[/dim]\n"
+    )
+    console.print(f"  UI shell lives at [dim]./ui/[/dim]\n")
+    console.print(f"  Start it with:")
+    console.print(f"\n    [dim]cd ui && npm install && npm run dev[/dim]\n")
+    console.print(f"  Then open [dim]http://localhost:5173[/dim]\n")
+    console.print(f"  [dim]Note: backend not wired. Future phase.[/dim]\n")
 
 
 design_app = typer.Typer(help="Design commands.")

@@ -12,7 +12,7 @@
 
 | Item | Value |
 |------|-------|
-| Working directory | /Users/colin/dev/OpenCobalt |
+| Working directory | ~/dev/OpenCobalt |
 | Git status | Not a git repo yet |
 | Python | 3.14.4 |
 | Node | v25.5.0 |

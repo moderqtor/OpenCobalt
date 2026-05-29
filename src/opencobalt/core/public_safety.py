@@ -39,6 +39,7 @@ _SKIP_DIRS = {
     ".venv",
     "venv",
     "env",
+    "node_modules",
     "__pycache__",
     ".pytest_cache",
     ".opencobalt",
