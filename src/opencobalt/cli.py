@@ -383,6 +383,46 @@ def context_build(
     console.print()
 
 
+@app.command("context-diff")
+def context_diff() -> None:
+    """Show what changed in the context pack since the last build."""
+    import difflib
+    prev = _CONTEXT_PATH.parent / "previous.md"
+    curr = _CONTEXT_PATH
+
+    if not curr.exists():
+        console.print("\n  [dim]No context pack found. Run: opencobalt context[/dim]\n")
+        return
+    if not prev.exists():
+        console.print("\n  [dim]No previous version found. Run opencobalt context twice to enable diff.[/dim]\n")
+        return
+
+    old_lines = prev.read_text(encoding="utf-8").splitlines(keepends=True)
+    new_lines = curr.read_text(encoding="utf-8").splitlines(keepends=True)
+    diff = list(difflib.unified_diff(old_lines, new_lines, fromfile="previous", tofile="latest", n=2))
+
+    if not diff:
+        console.print("\n  [dim]No changes since last build.[/dim]\n")
+        return
+
+    added = sum(1 for ln in diff if ln.startswith("+") and not ln.startswith("+++"))
+    removed = sum(1 for ln in diff if ln.startswith("-") and not ln.startswith("---"))
+    console.print("\n  [bold]Context diff[/bold]  [dim]previous -> latest[/dim]")
+    console.print(f"  [{_GREEN}]+{added}[/{_GREEN}]  [{_RED}]-{removed}[/{_RED}]  lines changed\n")
+
+    for ln in diff[:60]:
+        ln = ln.rstrip("\n")
+        if ln.startswith("+") and not ln.startswith("+++"):
+            console.print(f"  [{_GREEN}]{ln}[/{_GREEN}]")
+        elif ln.startswith("-") and not ln.startswith("---"):
+            console.print(f"  [{_RED}]{ln}[/{_RED}]")
+        elif ln.startswith("@@"):
+            console.print(f"  [dim]{ln}[/dim]")
+    if len(diff) > 60:
+        console.print(f"\n  [dim]... {len(diff) - 60} more lines[/dim]")
+    console.print()
+
+
 @app.command()
 def route(
     task: str = typer.Argument(..., help="Task description to route"),

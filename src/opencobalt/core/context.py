@@ -65,6 +65,10 @@ def build_context_pack(
     token_estimate = total_chars // 4  # rough approximation
 
     output.parent.mkdir(parents=True, exist_ok=True)
+    # Save previous version before overwriting so diff is available
+    if output.exists():
+        prev = output.parent / "previous.md"
+        prev.write_text(output.read_text(encoding="utf-8"), encoding="utf-8")
     output.write_text(content, encoding="utf-8")
 
     return ContextPack(

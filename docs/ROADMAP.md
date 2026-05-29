@@ -1,10 +1,9 @@
 # Roadmap
 
-## Current: Phase 1 -- Backend MVP
+## Completed
 
-Status: complete (initial pass)
+### Phase 1: Core MVP
 
-Completed:
 - Clean public repo scaffold
 - Pydantic models for all domain objects
 - SQLite ledger: events, verification results, route decisions, memory records
@@ -18,58 +17,59 @@ Completed:
 - 58 passing tests
 - Architecture, routing, memory, and safety docs
 
-## Phase 2 -- Context and Extraction
+### Phase 2: Modular Systems
 
-- Improve context pack compiler: git log integration, session summary injection
-- Extract and clean additional logic from private Cobalt Forge repo (after audit)
-- Add `opencobalt context diff` to show what changed between context packs
-- Add test coverage for context compiler
+- Cost module with per-model cost estimates
+- Agents registry and base agent class
+- Skills registry
+- Integrations registry
+- UI shell scaffold
+- CI pipeline (GitHub Actions)
 
-## Phase 3 -- Cost Control
+### Phase 3: Real Integration
 
-- Provider and model registry with estimated token costs per model
-- Monthly budget cap configured in `.env`
-- Per-run max cost limit
-- Cheap / standard / frontier routing modes
-- Automatic local Ollama fallback when API budget is exhausted
-- Batch mode flag for supported providers
+- Ollama subprocess invocation in agents (real model calls, not stubs)
+- Route decision logging to ledger
+- `history`, `benchmark`, `config`, and `export` commands
+- 4-panel TUI with live status display
 
-## Phase 4 -- UI Foundation
+### Phase 4: Analytics and Depth
 
-Stack: Vite + React + TypeScript + CSS modules (no heavy component library)
+- `stats` command with routing analytics
+- `memory add` command
+- `log-list` command
+- `route --verbose` and `route --estimate` flags
+- `context --summarize` flag
+- CLI integration tests
+- CHANGELOG
 
-Screens planned:
-1. Command Center (status + recent events)
-2. Context Pack Viewer
-3. Session Ledger (event timeline)
-4. Agent Router (interactive task routing)
-5. Verification Receipts
-6. DesignLab placeholder
+### Phase 5: Quality and Lint
 
-Design must pass the anti-slop checklist in docs/DESIGN_SYSTEM.md before merging.
+- Ruff added to CI
+- Session tracking (start, stop, show, list)
+- Improved `doctor` command with structured checks
+- ARCHITECTURE documentation rewrite
 
-## Phase 5 -- DesignLab
+### Phase 6: Agent and Skill Integration
 
-- Design token generation from project brief
-- Local style memory (what visual choices have been made)
-- Anti-slop rule enforcement
-- Playwright screenshot capture
-- Vision model critique (optional, requires configured API)
-- Visual regression baseline
-- Logo and icon prompt generation
+- `code-reviewer` agent uses `file-reader` skill for real file metrics (line count, function count, complexity)
+- Session tagging in route decisions
+- 174 passing tests
 
-## Phase 6 -- Agent Execution Layer
+---
 
-- Wrapper scripts for launching Claude Code, Codex CLI, Gemini CLI in documented modes
-- Session log capture from agent runs
-- Automatic event logging from agent handoffs
-- Basic eval / scoring of agent outputs
+## In Progress / Next
+
+- UI backend bridge -- wire React dashboard to Python via WebSocket or simple HTTP API
+- API adapter layer -- Anthropic, OpenAI, and Google adapters with per-call cost tracking
+- `context diff` command -- show what changed between context packs
+- Obsidian export write path
+- DesignLab / Visual Compiler
+
+---
 
 ## Not in Scope
 
-- Autonomous agent execution without human oversight
-- Multi-user server mode
-- Cloud hosting or deployment
-- Real-time collaborative editing
-- Training or fine-tuning models
-- Any gray-market API access
+- Autonomous agent execution (OpenCobalt routes and logs; it does not run agents without human direction)
+- Multi-user or server mode
+- Vendor lock-in to any single AI provider
