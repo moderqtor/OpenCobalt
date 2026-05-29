@@ -1,5 +1,3 @@
-import tempfile
-from pathlib import Path
 
 from opencobalt.core.public_safety import scan_directory
 

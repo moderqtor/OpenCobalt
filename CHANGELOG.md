@@ -34,6 +34,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `opencobalt memory add TEXT`: write a memory record from the CLI with optional namespace
 - `opencobalt history`: paginated view of past route decisions with timestamps
 - `opencobalt log-list`: list recent session events from the ledger with optional project filter
+- `opencobalt lint`: run ruff on src/ and tests/, show results, suggest fixing tool via router
+- `opencobalt session start/end/show`: named work sessions backed by config store
+- `opencobalt doctor` expanded: checks pyproject.toml, CI workflow, examples/, UI shell, CHANGELOG.md
+- `opencobalt context --summarize`: passes context pack snippet to Ollama summarizer agent
+- Ruff added to dev dependencies and CI workflow (lint step before tests)
+- Session tracking module (core/session.py) backed by Config store
+- ARCHITECTURE.md rewritten to reflect full Phase 2-5 system
 - Config module (`core/config.py`): SQLite-backed key-value store
 - Programmatic examples in `examples/`: route_example.py, context_example.py, batch_route.py
 - 167 tests (up from 58 at 0.1.0)

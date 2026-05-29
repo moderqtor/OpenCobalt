@@ -45,13 +45,14 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from .agents.registry import get_agent
+from .agents.registry import list_agents as _list_agents
 from .core.cost import CostTracker
 from .core.ledger import Ledger
 from .core.memory import MemoryStore
 from .core.models import MemoryRecord, SessionEvent
 from .core.models_discovery import discover_models, is_ollama_available
 from .core.public_safety import scan_directory
-from .agents.registry import get_agent, list_agents as _list_agents
 from .core.router import _TOOL_PROFILES, route_task
 from .core.verify import run_all
 
@@ -75,6 +76,9 @@ app.add_typer(integrations_app, name="integrations")
 
 config_app = typer.Typer(help="Configuration commands.")
 app.add_typer(config_app, name="config")
+
+session_app = typer.Typer(help="Session commands.")
+app.add_typer(session_app, name="session")
 
 console = Console()
 err = Console(stderr=True)
@@ -122,7 +126,7 @@ def status() -> None:
     checks_total = 0
 
     # ── System ────────────────────────────────────────────
-    console.print(f"  [bold]System[/bold]")
+    console.print("  [bold]System[/bold]")
     console.print(f"  [dim]{'─' * 42}[/dim]")
     console.print(f"  {_dot(True)}  [dim]python    [/dim]  {sys.version.split()[0]}")
     console.print(f"  {_dot(True)}  [dim]repo      [/dim]  {Path('.').resolve()}")
@@ -135,7 +139,7 @@ def status() -> None:
         ollama_ok = is_ollama_available()
         models = discover_models() if ollama_ok else []
 
-    console.print(f"  [bold]Models[/bold]")
+    console.print("  [bold]Models[/bold]")
     console.print(f"  [dim]{'─' * 42}[/dim]")
     if ollama_ok:
         console.print(f"  {_dot(True)}  [dim]ollama    [/dim]  available [dim](worker-tier)[/dim]")
@@ -163,7 +167,7 @@ def status() -> None:
     memory_count = ledger.count_memory_records()
     ledger_ok = _DB_PATH.exists()
 
-    console.print(f"  [bold]Ledger[/bold]")
+    console.print("  [bold]Ledger[/bold]")
     console.print(f"  [dim]{'─' * 42}[/dim]")
     console.print(
         f"  {_dot(ledger_ok)}  [dim]database  [/dim]  "
@@ -179,7 +183,7 @@ def status() -> None:
     docs_ok = Path("docs").is_dir()
     context_ok = _CONTEXT_PATH.exists()
 
-    console.print(f"  [bold]Docs[/bold]")
+    console.print("  [bold]Docs[/bold]")
     console.print(f"  [dim]{'─' * 42}[/dim]")
     console.print(
         f"  {_dot(readme_ok)}  [dim]README.md [/dim]  "
@@ -202,7 +206,7 @@ def status() -> None:
         scan = scan_directory(Path("."))
     safety_ok = scan.is_clean
 
-    console.print(f"  [bold]Safety[/bold]")
+    console.print("  [bold]Safety[/bold]")
     console.print(f"  [dim]{'─' * 42}[/dim]")
     if safety_ok:
         console.print(f"  {_dot(True)}  [dim]scan      [/dim]  clean")
@@ -253,7 +257,7 @@ def models() -> None:
         table.add_row(m.name, m.model_id, m.size, "worker")
 
     console.print(table)
-    console.print(f"  [dim]Local Ollama models are worker-tier only.[/dim]\n")
+    console.print("  [dim]Local Ollama models are worker-tier only.[/dim]\n")
 
 
 @app.command("log")
@@ -285,8 +289,8 @@ def log_list(
     events = ledger.list_events(limit=limit, project=project)
 
     if not events:
-        console.print(f"\n  [dim]No events recorded yet.[/dim]")
-        console.print(f"  [dim]Run: opencobalt log --summary \"your note\"[/dim]\n")
+        console.print("\n  [dim]No events recorded yet.[/dim]")
+        console.print("  [dim]Run: opencobalt log --summary \"your note\"[/dim]\n")
         return
 
     console.print()
@@ -368,13 +372,13 @@ def context_build(
     if summarize:
         agent = get_agent("summarizer")
         if agent is None:
-            console.print(f"  [dim]summarizer agent not available[/dim]")
+            console.print("  [dim]summarizer agent not available[/dim]")
         else:
             # Use the first 2000 chars of the context pack as input (keep cost low)
             snippet = pack.content[:2000]
             with console.status("[dim]Summarizing via Ollama...[/dim]", spinner="dots"):
                 summary = agent.run(f"Summarize this project context in 3 sentences: {snippet}")
-            console.print(f"\n  [dim]Project summary (Ollama):[/dim]")
+            console.print("\n  [dim]Project summary (Ollama):[/dim]")
             console.print(f"  {summary}")
     console.print()
 
@@ -424,10 +428,10 @@ def route(
             ("claude-sonnet-4-6", "manager tier"),
             ("ollama", "worker tier (free)"),
         ]
-        console.print(f"\n  [dim]Cost estimate (~2K input / 500 output tokens):[/dim]")
+        console.print("\n  [dim]Cost estimate (~2K input / 500 output tokens):[/dim]")
         for model_id, label in est_models:
             cost = tracker.estimate_cost(model_id, input_tokens=2000, output_tokens=500)
-            cost_str = f"free" if cost == 0.0 else f"${cost:.4f}"
+            cost_str = "free" if cost == 0.0 else f"${cost:.4f}"
             console.print(f"  [dim]{label:<22}[/dim]  {cost_str}")
     console.print()
 
@@ -453,11 +457,87 @@ def verify() -> None:
 
 
 @app.command()
+def lint() -> None:
+    """Run ruff on src/ and tests/ and report results."""
+    import subprocess
+
+    console.print(f"\n  [bold {_COBALT}]Lint[/bold {_COBALT}]  [dim]ruff check src/ tests/[/dim]\n")
+
+    try:
+        result = subprocess.run(
+            ["ruff", "check", "src/", "tests/"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        err.print(f"\n  [{_YELLOW}]ruff not found.[/{_YELLOW}] Install: pip install ruff\n")
+        raise typer.Exit(1)
+
+    if result.returncode == 0:
+        console.print(f"  [{_GREEN}]All checks passed.[/{_GREEN}]  No issues found.\n")
+    else:
+        lines = (result.stdout + result.stderr).strip().split("\n")
+        for line in lines[:30]:
+            console.print(f"  [dim]{line}[/dim]")
+        if len(lines) > 30:
+            console.print(f"  [dim]... {len(lines) - 30} more lines[/dim]")
+        console.print(f"\n  [{_RED}]Lint issues found.[/{_RED}]  Run: ruff check src/ tests/ --fix\n")
+
+        # Route suggestion: which tool should fix this?
+        decision = route_task("fix linting and code style issues", record=False)
+        tc = _tier_color(decision.tier)
+        tool = f"[{tc}]{decision.recommended_tool}[/{tc}]" if tc != "dim" else f"[dim]{decision.recommended_tool}[/dim]"
+        console.print(f"  [dim]Suggested tool:[/dim]  {tool}  [dim](score {decision.score})[/dim]\n")
+        raise typer.Exit(1)
+
+
+@app.command()
 def doctor() -> None:
-    """Run a full system health check."""
+    """Run a full system health check: status, models, lint, CI config."""
     status()
     console.print()
     models()
+    console.print()
+
+    # Extra doctor checks
+    console.print("  [bold]Checks[/bold]")
+    console.print(f"  [dim]{'─' * 42}[/dim]")
+
+    # pyproject.toml
+    pyproject_ok = Path("pyproject.toml").exists()
+    console.print(
+        f"  {_dot(pyproject_ok)}  [dim]pyproject.toml[/dim]  "
+        f"{'present' if pyproject_ok else f'[{_RED}]missing[/{_RED}]'}"
+    )
+
+    # CI workflow
+    ci_ok = Path(".github/workflows/ci.yml").exists()
+    console.print(
+        f"  {_dot(ci_ok)}  [dim]CI workflow   [/dim]  "
+        f"{'present' if ci_ok else f'[{_YELLOW}]missing[/{_YELLOW}]'}"
+    )
+
+    # examples/
+    examples_ok = Path("examples").is_dir() and any(Path("examples").glob("*.py"))
+    console.print(
+        f"  {_dot(examples_ok)}  [dim]examples/     [/dim]  "
+        f"{'present' if examples_ok else f'[{_YELLOW}]missing[/{_YELLOW}]'}"
+    )
+
+    # ui/
+    ui_ok = Path("ui/package.json").exists()
+    console.print(
+        f"  {_dot(ui_ok)}  [dim]UI shell      [/dim]  "
+        f"{'present' if ui_ok else f'[{_YELLOW}]missing[/{_YELLOW}]'}"
+    )
+
+    # CHANGELOG
+    changelog_ok = Path("CHANGELOG.md").exists()
+    console.print(
+        f"  {_dot(changelog_ok)}  [dim]CHANGELOG.md  [/dim]  "
+        f"{'present' if changelog_ok else f'[{_YELLOW}]missing[/{_YELLOW}]'}"
+    )
+    console.print()
 
 
 @app.command("public-check")
@@ -580,7 +660,7 @@ def tui() -> None:
         return layout
 
     layout = _make_layout()
-    console.print(f"  [dim]OpenCobalt TUI -- Ctrl+C to exit[/dim]\n")
+    console.print("  [dim]OpenCobalt TUI -- Ctrl+C to exit[/dim]\n")
 
     try:
         with Live(layout, refresh_per_second=1, screen=True):
@@ -673,7 +753,7 @@ def agents_run(
     agent = get_agent(agent_name)
     if agent is None:
         err.print(f"\n[{_RED}]Unknown agent: {agent_name}[/{_RED}]")
-        err.print(f"  Run: opencobalt agents list\n")
+        err.print("  Run: opencobalt agents list\n")
         raise typer.Exit(1)
 
     with console.status(f"[dim]Running {agent_name}...[/dim]", spinner="dots"):
@@ -718,11 +798,11 @@ def ui_shell() -> None:
         f"\n  [bold {_COBALT}]OpenCobalt UI[/bold {_COBALT}]"
         f"  [dim]web dashboard shell[/dim]\n"
     )
-    console.print(f"  UI shell lives at [dim]./ui/[/dim]\n")
-    console.print(f"  Start it with:")
-    console.print(f"\n    [dim]cd ui && npm install && npm run dev[/dim]\n")
-    console.print(f"  Then open [dim]http://localhost:5173[/dim]\n")
-    console.print(f"  [dim]Note: backend not wired. Future phase.[/dim]\n")
+    console.print("  UI shell lives at [dim]./ui/[/dim]\n")
+    console.print("  Start it with:")
+    console.print("\n    [dim]cd ui && npm install && npm run dev[/dim]\n")
+    console.print("  Then open [dim]http://localhost:5173[/dim]\n")
+    console.print("  [dim]Note: backend not wired. Future phase.[/dim]\n")
 
 
 # ── Stats command ─────────────────────────────────────────────────────────────
@@ -731,7 +811,7 @@ def ui_shell() -> None:
 def stats() -> None:
     """Show analytics from the ledger: route counts, tier breakdown, top tools."""
     from collections import Counter
-    from datetime import timezone, timedelta
+    from datetime import timedelta, timezone
 
     ledger = _ledger()
     decisions = ledger.list_route_decisions(limit=500)
@@ -754,7 +834,7 @@ def stats() -> None:
 
     if decisions:
         # Tier breakdown
-        console.print(f"\n  [dim]Tier breakdown[/dim]")
+        console.print("\n  [dim]Tier breakdown[/dim]")
         tier_counts: Counter = Counter(d.tier for d in decisions)
         tier_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
         tier_table.add_column("Tier", style="dim")
@@ -770,7 +850,7 @@ def stats() -> None:
         console.print(tier_table)
 
         # Top tools
-        console.print(f"\n  [dim]Top tools[/dim]")
+        console.print("\n  [dim]Top tools[/dim]")
         tool_counts: Counter = Counter(d.recommended_tool for d in decisions)
         tool_table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
         tool_table.add_column("Tool")
@@ -790,7 +870,7 @@ def stats() -> None:
         ]
         console.print(f"\n  [dim]Last 7 days:[/dim]  {len(recent)} route decision(s)\n")
     else:
-        console.print(f"\n  [dim]No route decisions yet. Run: opencobalt route \"your task\"[/dim]\n")
+        console.print("\n  [dim]No route decisions yet. Run: opencobalt route \"your task\"[/dim]\n")
 
 
 # ── History command ───────────────────────────────────────────────────────────
@@ -804,8 +884,8 @@ def history(
     decisions = ledger.list_route_decisions(limit=limit)
 
     if not decisions:
-        console.print(f"\n  [dim]No route decisions recorded yet.[/dim]")
-        console.print(f"  [dim]Run: opencobalt route \"your task\"[/dim]\n")
+        console.print("\n  [dim]No route decisions recorded yet.[/dim]")
+        console.print("  [dim]Run: opencobalt route \"your task\"[/dim]\n")
         return
 
     console.print()
@@ -863,7 +943,7 @@ def config_list() -> None:
     all_cfg = cfg.list_all()
 
     if not all_cfg:
-        console.print(f"\n  [dim]No config values set.[/dim]\n")
+        console.print("\n  [dim]No config values set.[/dim]\n")
         return
 
     console.print()
@@ -940,36 +1020,36 @@ def export() -> None:
     results = ledger.list_verification_results(limit=50)
 
     lines: list[str] = [
-        f"# OpenCobalt Ledger Export",
-        f"",
+        "# OpenCobalt Ledger Export",
+        "",
         f"Generated: {now.strftime('%Y-%m-%d %H:%M UTC')}",
-        f"",
-        f"## Summary",
-        f"",
-        f"| Table | Count |",
-        f"|-------|-------|",
+        "",
+        "## Summary",
+        "",
+        "| Table | Count |",
+        "|-------|-------|",
         f"| Events | {len(events)} |",
         f"| Route decisions | {len(decisions)} |",
         f"| Verification results | {len(results)} |",
-        f"",
+        "",
     ]
 
     if decisions:
-        lines += [f"## Route Decisions", f"", f"| Time | Task | Tool | Tier | Score |", f"|------|------|------|------|-------|"]
+        lines += ["## Route Decisions", "", "| Time | Task | Tool | Tier | Score |", "|------|------|------|------|-------|"]
         for d in decisions:
             ts = d.timestamp.strftime("%Y-%m-%d %H:%M") if hasattr(d.timestamp, "strftime") else str(d.timestamp)[:16]
             lines.append(f"| {ts} | {d.task[:60]} | {d.recommended_tool} | {d.tier} | {d.score} |")
         lines.append("")
 
     if events:
-        lines += [f"## Events", f"", f"| Time | Type | Summary |", f"|------|------|---------|"]
+        lines += ["## Events", "", "| Time | Type | Summary |", "|------|------|---------|"]
         for e in events:
             ts = e.timestamp.strftime("%Y-%m-%d %H:%M") if hasattr(e.timestamp, "strftime") else str(e.timestamp)[:16]
             lines.append(f"| {ts} | {e.event_type} | {e.summary[:80]} |")
         lines.append("")
 
     if results:
-        lines += [f"## Verification Results", f"", f"| Time | Command | Passed | Summary |", f"|------|---------|--------|---------|"]
+        lines += ["## Verification Results", "", "| Time | Command | Passed | Summary |", "|------|---------|--------|---------|"]
         for r in results:
             ts = r.timestamp.strftime("%Y-%m-%d %H:%M") if hasattr(r.timestamp, "strftime") else str(r.timestamp)[:16]
             passed = "yes" if r.passed else "no"
@@ -982,6 +1062,69 @@ def export() -> None:
     console.print(f"  [dim]{len(decisions)} decisions  {len(events)} events  {len(results)} results[/dim]\n")
 
 
+# ── Session commands ──────────────────────────────────────────────────────────
+
+@session_app.command("start")
+def session_start(
+    name: str = typer.Argument(..., help="Session name (e.g. auth-refactor, sprint-12)"),
+) -> None:
+    """Start a named work session. Route decisions and events are tagged with this name."""
+    from .core.session import SessionManager
+    mgr = SessionManager(_DB_PATH)
+    current = mgr.active()
+    if current:
+        console.print(f"\n  [{_YELLOW}]Session already active:[/{_YELLOW}]  {current}")
+        console.print("  [dim]Run: opencobalt session end[/dim]\n")
+        raise typer.Exit(1)
+    mgr.start(name)
+    console.print(f"\n  [{_GREEN}]Session started[/{_GREEN}]  {name}\n")
+
+
+@session_app.command("end")
+def session_end() -> None:
+    """End the active session."""
+    from .core.session import SessionManager
+    mgr = SessionManager(_DB_PATH)
+    name = mgr.end()
+    if name:
+        console.print(f"\n  [{_GREEN}]Session ended[/{_GREEN}]  {name}\n")
+    else:
+        console.print("\n  [dim]No active session.[/dim]\n")
+
+
+@session_app.command("show")
+def session_show() -> None:
+    """Show the active session and recent decisions within it."""
+    from .core.session import SessionManager
+    mgr = SessionManager(_DB_PATH)
+    name = mgr.active()
+    started = mgr.started_at()
+
+    if not name:
+        console.print("\n  [dim]No active session.[/dim]")
+        console.print("  [dim]Run: opencobalt session start \"name\"[/dim]\n")
+        return
+
+    console.print(f"\n  [bold {_COBALT}]Session[/bold {_COBALT}]  {name}")
+    if started:
+        console.print(f"  [dim]started:[/dim]  {started[:16]}")
+
+    # Show recent decisions recorded during this session
+    ledger = _ledger()
+    decisions = ledger.list_route_decisions(limit=10)
+    if decisions:
+        console.print()
+        table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+        table.add_column("Time", style="dim")
+        table.add_column("Tool", style=f"{_COBALT}")
+        table.add_column("Task")
+        for d in decisions:
+            ts = d.timestamp.strftime("%H:%M") if hasattr(d.timestamp, "strftime") else str(d.timestamp)[:5]
+            table.add_row(ts, d.recommended_tool, d.task[:55])
+        console.print(table)
+    console.print()
+
+
 design_app = typer.Typer(help="Design commands.")
 app.add_typer(design_app, name="design")
 
@@ -992,8 +1135,8 @@ def design_brief(
 ) -> None:
     """Show the DesignLab brief for this project (placeholder)."""
     console.print(f"\n  [bold {_COBALT}]DesignLab[/bold {_COBALT}]  [dim]design intelligence module[/dim]\n")
-    console.print(f"  Status: [dim]planned -- see docs/DESIGNLAB.md[/dim]\n")
-    console.print(f"  Future capabilities:")
+    console.print("  Status: [dim]planned -- see docs/DESIGNLAB.md[/dim]\n")
+    console.print("  Future capabilities:")
     for item in [
         "Generate design tokens from a project brief",
         "Enforce anti-slop UI rules across prompts",

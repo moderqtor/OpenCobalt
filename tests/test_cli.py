@@ -16,9 +16,6 @@ Isolation strategy:
 
 from __future__ import annotations
 
-import os
-
-import pytest
 from typer.testing import CliRunner
 
 from opencobalt.cli import app

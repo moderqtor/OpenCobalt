@@ -16,7 +16,7 @@ Routing tiers:
 
 from __future__ import annotations
 
-from typing import cast, Literal
+from typing import Literal, cast
 
 from .models import RouteDecision
 

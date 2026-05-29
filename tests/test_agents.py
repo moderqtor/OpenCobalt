@@ -1,7 +1,7 @@
 """Tests for the OpenCobalt agents package."""
 
-from unittest.mock import MagicMock
 import subprocess
+from unittest.mock import MagicMock
 
 from opencobalt.agents.base_agent import BaseAgent
 from opencobalt.agents.code_reviewer import CodeReviewerAgent

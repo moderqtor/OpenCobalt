@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from .models import VerificationResult
-from .public_safety import scan_directory, ScanResult
+from .public_safety import ScanResult, scan_directory
 
 
 def run_pytest(root: Path | None = None) -> VerificationResult:

@@ -151,6 +151,17 @@ opencobalt config set api_enabled true
 opencobalt config get api_enabled
 opencobalt config list
 
+# Named work sessions
+opencobalt session start "auth-refactor"
+opencobalt session show
+opencobalt session end
+
+# Lint (ruff check src/ tests/)
+opencobalt lint
+
+# Full health check (status + models + extra structural checks)
+opencobalt doctor
+
 # UI shell (React + Tailwind, backend not yet wired)
 opencobalt ui
 ```

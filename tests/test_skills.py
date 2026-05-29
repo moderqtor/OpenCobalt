@@ -6,7 +6,6 @@ from opencobalt.skills.diff_writer import DiffWriter
 from opencobalt.skills.file_reader import FileReader
 from opencobalt.skills.registry import REGISTRY, get_skill, list_skills
 
-
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
