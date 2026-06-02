@@ -10,6 +10,35 @@ OpenCobalt routes work across coding agents, local models, session logs, project
 
 ---
 
+## Status
+
+| Component | State |
+|---|---|
+| CLI routing | Functional |
+| SQLite session ledger | Functional |
+| Pydantic v2 schemas | Functional |
+| pytest / ruff / CI | Passing (214 tests, verified 2026-06-01) |
+| Memory bridge (mem0) | Wired, mem0 optional install required |
+| Agent observability | SQLite-backed, local only |
+| UI | Scaffold only — backend not wired |
+| API adapters (OpenAI, Anthropic) | Planned, not active by default |
+| Khoj integration | Docker sidecar setup docs ready, not started |
+| Persistent agent execution | Not implemented |
+
+---
+
+## Why I built this
+
+I kept switching between Claude Code, Codex, Gemini CLI, and Cursor and losing context
+every time. Each tool had its own idea of what was happening. I started logging sessions
+manually to track cost and what was actually running, and it got tedious, so I built the
+ledger first. The routing layer came later when I noticed I was sending summarization tasks
+to Claude Opus for no reason. The first version was too ambitious — I had plans for vector
+memory and a neural router. I cut it down to deterministic keyword scoring and SQLite, and
+it was more useful. Most of what's here came from actual frustration.
+
+---
+
 ## What It Does
 
 - Routes tasks to the right tool (Claude Code, Codex CLI, Gemini CLI, Cursor, Ollama) based on task type, risk level, and tier
@@ -65,7 +94,7 @@ src/opencobalt/
   skills/         BaseSkill ABC + file-reader, diff-writer
   integrations/   BaseIntegration ABC + aider, ollama stubs
 ui/               React + Tailwind dashboard shell (run: cd ui && npm run dev)
-tests/            167 tests
+tests/            214 tests
 .github/          CI workflow (ubuntu-latest, Python 3.11)
 docs/             Architecture, design system, integrations, roadmap
 ```
@@ -181,7 +210,7 @@ opencobalt ui
 - External integration registry (aider, ollama stubs)
 - CI workflow via GitHub Actions
 - UI dashboard shell (React + Tailwind, `cd ui && npm run dev`)
-- 167 passing tests
+- 214 passing tests (verified 2026-06-01)
 
 ---
 
@@ -201,6 +230,20 @@ opencobalt ui
 - Ollama must be running separately for local model commands. OpenCobalt does not launch Ollama.
 - The router is keyword-based. It does not infer task semantics.
 - No persistent agent execution. OpenCobalt routes and logs -- it does not run agents autonomously.
+
+---
+
+## Tradeoffs
+
+Deterministic router vs learned routing: current scoring is keyword-based, fast, cheap,
+and fully testable. A semantic router would make smarter calls but needs enough logged usage
+data to be meaningful, and it would be harder to debug.
+
+SQLite vs cloud DB: correct for a local-first tool. Schema stays the same if the storage
+layer ever needs to change.
+
+Ollama worker-tier only: llama3 and mistral handle cheap preprocessing locally, but routing
+decisions and architecture work stay on Sonnet or better.
 
 ---
 
@@ -345,7 +388,7 @@ $ opencobalt session show
 ```
 $ opencobalt verify
 
-  PASS  pytest: 174 passed in 1.09s
+  PASS  pytest: 214 passed in 1.09s
   PASS  public-check: No public-safety issues detected.
 
   All checks passed.

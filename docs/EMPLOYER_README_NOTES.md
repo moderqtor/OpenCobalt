@@ -2,12 +2,8 @@
 
 ## Resume Bullets
 
-- Built OpenCobalt, a local-first AI orchestration control plane in Python that routes tasks across Claude Code, Codex CLI, Gemini CLI, Cursor, and Ollama using a deterministic scoring router with tiered risk classification
-- Designed and implemented a SQLite-backed memory ledger (Pydantic v2 schemas, stdlib sqlite3) with 174 passing tests covering events, routing decisions, verification results, memory records, and CLI integration
-- Built an agents and skills system with a code-reviewer agent that reads real source files to report line count, function count, and complexity -- not stub output
-- Added session tracking that tags route decisions with session IDs, enabling per-session analytics and audit trails
-- Built a public safety scanner that detects hardcoded secrets, private vault path references, oversized artifacts, and .env files before any repo push
-- Integrated ruff into CI for consistent lint enforcement across all 6 completed development phases
+- Built OpenCobalt, a local-first AI orchestration CLI in Python that routes tasks across Claude Code, Codex CLI, Gemini CLI, Cursor, and Ollama using a deterministic scoring router with tiered model classification and a SQLite session ledger
+- Implemented persistent agent memory with SQLite-backed MemoryBridge, session observability tracking, agent benchmarking with composite scoring, and repo-hygiene public-check tooling; 214 tests, ruff lint clean, GitHub Actions CI
 
 ## LinkedIn Bullets
 
@@ -17,7 +13,7 @@
 
 ## GitHub Pinned Description
 
-Local-first AI orchestration and memory control plane. Routes tasks across Claude Code, Codex CLI, Gemini CLI, Cursor, and Ollama. SQLite ledger, deterministic router, agents and skills registries, session tracking, public safety scanner. Python, Pydantic, Typer. 174 tests.
+Local-first AI orchestration and memory control plane. Routes tasks across Claude Code, Codex CLI, Gemini CLI, Cursor, and Ollama. SQLite ledger, deterministic router, agents and skills registries, session tracking, public safety scanner. Python, Pydantic, Typer. 214 tests.
 
 ## Recruiter Explanation (30 seconds)
 
@@ -31,7 +27,7 @@ The system includes an agents registry, a skills registry, and an integrations r
 
 The architectural constraint is tier separation: local Ollama models are worker-tier only (summarization, tagging, extraction) and are explicitly excluded from executive-tier tasks (architecture decisions, security review, public-facing content). This was a deliberate design choice, not a default.
 
-Ruff runs in CI. 174 tests cover units, ledger integration, router logic, and CLI commands.
+Ruff runs in CI. 214 tests cover units, ledger integration, router logic, and CLI commands.
 
 ## What Not to Overclaim
 

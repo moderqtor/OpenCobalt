@@ -1,5 +1,12 @@
 # Portfolio Summary
 
+## Resume Bullets
+
+- Built OpenCobalt, a local-first AI orchestration CLI in Python that routes tasks across Claude Code, Codex CLI, Gemini CLI, Cursor, and Ollama using a deterministic scoring router with tiered model classification and a SQLite session ledger
+- Implemented persistent agent memory with SQLite-backed MemoryBridge, session observability tracking, agent benchmarking with composite scoring, and repo-hygiene public-check tooling; 214 tests, ruff lint clean, GitHub Actions CI
+
+---
+
 ## What This Is
 
 OpenCobalt is a local-first AI orchestration and memory control plane. It routes work across coding agents, local models, session logs, project context, and verification workflows.
@@ -16,7 +23,7 @@ OpenCobalt provides a minimal, working answer to each of those problems.
 - Clean separation between source of truth (SQLite), generated mirrors (markdown), and runtime artifacts (context packs)
 
 ### Software engineering
-- 132 passing tests covering models, ledger, events, memory, router, public safety scanner, cost module, agents, skills, and integrations
+- 214 passing tests covering models, ledger, events, memory, router, public safety scanner, cost module, agents, skills, and integrations
 - No test mocking of core logic -- tests use real temp SQLite databases
 - Clean module design: each file has one responsibility, one public interface
 - CI workflow running on ubuntu-latest via GitHub Actions
@@ -46,7 +53,7 @@ OpenCobalt provides a minimal, working answer to each of those problems.
 - Python (3.11+, Pydantic v2, Typer, Rich, sqlite3)
 - SQLite schema design
 - CLI design
-- Test design (pytest, 132 tests)
+- Test design (pytest, 214 tests)
 - AI tool orchestration patterns (routing tiers, cost awareness, agent/skill registries)
 - Public repo hygiene (gitignore, safety scanning, credential exclusion)
 - CI configuration (GitHub Actions)
