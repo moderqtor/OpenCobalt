@@ -11,6 +11,8 @@ from .base_agent import BaseAgent
 class TaggerAgent(BaseAgent):
     """Worker-tier agent that tags content via Ollama."""
 
+    compatible_skills: list[str] = ["file-reader"]
+
     profile = AgentProfile(
         agent_id="tagger",
         name="tagger",

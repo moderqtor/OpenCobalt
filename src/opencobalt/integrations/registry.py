@@ -8,10 +8,18 @@ from __future__ import annotations
 
 from .aider_integration import AiderIntegration
 from .base_integration import BaseIntegration, IntegrationProfile
+from .claude_code_integration import ClaudeCodeIntegration
+from .context7_integration import Context7Integration
+from .cursor_integration import CursorIntegration
+from .gemini_cli_integration import GeminiCLIIntegration
 from .ollama_integration import OllamaIntegration
 
 REGISTRY: dict[str, BaseIntegration] = {
     "aider": AiderIntegration(),
+    "claude-code": ClaudeCodeIntegration(),
+    "context7": Context7Integration(),
+    "cursor": CursorIntegration(),
+    "gemini-cli": GeminiCLIIntegration(),
     "ollama": OllamaIntegration(),
 }
 

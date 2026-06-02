@@ -80,6 +80,13 @@ app.add_typer(config_app, name="config")
 session_app = typer.Typer(help="Session commands.")
 app.add_typer(session_app, name="session")
 
+skills_app = typer.Typer(help="Skill commands.")
+app.add_typer(skills_app, name="skills")
+
+# invoke_without_command keeps bare `opencobalt benchmark` working (tested in test_cli.py)
+benchmark_app = typer.Typer(help="Benchmark commands.", invoke_without_command=True)
+app.add_typer(benchmark_app, name="benchmark")
+
 console = Console()
 err = Console(stderr=True)
 
@@ -307,6 +314,15 @@ def log_list(
     console.print(f"  [dim]{len(events)} event(s).[/dim]\n")
 
 
+_MEMORIES_DB = Path(".opencobalt") / "memories.db"
+
+
+def _memory_bridge():
+    from .memory_bridge import MemoryBridge
+
+    return MemoryBridge(db_path=_MEMORIES_DB)
+
+
 @memory_app.command("status")
 def memory_status() -> None:
     """Show memory record counts and paths."""
@@ -319,6 +335,17 @@ def memory_status() -> None:
     table.add_row("event count", str(ledger.count_events()))
     table.add_row("memory records", str(ledger.count_memory_records()))
     table.add_row("export path", str(_EXPORT_PATH))
+
+    try:
+        bridge = _memory_bridge()
+        table.add_row("bridge db", str(_MEMORIES_DB))
+        table.add_row("bridge entries", str(bridge.count()))
+        if _MEMORIES_DB.exists():
+            size_kb = _MEMORIES_DB.stat().st_size // 1024
+            table.add_row("bridge size", f"{size_kb} KB")
+    except Exception:
+        table.add_row("bridge", "[dim]unavailable[/dim]")
+
     console.print(table)
     console.print()
 
@@ -328,8 +355,9 @@ def memory_add(
     content: str = typer.Argument(..., help="Memory content to store"),
     namespace: str = typer.Option("general", "--namespace", "-n", help="Memory namespace"),
     project: str = typer.Option("opencobalt", "--project", "-p"),
+    agent: str = typer.Option("", "--agent", "-a", help="Also write to bridge store for this agent"),
 ) -> None:
-    """Write a memory record to the ledger."""
+    """Write a memory record to the ledger. Pass --agent to also write to the bridge store."""
     ledger = _ledger()
     record = MemoryRecord(
         project=project,
@@ -340,7 +368,17 @@ def memory_add(
     ledger.insert_memory_record(record)
     console.print(f"\n  [{_GREEN}]Stored[/{_GREEN}]  [dim]{record.id}[/dim]")
     console.print(f"  [dim]namespace :[/dim]  {namespace}")
-    console.print(f"  [dim]content   :[/dim]  {content[:80]}\n")
+    console.print(f"  [dim]content   :[/dim]  {content[:80]}")
+
+    if agent:
+        try:
+            bridge = _memory_bridge()
+            bridge_id = bridge.add(content, agent_id=agent)
+            console.print(f"  [dim]bridge id :[/dim]  {bridge_id}  [dim](agent: {agent})[/dim]")
+        except Exception as exc:
+            console.print(f"  [{_YELLOW}]bridge write failed:[/{_YELLOW}]  {exc}")
+
+    console.print()
 
 
 @memory_app.command("export")
@@ -353,6 +391,69 @@ def memory_export(
     out = _EXPORT_PATH / f"{project}-memory.md"
     store.export_markdown(project, out)
     console.print(f"\n  [{_GREEN}]Exported[/{_GREEN}]  {out}\n")
+
+
+@memory_app.command("search")
+def memory_search(
+    query: str = typer.Argument(..., help="Search terms"),
+    agent: str = typer.Option("", "--agent", "-a", help="Filter by agent name"),
+    limit: int = typer.Option(10, "--limit", "-l", help="Max results"),
+) -> None:
+    """Search the bridge memory store."""
+    try:
+        bridge = _memory_bridge()
+        results = bridge.search(query, agent_id=agent, limit=limit)
+    except Exception as exc:
+        err.print(f"[{_RED}]bridge error:[/{_RED}]  {exc}")
+        raise typer.Exit(1)
+
+    console.print()
+    if not results:
+        console.print(f"  [dim]No results for:[/dim]  {query}\n")
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Agent", style="dim")
+    table.add_column("Content")
+    table.add_column("Timestamp", style="dim")
+    for r in results:
+        table.add_row(r["agent_id"], r["content"][:80], r["timestamp"][:19])
+    console.print(table)
+    console.print(f"  [dim]{len(results)} result(s)[/dim]\n")
+
+
+@memory_app.command("sessions")
+def memory_sessions(
+    limit: int = typer.Option(10, "--limit", "-l", help="Max sessions"),
+) -> None:
+    """List recent session summaries from the bridge store."""
+    try:
+        bridge = _memory_bridge()
+        import json as _json
+
+        rows = bridge.recent(limit=limit)
+        summaries = [
+            r for r in rows
+            if _json.loads(r.get("metadata", "{}")).get("type") == "session_summary"
+        ]
+    except Exception as exc:
+        err.print(f"[{_RED}]bridge error:[/{_RED}]  {exc}")
+        raise typer.Exit(1)
+
+    console.print()
+    if not summaries:
+        console.print("  [dim]No session summaries stored yet.[/dim]\n")
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Session", style="dim")
+    table.add_column("Agent", style="dim")
+    table.add_column("Summary")
+    table.add_column("Timestamp", style="dim")
+    for r in summaries:
+        table.add_row(r["session_id"][:12], r["agent_id"], r["content"][:60], r["timestamp"][:19])
+    console.print(table)
+    console.print(f"  [dim]{len(summaries)} session summary(ies)[/dim]\n")
 
 
 @app.command("context")
@@ -728,6 +829,9 @@ def tui() -> None:
 
 # ── Cost commands ─────────────────────────────────────────────────────────────
 
+_OBS_DB = Path(".opencobalt") / "observability.db"
+
+
 @cost_app.command("status")
 def cost_status() -> None:
     """Show monthly spend, per-run cap, available budget, and routing mode."""
@@ -752,6 +856,18 @@ def cost_status() -> None:
     table.add_row("remaining", f"[{remaining_color}]${remaining:.4f}[/{remaining_color}]")
     table.add_row("routing mode", mode)
 
+    try:
+        from .observability import ObservabilitySession
+
+        obs = ObservabilitySession(db_path=_OBS_DB)
+        stats = obs.summary_stats()
+        table.add_row("obs sessions", str(stats["total"]))
+        if stats["total"] > 0:
+            table.add_row("obs success rate", f"{stats['success_rate']:.0%}")
+            table.add_row("obs total cost", f"${stats['total_cost_usd']:.6f}")
+    except Exception:
+        pass
+
     console.print(table)
     console.print()
 
@@ -768,6 +884,53 @@ def cost_set_mode(
     except ValueError as exc:
         err.print(f"\n[{_RED}]Error:[/{_RED}]  {exc}\n")
         raise typer.Exit(1) from exc
+
+
+@cost_app.command("reset")
+def cost_reset(
+    confirm: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+) -> None:
+    """Delete all cost records for the current calendar month."""
+    if not confirm:
+        console.print(f"\n  [{_YELLOW}]This will delete all cost records for the current month.[/{_YELLOW}]")
+        console.print("  Re-run with --yes to confirm.\n")
+        raise typer.Exit(0)
+
+    tracker = CostTracker(_DB_PATH)
+    tracker.reset_monthly_records()
+    console.print(f"\n  [{_GREEN}]Monthly cost records cleared.[/{_GREEN}]\n")
+
+
+# ── Skills commands ───────────────────────────────────────────────────────────
+
+@skills_app.command("list")
+def skills_list(
+    agent: str = typer.Option(None, "--agent", "-a", help="Filter to skills compatible with this agent"),
+) -> None:
+    """List registered skills, optionally filtered by compatible agent."""
+    from .skills.registry import list_skills
+
+    skills = list_skills(agent=agent)
+    console.print()
+
+    if not skills:
+        if agent:
+            console.print(f"  [dim]No skills registered for agent: {agent}[/dim]\n")
+        else:
+            console.print("  [dim]No skills registered.[/dim]\n")
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Name", style=f"{_COBALT}")
+    table.add_column("Description")
+
+    for entry in skills:
+        table.add_row(entry["name"], entry["description"])
+
+    header = f"Skills for agent: {agent}" if agent else "All skills"
+    console.print(f"  [dim]{header}[/dim]")
+    console.print(table)
+    console.print(f"  [dim]{len(skills)} skill(s) registered.[/dim]\n")
 
 
 # ── Agents commands ───────────────────────────────────────────────────────────
@@ -801,14 +964,51 @@ def agents_run(
     dry_run: bool = typer.Option(False, "--dry-run", help="Describe what would happen without calling external services"),
 ) -> None:
     """Run a named agent against a task description."""
+    import time as _time
+
     agent = get_agent(agent_name)
     if agent is None:
         err.print(f"\n[{_RED}]Unknown agent: {agent_name}[/{_RED}]")
         err.print("  Run: opencobalt agents list\n")
         raise typer.Exit(1)
 
-    with console.status(f"[dim]Running {agent_name}...[/dim]", spinner="dots"):
-        result = agent.run(task, dry_run=dry_run)
+    # Start observability session
+    obs_sid: str | None = None
+    try:
+        from .observability import ObservabilitySession
+
+        obs = ObservabilitySession(db_path=_OBS_DB)
+        obs_sid = obs.start_session(agent_id=agent_name, task=task, model=agent.tier)
+    except Exception:
+        pass
+
+    t0 = _time.monotonic()
+    success = True
+    try:
+        with console.status(f"[dim]Running {agent_name}...[/dim]", spinner="dots"):
+            result = agent.run(task, dry_run=dry_run)
+    except Exception:
+        success = False
+        raise
+    finally:
+        elapsed_ms = int((_time.monotonic() - t0) * 1000)
+        # End observability session
+        if obs_sid is not None:
+            try:
+                obs.end_session(obs_sid, success=success)
+            except Exception:
+                pass
+        # Write result to memory bridge (opt-in: only when bridge accessible)
+        if success and not dry_run:
+            try:
+                bridge = _memory_bridge()
+                bridge.add(
+                    content=result[:500],
+                    agent_id=agent_name,
+                    metadata={"task": task[:100], "latency_ms": elapsed_ms},
+                )
+            except Exception:
+                pass
 
     console.print(
         f"\n  [bold {_COBALT}]{agent_name}[/bold {_COBALT}]"
@@ -822,22 +1022,52 @@ def agents_run(
 
 @integrations_app.command("list")
 def integrations_list() -> None:
-    """List all registered integrations and their install status."""
+    """List all registered integrations with tier, status, and capabilities."""
     from .integrations.registry import list_integrations
     profiles = list_integrations()
     console.print()
     table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
     table.add_column("Name", style=f"{_COBALT}")
-    table.add_column("Installed", style="dim")
-    table.add_column("Description")
-    table.add_column("Source", style="dim")
+    table.add_column("Tier", style="dim")
+    table.add_column("Status")
+    table.add_column("Capabilities", style="dim")
 
     for p in profiles:
-        installed = f"[{_GREEN}]yes[/{_GREEN}]" if p.installed else f"[{_YELLOW}]no[/{_YELLOW}]"
-        table.add_row(p.name, installed, p.description, p.source_url)
+        tc = _tier_color(p.tier)
+        tier_str = f"[{tc}]{p.tier}[/{tc}]" if tc != "dim" else f"[dim]{p.tier}[/dim]"
+        status_color = _GREEN if p.integration_status == "active" else (
+            _YELLOW if p.integration_status == "available" else "dim"
+        )
+        status_str = f"[{status_color}]{p.integration_status}[/{status_color}]"
+        caps = ", ".join(p.capabilities) if p.capabilities else "--"
+        table.add_row(p.name, tier_str, status_str, caps)
 
     console.print(table)
     console.print(f"  [dim]{len(profiles)} integration(s) registered.[/dim]\n")
+
+
+@integrations_app.command("check")
+def integrations_check() -> None:
+    """Run install_check() on all integrations and report which are active."""
+    from .integrations.registry import REGISTRY
+
+    console.print(f"\n  [bold {_COBALT}]Integrations check[/bold {_COBALT}]\n")
+
+    active = []
+    inactive = []
+    for name, integration in REGISTRY.items():
+        if integration.install_check():
+            active.append(name)
+        else:
+            inactive.append(name)
+
+    for name in sorted(active):
+        console.print(f"  {_dot(True)}  {name}")
+    for name in sorted(inactive):
+        console.print(f"  {_dot(False, warn=True)}  [dim]{name}[/dim]")
+
+    console.print()
+    console.print(f"  [dim]{len(active)} active  {len(inactive)} not installed[/dim]\n")
 
 
 # ── UI command ────────────────────────────────────────────────────────────────
@@ -1023,9 +1253,16 @@ _BENCHMARK_TASKS = [
 ]
 
 
-@app.command()
-def benchmark() -> None:
-    """Route a set of representative tasks and show the full scoring breakdown."""
+@benchmark_app.callback(invoke_without_command=True)
+def benchmark(ctx: typer.Context) -> None:
+    """Route a set of representative tasks and show the full scoring breakdown.
+
+    Run with no subcommand to get the router breakdown. Use subcommands
+    (status, record) to interact with the persistent benchmark store.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+
     console.print(f"\n  [bold {_COBALT}]Benchmark[/bold {_COBALT}]  [dim]{len(_BENCHMARK_TASKS)} tasks[/dim]\n")
 
     with console.status("[dim]Routing all tasks...[/dim]", spinner="dots"):
@@ -1051,6 +1288,86 @@ def benchmark() -> None:
 
     summary = "  ".join(f"[dim]{tier}:[/dim] {count}" for tier, count in sorted(tier_counts.items()))
     console.print(f"  {summary}\n")
+
+
+@benchmark_app.command("status")
+def benchmark_status() -> None:
+    """Show the agent leaderboard from the benchmark store."""
+    from .core.benchmark import BenchmarkStore
+
+    store = BenchmarkStore(_DB_PATH)
+    leaderboard = store.get_leaderboard(n=10)
+
+    console.print(f"\n  [bold {_COBALT}]Benchmark Leaderboard[/bold {_COBALT}]\n")
+
+    if not leaderboard:
+        console.print("  [dim]No benchmark records yet.[/dim]")
+        console.print("  [dim]Run: opencobalt benchmark record \"task\" --agent NAME[/dim]\n")
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Rank", style="dim", justify="right")
+    table.add_column("Agent", style=f"{_COBALT}")
+    table.add_column("Runs", justify="right", style="dim")
+    table.add_column("Win rate", justify="right")
+    table.add_column("Avg latency", justify="right", style="dim")
+    table.add_column("Score", justify="right")
+
+    for i, entry in enumerate(leaderboard, start=1):
+        win_pct = f"{entry['win_rate'] * 100:.1f}%"
+        latency = f"{entry['avg_latency_ms']:.0f} ms"
+        score = f"{entry['composite_score']:.4f}"
+        table.add_row(str(i), entry["agent_id"], str(entry["total"]), win_pct, latency, score)
+
+    console.print(table)
+    console.print(f"  [dim]{len(leaderboard)} agent(s) on board.[/dim]\n")
+
+
+@benchmark_app.command("record")
+def benchmark_record(
+    task: str = typer.Argument(..., help="Task description"),
+    agent: str = typer.Option(..., "--agent", "-a", help="Agent name"),
+    latency: int = typer.Option(..., "--latency", "-l", help="Latency in ms"),
+    success: bool = typer.Option(..., "--success/--fail", help="Whether the task succeeded"),
+    task_type: str = typer.Option("general", "--task-type", "-t", help="Task type category"),
+    model_used: str = typer.Option("unknown", "--model", "-m", help="Model used"),
+    tier: str = typer.Option("worker", "--tier", help="Agent tier"),
+    score: float = typer.Option(0.0, "--score", "-s", help="Quality score 0.0-1.0"),
+) -> None:
+    """Record a benchmark result manually."""
+    import uuid
+
+    from .core.benchmark import BenchmarkRecord, BenchmarkStore
+
+    record = BenchmarkRecord(
+        agent_id=agent,
+        task_id=str(uuid.uuid4()),
+        task_type=task_type,
+        latency_ms=latency,
+        success=success,
+        model_used=model_used,
+        tier=tier,
+        score=score,
+    )
+    store = BenchmarkStore(_DB_PATH)
+    store.record(record)
+
+    # Mirror to observability store for cross-system tracking
+    try:
+        from .observability import ObservabilitySession
+
+        obs = ObservabilitySession(db_path=_OBS_DB)
+        sid = obs.start_session(agent_id=agent, task=task, model=model_used)
+        obs.end_session(sid, success=success)
+    except Exception:
+        pass
+
+    status_str = f"[{_GREEN}]success[/{_GREEN}]" if success else f"[{_RED}]fail[/{_RED}]"
+    console.print(f"\n  [{_GREEN}]Recorded[/{_GREEN}]  [dim]{record.id}[/dim]")
+    console.print(f"  [dim]agent   :[/dim]  {agent}")
+    console.print(f"  [dim]task    :[/dim]  {task[:60]}")
+    console.print(f"  [dim]latency :[/dim]  {latency} ms")
+    console.print(f"  [dim]result  :[/dim]  {status_str}\n")
 
 
 # ── Export command ────────────────────────────────────────────────────────────
@@ -1186,6 +1503,9 @@ def session_show() -> None:
 design_app = typer.Typer(help="Design commands.")
 app.add_typer(design_app, name="design")
 
+khoj_app = typer.Typer(help="Khoj sidecar commands.")
+app.add_typer(khoj_app, name="khoj")
+
 
 @design_app.command("brief")
 def design_brief(
@@ -1203,4 +1523,36 @@ def design_brief(
         "Maintain local style memory across sessions",
     ]:
         console.print(f"  [dim]--[/dim]  {item}")
+    console.print()
+
+
+# ── Khoj commands ─────────────────────────────────────────────────────────────
+
+@khoj_app.command("status")
+def khoj_status() -> None:
+    """Check if the Khoj sidecar is reachable on localhost:42110."""
+    import urllib.error
+    import urllib.request
+
+    _KHOJ_URL = "http://localhost:42110"
+    console.print()
+    try:
+        with urllib.request.urlopen(f"{_KHOJ_URL}/api/health", timeout=3) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            version = "unknown"
+            if '"version"' in body:
+                import json as _json
+
+                data = _json.loads(body)
+                version = data.get("version", "unknown")
+            console.print(
+                f"  {_dot(True)}  [dim]khoj[/dim]  "
+                f"[{_GREEN}]up[/{_GREEN}]  [dim]version {version} · {_KHOJ_URL}[/dim]"
+            )
+    except urllib.error.URLError:
+        console.print(
+            f"  {_dot(False, warn=True)}  [dim]khoj[/dim]  "
+            f"[{_YELLOW}]down[/{_YELLOW}]  [dim]not reachable at {_KHOJ_URL}[/dim]"
+        )
+        console.print("  [dim]Start with:[/dim]  cd ~/.khoj && docker-compose up -d")
     console.print()

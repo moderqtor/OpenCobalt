@@ -1,5 +1,20 @@
 # Roadmap
 
+## Product Vision
+
+OpenCobalt is a local-first AI orchestration control plane that unifies routing, memory, context
+compilation, agent management, benchmarking, and integration across AI coding tools.
+
+Core thesis: autonomous task routing with verifiable results across tiered agents. Not a chatbot
+wrapper. Not an API aggregator for personal use. Not a terminal emulator.
+
+All routing is deterministic. All state is SQLite. All defaults are local and offline.
+
+Optional hosted mode (rate-limited subscriptions, public-facing routing layer) is a future phase
+that does not change the local-first default.
+
+---
+
 ## Completed
 
 ### Phase 1: Core MVP
@@ -21,9 +36,9 @@
 
 - Cost module with per-model cost estimates
 - Agents registry and base agent class
-- Skills registry
-- Integrations registry
-- UI shell scaffold
+- Skills registry (file-reader, diff-writer)
+- Integrations registry (aider, ollama)
+- UI shell scaffold (React + Tailwind)
 - CI pipeline (GitHub Actions)
 
 ### Phase 3: Real Integration
@@ -52,24 +67,51 @@
 
 ### Phase 6: Agent and Skill Integration
 
-- `code-reviewer` agent uses `file-reader` skill for real file metrics (line count, function count, complexity)
+- `code-reviewer` agent uses `file-reader` skill for real file metrics
 - Session tagging in route decisions
 - 174 passing tests
+
+### Phase 7: Benchmarking, Integration Library, and Skill Registry
+
+- Agent benchmarking store (BenchmarkRecord + BenchmarkStore, SQLite-backed)
+- Leaderboard with composite score: win_rate * 0.6 + speed_score * 0.4
+- `benchmark status` and `benchmark record` subcommands
+- 6 integrations: aider, ollama, claude-code, gemini-cli, cursor, context7
+- Each integration declares tier, capabilities, and integration_status
+- `integrations check` command: runs install_check() on all, reports active/inactive
+- 3 skills: file-reader, diff-writer, context-injector
+- Each skill declares `compatible_agents`; each agent declares `compatible_skills`
+- `skills list [--agent NAME]` command
+- `cost reset` command: clears current month cost records
+- 191 passing tests
 
 ---
 
 ## In Progress / Next
 
-- UI backend bridge -- wire React dashboard to Python via WebSocket or simple HTTP API
-- API adapter layer -- Anthropic, OpenAI, and Google adapters with per-call cost tracking
-- `context diff` command -- show what changed between context packs
+- UI backend bridge: wire React dashboard to Python via WebSocket or simple HTTP API
+- API adapter layer: Anthropic, OpenAI, and Google adapters with per-call cost tracking
+- Router integration with benchmark data: `get_best_for_task_type()` replaces static tier rules for
+  agents with sufficient benchmark history
+- `context diff` command
 - Obsidian export write path
 - DesignLab / Visual Compiler
 
 ---
 
+## Future: Optional Hosted Mode
+
+When local routing has enough benchmark history, the system can expose a routing API:
+- Rate-limited subscriptions with per-token billing
+- Public-facing routing layer that aggregates benchmark results across installs
+- Optional agent execution (not just routing and logging) via managed API calls
+
+This is a future phase. The local-first default never changes.
+
+---
+
 ## Not in Scope
 
-- Autonomous agent execution (OpenCobalt routes and logs; it does not run agents without human direction)
-- Multi-user or server mode
+- Autonomous agent execution without human direction
+- Multi-user or server mode in the local version
 - Vendor lock-in to any single AI provider

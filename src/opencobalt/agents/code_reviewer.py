@@ -24,6 +24,8 @@ class CodeReviewerAgent(BaseAgent):
     augmented with actual file statistics.
     """
 
+    compatible_skills: list[str] = ["file-reader", "diff-writer"]
+
     profile = AgentProfile(
         agent_id="code-reviewer",
         name="code-reviewer",

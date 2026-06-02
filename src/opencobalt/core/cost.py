@@ -249,3 +249,16 @@ class CostTracker:
     def get_routing_mode(self) -> str:
         """Return the current routing mode. Defaults to 'standard'."""
         return self._config_get("routing_mode", _DEFAULT_ROUTING_MODE)
+
+    def reset_monthly_records(self) -> int:
+        """Delete all cost records for the current UTC calendar month.
+
+        Returns the number of rows deleted.
+        """
+        month_prefix = _now().strftime("%Y-%m")
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM cost_records WHERE timestamp LIKE ?",
+                (f"{month_prefix}%",),
+            )
+        return cur.rowcount
