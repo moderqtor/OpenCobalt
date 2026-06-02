@@ -80,7 +80,7 @@ Show: `opencobalt stats`
 
 Show: `opencobalt verify`
 
-"174 tests. Units, ledger integration, router logic, CLI commands. The verify command runs the full suite and shows pass or fail."
+"214 tests. Units, ledger integration, router logic, CLI commands. The verify command runs the full suite and shows pass or fail."
 
 ---
 
