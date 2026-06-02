@@ -33,7 +33,7 @@ I kept switching between Claude Code, Codex, Gemini CLI, and Cursor and losing c
 every time. Each tool had its own idea of what was happening. I started logging sessions
 manually to track cost and what was actually running, and it got tedious, so I built the
 ledger first. The routing layer came later when I noticed I was sending summarization tasks
-to Claude Opus for no reason. The first version was too ambitious — I had plans for vector
+to Claude Opus for no reason. The first version was too ambitious. I had plans for vector
 memory and a neural router. I cut it down to deterministic keyword scoring and SQLite, and
 it was more useful. Most of what's here came from actual frustration.
 
