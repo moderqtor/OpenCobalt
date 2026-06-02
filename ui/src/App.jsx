@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Terminal, Layers, ScrollText, Network, CheckSquare,
   Palette, Trophy, GitBranch, ChevronRight, Plus, ExternalLink
@@ -26,6 +26,7 @@ html,body,#root{height:100%;background:var(--bg);color:var(--t0);font-family:var
 @keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
 @keyframes ping{0%{transform:scale(1);opacity:.9}70%,100%{transform:scale(2.4);opacity:0}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .view{animation:in .24s ease both}
 .mono{font-family:var(--fmo)}
 .lbl{font-size:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--t2)}
@@ -50,42 +51,11 @@ html,body,#root{height:100%;background:var(--bg);color:var(--t0);font-family:var
 .int-row:last-child{border-bottom:1px solid var(--ln)}
 .int-row:hover .int-name{color:var(--t0)}
 .int-name{color:var(--t1);transition:color .12s}
+.loading{animation:pulse 1.6s ease infinite;pointer-events:none}
 `;
 
-const CMDS = [
-  {c:'route "design the event spine architecture"', t:"14:42", s:"ok"},
-  {c:"verify --public-check",                       t:"14:38", s:"ok"},
-  {c:'route "push release notes to public repo"',  t:"14:31", s:"er"},
-  {c:"context --summarize",                         t:"14:22", s:"if"},
-  {c:'agents run summarizer "explain router"',      t:"14:09", s:"if"},
-];
-const AGENTS = [
-  {id:"OC-Worker-01",     tier:"worker",    caps:["codegen","refactor","summarize","file_read"], on:true},
-  {id:"OC-Manager-Alpha", tier:"manager",   caps:["review","dispatch","plan","diff_write"],     on:false},
-  {id:"OC-Executive-Zero",tier:"executive", caps:["architect","strategy","synthesis"],          on:false},
-  {id:"OC-Summarizer",    tier:"worker",    caps:["summarize","tag","extract"],                 on:false},
-];
-const SESSIONS = [
-  {ts:"10:42:15", task:"Optimize auth middleware",       model:"claude-sonnet-4-5", tier:"manager",   cost:"$0.012", ok:true},
-  {ts:"10:39:01", task:"Generate benchmark test suite",  model:"gpt-4o",            tier:"worker",    cost:"$0.008", ok:true},
-  {ts:"10:15:44", task:"System Architecture Review",     model:"claude-3-opus",     tier:"executive", cost:"$0.145", ok:true},
-  {ts:"09:58:22", task:"Refactor integration base class",model:"claude-sonnet-4-5", tier:"manager",   cost:"$0.019", ok:true},
-];
-const BENCH = [
-  {rank:1, name:"OC-Executive-Zero", tier:"executive", wins:94, lat:"2.3s", tasks:147},
-  {rank:2, name:"claude-code",        tier:"manager",   wins:88, lat:"1.9s", tasks:203},
-  {rank:3, name:"OC-Manager-Alpha",   tier:"manager",   wins:82, lat:"1.6s", tasks:178},
-  {rank:4, name:"OC-Worker-01",       tier:"worker",    wins:76, lat:"0.9s", tasks:412},
-  {rank:5, name:"aider",              tier:"worker",    wins:71, lat:"1.2s", tasks:89},
-];
-const INTS = [
-  {name:"Aider",       repo:"paul-gauthier/aider",     on:true,  caps:["code-edit","git-aware","diff"]},
-  {name:"Ollama",      repo:"ollama/ollama",            on:true,  caps:["local-llm","worker-tier"]},
-  {name:"Claude Code", repo:"anthropic/claude-code",    on:true,  caps:["agentic","executive"]},
-  {name:"Gemini CLI",  repo:"google-gemini/gemini-cli", on:true,  caps:["multimodal","search"]},
-  {name:"Cursor",      repo:"getcursor/cursor",         on:false, caps:["ide","edit","composer"]},
-  {name:"Context7",    repo:"upstash/context7",         on:false, caps:["docs","rag","search"]},
-];
+const API = "http://localhost:8000";
+
 const RECEIPTS = [
   {id:"8821", ok:true,  desc:"SHA-256 Checksum Match",    ts:"14:38", target:"build/artifact-v2.bin",  hash:"3b4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e"},
   {id:"8819", ok:true,  desc:"Public Safety Check Clean", ts:"14:22", target:"repo root",              hash:"a1b2c3d4e5f67890abcdef1234567890abcdef12"},
@@ -97,9 +67,25 @@ const StatusDot = ({s, sm}) => {
   return <div style={{width:sm?5:6,height:sm?5:6,borderRadius:"50%",background:color,flexShrink:0}}/>;
 };
 
-function CommandView() {
+const Offline = () => (
+  <div style={{paddingTop:88,color:"var(--t2)",fontSize:13}}>
+    API offline — run <span className="mono" style={{color:"var(--acc)"}}>opencobalt ui</span>
+  </div>
+);
+
+const Empty = ({msg}) => (
+  <div style={{color:"var(--t2)",fontSize:13,paddingTop:32}}>{msg || "No data yet."}</div>
+);
+
+function CommandView({sessions, loading, error}) {
+  const cmds = sessions.map(s => ({
+    c: s.task,
+    t: s.ts.slice(0,5),
+    s: s.ok ? "ok" : "er",
+  }));
+
   return (
-    <div className="view" style={{paddingTop:88}}>
+    <div className={`view${loading?" loading":""}`} style={{paddingTop:88}}>
       <div style={{marginBottom:56}}>
         <div className="lbl" style={{marginBottom:20}}>Command center</div>
         <div className="cmd-input">
@@ -112,7 +98,9 @@ function CommandView() {
       </div>
 
       <div className="lbl" style={{marginBottom:0}}>Recent</div>
-      {CMDS.map((c,i) => (
+      {error && <Offline/>}
+      {!error && cmds.length === 0 && <Empty msg="No route decisions yet — run opencobalt route"/>}
+      {cmds.map((c,i) => (
         <div key={i} className="row">
           <StatusDot s={c.s} sm/>
           <span className="mono" style={{flex:1,fontSize:13,color:"var(--t1)"}}>
@@ -125,22 +113,26 @@ function CommandView() {
   );
 }
 
-function AgentsView() {
-  const active = AGENTS.filter(a=>a.on).length;
+function AgentsView({agents, loading, error}) {
+  const active = agents.filter(a=>a.on).length;
   return (
-    <div className="view" style={{paddingTop:88}}>
+    <div className={`view${loading?" loading":""}`} style={{paddingTop:88}}>
       <div style={{marginBottom:64}}>
         <div className="lbl" style={{marginBottom:20}}>Agents</div>
-        <div style={{display:"flex",alignItems:"flex-end",gap:12}}>
-          <span style={{fontSize:52,fontWeight:300,letterSpacing:"-.02em",lineHeight:1}}>{active}</span>
-          <span style={{fontSize:18,color:"var(--t2)",fontWeight:400,marginBottom:6}}>/ {AGENTS.length} active</span>
-        </div>
-        <div style={{marginTop:10,color:"var(--t2)",fontSize:13}}>
-          {AGENTS.filter(a=>a.on).map(a=>a.id).join(", ")}
-        </div>
+        {error ? <Offline/> : (
+          <>
+            <div style={{display:"flex",alignItems:"flex-end",gap:12}}>
+              <span style={{fontSize:52,fontWeight:300,letterSpacing:"-.02em",lineHeight:1}}>{active}</span>
+              <span style={{fontSize:18,color:"var(--t2)",fontWeight:400,marginBottom:6}}>/ {agents.length} active</span>
+            </div>
+            <div style={{marginTop:10,color:"var(--t2)",fontSize:13}}>
+              {agents.filter(a=>a.on).map(a=>a.id).join(", ") || "all idle"}
+            </div>
+          </>
+        )}
       </div>
 
-      {AGENTS.map((a,i) => (
+      {!error && agents.map((a,i) => (
         <div key={i} className="row" style={{gap:0,flexWrap:"wrap"}}>
           <div style={{display:"flex",alignItems:"center",gap:12,flex:1,minWidth:0}}>
             <div className={`dot${a.on?" on":" off"}`}/>
@@ -169,21 +161,26 @@ function AgentsView() {
   );
 }
 
-function LedgerView() {
-  const total = SESSIONS.reduce((s,r)=>s+parseFloat(r.cost.replace("$","")),0);
+function LedgerView({sessions, loading, error}) {
+  const total = sessions.reduce((s,r)=>s+parseFloat(r.cost.replace("$","")),0);
   return (
-    <div className="view" style={{paddingTop:88}}>
+    <div className={`view${loading?" loading":""}`} style={{paddingTop:88}}>
       <div style={{marginBottom:64}}>
         <div className="lbl" style={{marginBottom:20}}>Session ledger</div>
-        <div style={{fontSize:56,fontWeight:300,letterSpacing:"-.02em",lineHeight:1}}>
-          ${total.toFixed(3)}
-        </div>
-        <div style={{marginTop:12,color:"var(--t2)",fontSize:13}}>
-          this session · {SESSIONS.length} tasks
-        </div>
+        {error ? <Offline/> : (
+          <>
+            <div style={{fontSize:56,fontWeight:300,letterSpacing:"-.02em",lineHeight:1}}>
+              ${total.toFixed(3)}
+            </div>
+            <div style={{marginTop:12,color:"var(--t2)",fontSize:13}}>
+              this session · {sessions.length} tasks
+            </div>
+          </>
+        )}
       </div>
 
-      {SESSIONS.map((s,i) => (
+      {!error && sessions.length === 0 && <Empty msg="No route decisions yet."/>}
+      {!error && sessions.map((s,i) => (
         <div key={i} className="row">
           <span className="mono" style={{color:"var(--t3)",fontSize:11,flexShrink:0,width:64}}>{s.ts}</span>
           <span style={{flex:1,fontSize:14,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",paddingRight:16}}>{s.task}</span>
@@ -195,52 +192,67 @@ function LedgerView() {
   );
 }
 
-function BenchmarksView() {
-  const top = BENCH[0];
+function BenchmarksView({benchmarks, loading, error}) {
+  const top = benchmarks[0] || null;
   return (
-    <div className="view" style={{paddingTop:88}}>
+    <div className={`view${loading?" loading":""}`} style={{paddingTop:88}}>
       <div style={{marginBottom:64}}>
         <div className="lbl" style={{marginBottom:20}}>Top performer</div>
-        <div style={{fontSize:32,fontWeight:500,marginBottom:8}}>{top.name}</div>
-        <div style={{fontSize:64,fontWeight:300,letterSpacing:"-.02em",color:"var(--acc)",lineHeight:1}}>
-          {top.wins}%
-        </div>
-        <div style={{marginTop:12,color:"var(--t2)",fontSize:13}}>
-          win rate · {top.tasks} tasks · avg {top.lat}
-        </div>
+        {error && <Offline/>}
+        {!error && !top && <Empty msg="No benchmark records yet — run opencobalt benchmark record"/>}
+        {!error && top && (
+          <>
+            <div style={{fontSize:32,fontWeight:500,marginBottom:8}}>{top.name}</div>
+            <div style={{fontSize:64,fontWeight:300,letterSpacing:"-.02em",color:"var(--acc)",lineHeight:1}}>
+              {top.wins}%
+            </div>
+            <div style={{marginTop:12,color:"var(--t2)",fontSize:13}}>
+              win rate · {top.tasks} tasks · avg {top.lat}
+            </div>
+          </>
+        )}
       </div>
 
-      <div className="lbl" style={{marginBottom:0}}>Leaderboard</div>
-      {BENCH.map((b,i) => (
-        <div key={i} className="row">
-          <span className="mono" style={{
-            color:i===0?"var(--te, var(--wn))":"var(--t3)",
-            fontSize:12,fontWeight:600,width:20,flexShrink:0
-          }}>{b.rank}</span>
-          <span style={{flex:1,fontSize:14,fontWeight:i===0?500:400}}>{b.name}</span>
-          <div style={{width:80,height:3,borderRadius:100,background:"var(--sf)",overflow:"hidden",marginRight:12,flexShrink:0}}>
-            <div style={{width:`${b.wins}%`,height:"100%",borderRadius:100,background:i===0?"var(--acc)":"var(--t3)"}}/>
-          </div>
-          <span className="mono" style={{color:i===0?"var(--t0)":"var(--t2)",fontSize:12,width:36,flexShrink:0,textAlign:"right"}}>{b.wins}%</span>
-          <span className="mono" style={{color:"var(--t3)",fontSize:11,width:36,flexShrink:0,textAlign:"right"}}>{b.lat}</span>
-        </div>
-      ))}
+      {!error && benchmarks.length > 0 && (
+        <>
+          <div className="lbl" style={{marginBottom:0}}>Leaderboard</div>
+          {benchmarks.map((b,i) => (
+            <div key={i} className="row">
+              <span className="mono" style={{
+                color:i===0?"var(--te, var(--wn))":"var(--t3)",
+                fontSize:12,fontWeight:600,width:20,flexShrink:0
+              }}>{b.rank}</span>
+              <span style={{flex:1,fontSize:14,fontWeight:i===0?500:400}}>{b.name}</span>
+              <div style={{width:80,height:3,borderRadius:100,background:"var(--sf)",overflow:"hidden",marginRight:12,flexShrink:0}}>
+                <div style={{width:`${b.wins}%`,height:"100%",borderRadius:100,background:i===0?"var(--acc)":"var(--t3)"}}/>
+              </div>
+              <span className="mono" style={{color:i===0?"var(--t0)":"var(--t2)",fontSize:12,width:36,flexShrink:0,textAlign:"right"}}>{b.wins}%</span>
+              <span className="mono" style={{color:"var(--t3)",fontSize:11,width:36,flexShrink:0,textAlign:"right"}}>{b.lat}</span>
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
 
-function IntegrationsView() {
+function IntegrationsView({integrations, loading, error}) {
+  const active = integrations.filter(i=>i.on).length;
   return (
-    <div className="view" style={{paddingTop:88}}>
+    <div className={`view${loading?" loading":""}`} style={{paddingTop:88}}>
       <div style={{display:"flex",alignItems:"flex-end",justifyContent:"space-between",marginBottom:56}}>
         <div>
           <div className="lbl" style={{marginBottom:20}}>Integrations</div>
-          <div style={{fontSize:52,fontWeight:300,letterSpacing:"-.02em",lineHeight:1}}>
-            {INTS.filter(i=>i.on).length}
-          </div>
-          <div style={{marginTop:10,color:"var(--t2)",fontSize:13}}>
-            of {INTS.length} connected
-          </div>
+          {error ? <Offline/> : (
+            <>
+              <div style={{fontSize:52,fontWeight:300,letterSpacing:"-.02em",lineHeight:1}}>
+                {active}
+              </div>
+              <div style={{marginTop:10,color:"var(--t2)",fontSize:13}}>
+                of {integrations.length} connected
+              </div>
+            </>
+          )}
         </div>
         <button style={{
           display:"flex",alignItems:"center",gap:8,
@@ -252,7 +264,7 @@ function IntegrationsView() {
         </button>
       </div>
 
-      {INTS.map((it,i) => (
+      {!error && integrations.map((it,i) => (
         <div key={i} className="int-row">
           <div style={{width:6,height:6,borderRadius:"50%",background:it.on?"var(--ok)":"var(--t3)",flexShrink:0}}/>
           <div style={{flex:1}}>
@@ -321,29 +333,30 @@ function ReceiptsView() {
   );
 }
 
-function ContextView() {
+function ContextView({context, loading, error}) {
+  const files = context?.files || [];
+  const total = context?.total_tokens || 0;
+  const count = context?.file_count || 0;
   return (
-    <div className="view" style={{paddingTop:88}}>
+    <div className={`view${loading?" loading":""}`} style={{paddingTop:88}}>
       <div style={{marginBottom:64}}>
         <div className="lbl" style={{marginBottom:20}}>Context pack</div>
-        <div style={{fontSize:32,fontWeight:500,color:"var(--acc)",marginBottom:8}}>project-alpha-v2</div>
-        <div style={{display:"flex",gap:24,color:"var(--t2)",fontSize:13}}>
-          <span>42 files</span>
-          <span>·</span>
-          <span>last built 4m ago</span>
-          <span>·</span>
-          <span>18.0k tokens total</span>
-        </div>
+        {error ? <Offline/> : (
+          <>
+            <div style={{fontSize:32,fontWeight:500,color:"var(--acc)",marginBottom:8}}>
+              {context?.project || "opencobalt"}
+            </div>
+            <div style={{display:"flex",gap:24,color:"var(--t2)",fontSize:13}}>
+              <span>{count} files</span>
+              <span>·</span>
+              <span>{total.toLocaleString()} tokens total</span>
+            </div>
+          </>
+        )}
       </div>
 
-      {[
-        {n:"core/router.py",    tok:3104, pct:17},
-        {n:"core/benchmark.py", tok:2871, pct:16},
-        {n:"core/models.py",    tok:2440, pct:14},
-        {n:"core/cost.py",      tok:1980, pct:11},
-        {n:"cli.py",            tok:1740, pct:10},
-        {n:"/tests/... (17)",   tok:8610, pct:48},
-      ].map((f,i) => (
+      {!error && files.length === 0 && <Empty msg="No context pack — run opencobalt context"/>}
+      {!error && files.map((f,i) => (
         <div key={i} className="row" style={{gap:16,flexWrap:"wrap"}}>
           <span className="mono" style={{flex:1,fontSize:13,color:"var(--t1)"}}>{f.n}</span>
           <div style={{width:120,height:2,borderRadius:100,background:"var(--sf)",overflow:"hidden",flexShrink:0}}>
@@ -397,19 +410,53 @@ const NAV = [
   {id:"designlab",    Icon:Palette,     label:"DesignLab"},
 ];
 
-const VIEWS = {
-  command:      <CommandView/>,
-  agents:       <AgentsView/>,
-  ledger:       <LedgerView/>,
-  benchmarks:   <BenchmarksView/>,
-  integrations: <IntegrationsView/>,
-  context:      <ContextView/>,
-  receipts:     <ReceiptsView/>,
-  designlab:    <DesignLabView/>,
+const _EMPTY_DATA = {
+  sessions: [],
+  agents: [],
+  benchmarks: [],
+  integrations: [],
+  context: null,
 };
 
 export default function App() {
   const [active, setActive] = useState("command");
+  const [data, setData] = useState(_EMPTY_DATA);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  const fetchAll = () => {
+    Promise.all([
+      fetch(`${API}/api/sessions`).then(r=>r.json()),
+      fetch(`${API}/api/agents`).then(r=>r.json()),
+      fetch(`${API}/api/benchmarks`).then(r=>r.json()),
+      fetch(`${API}/api/integrations`).then(r=>r.json()),
+      fetch(`${API}/api/context`).then(r=>r.json()),
+    ]).then(([sessions, agents, benchmarks, integrations, context]) => {
+      setData({sessions, agents, benchmarks, integrations, context});
+      setError(false);
+      setLoading(false);
+    }).catch(() => {
+      setError(true);
+      setLoading(false);
+    });
+  };
+
+  useEffect(() => {
+    fetchAll();
+    const id = setInterval(fetchAll, 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  const views = {
+    command:      <CommandView      sessions={data.sessions}      loading={loading} error={error}/>,
+    agents:       <AgentsView       agents={data.agents}           loading={loading} error={error}/>,
+    ledger:       <LedgerView       sessions={data.sessions}       loading={loading} error={error}/>,
+    benchmarks:   <BenchmarksView   benchmarks={data.benchmarks}   loading={loading} error={error}/>,
+    integrations: <IntegrationsView integrations={data.integrations} loading={loading} error={error}/>,
+    context:      <ContextView      context={data.context}         loading={loading} error={error}/>,
+    receipts:     <ReceiptsView/>,
+    designlab:    <DesignLabView/>,
+  };
 
   return (
     <div style={{display:"flex",height:"100vh",background:"var(--bg)",overflow:"hidden"}}>
@@ -445,7 +492,7 @@ export default function App() {
         padding:"0 72px",
       }}>
         <div style={{maxWidth:640, margin:"0 auto", paddingBottom:80}}>
-          {VIEWS[active]}
+          {views[active]}
         </div>
       </div>
     </div>

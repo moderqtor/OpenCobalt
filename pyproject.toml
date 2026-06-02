@@ -24,6 +24,10 @@ dev = [
 memory = [
     "mem0ai",
 ]
+server = [
+    "fastapi>=0.100",
+    "uvicorn>=0.20",
+]
 
 [tool.ruff]
 line-length = 100

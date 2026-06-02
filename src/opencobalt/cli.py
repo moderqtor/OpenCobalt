@@ -1073,17 +1073,78 @@ def integrations_check() -> None:
 # ── UI command ────────────────────────────────────────────────────────────────
 
 @app.command("ui")
-def ui_shell() -> None:
-    """Print instructions for starting the UI shell."""
+def ui_shell(
+    port: int = typer.Option(5173, "--port", help="Vite dev server port"),
+    api_port: int = typer.Option(8000, "--api-port", help="API server port"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Skip opening browser"),
+) -> None:
+    """Start the API server and React dashboard. Opens http://localhost:5173."""
+    import shutil
+    import subprocess
+    import time as _time
+    import webbrowser
+
+    if not shutil.which("npm"):
+        err.print(f"\n[{_RED}]npm not found.[/{_RED}]  Install Node.js from https://nodejs.org\n")
+        raise typer.Exit(1)
+
+    ui_dir = Path("ui")
+    if not ui_dir.exists():
+        err.print(f"\n[{_RED}]ui/ directory not found.[/{_RED}]  Run from the project root.\n")
+        raise typer.Exit(1)
+
+    need_install = (
+        not (ui_dir / "node_modules").exists()
+        or not (ui_dir / "node_modules" / "lucide-react").exists()
+    )
+    if need_install:
+        console.print("\n  [dim]Installing UI dependencies...[/dim]")
+        r = subprocess.run(["npm", "install"], cwd=ui_dir, check=False)
+        if r.returncode != 0:
+            err.print(f"\n[{_RED}]npm install failed.[/{_RED}]\n")
+            raise typer.Exit(1)
+
     console.print(
         f"\n  [bold {_COBALT}]OpenCobalt UI[/bold {_COBALT}]"
-        f"  [dim]web dashboard shell[/dim]\n"
+        f"  [dim]starting...[/dim]\n"
     )
-    console.print("  UI shell lives at [dim]./ui/[/dim]\n")
-    console.print("  Start it with:")
-    console.print("\n    [dim]cd ui && npm install && npm run dev[/dim]\n")
-    console.print("  Then open [dim]http://localhost:5173[/dim]\n")
-    console.print("  [dim]Note: backend not wired. Future phase.[/dim]\n")
+
+    procs: list[subprocess.Popen] = []
+    try:
+        api_proc = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "opencobalt.api_server:app",
+             "--port", str(api_port), "--log-level", "warning"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        procs.append(api_proc)
+
+        vite_proc = subprocess.Popen(
+            ["npm", "run", "dev", "--", "--port", str(port)],
+            cwd=ui_dir,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        procs.append(vite_proc)
+
+        console.print(f"  [dim]API server :[/dim]  http://localhost:{api_port}")
+        console.print(f"  [{_GREEN}]Dashboard running at[/{_GREEN}]  http://localhost:{port}")
+        console.print("  [dim]Ctrl+C to stop.[/dim]\n")
+
+        if not no_browser:
+            _time.sleep(2)
+            webbrowser.open(f"http://localhost:{port}")
+
+        for p in procs:
+            p.wait()
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.terminate()
+        console.print("\n  [dim]Stopped.[/dim]\n")
 
 
 # ── Stats command ─────────────────────────────────────────────────────────────
