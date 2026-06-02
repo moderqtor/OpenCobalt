@@ -10,6 +10,7 @@ from opencobalt.skills.base_skill import BaseSkill, SkillResult
 class DiffWriter(BaseSkill):
     name = "diff-writer"
     description = "Generate a unified diff between two text strings"
+    compatible_agents: list[str] = ["code-reviewer"]
 
     def run(  # type: ignore[override]
         self,

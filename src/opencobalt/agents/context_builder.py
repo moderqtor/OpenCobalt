@@ -11,6 +11,8 @@ from .base_agent import BaseAgent
 class ContextBuilderAgent(BaseAgent):
     """Worker-tier agent that scans cwd for project structure and returns a summary."""
 
+    compatible_skills: list[str] = ["file-reader", "context-injector"]
+
     profile = AgentProfile(
         agent_id="context-builder",
         name="context-builder",

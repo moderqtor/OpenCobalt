@@ -11,18 +11,19 @@ from opencobalt.skills.registry import REGISTRY, get_skill, list_skills
 # ---------------------------------------------------------------------------
 
 
-def test_registry_has_two_skills():
-    assert len(REGISTRY) == 2
+def test_registry_has_three_skills():
+    assert len(REGISTRY) == 3
 
 
 def test_registry_contains_expected_names():
     assert "file-reader" in REGISTRY
     assert "diff-writer" in REGISTRY
+    assert "context-injector" in REGISTRY
 
 
 def test_list_skills_returns_name_and_description():
     skills = list_skills()
-    assert len(skills) == 2
+    assert len(skills) == 3
     for entry in skills:
         assert "name" in entry
         assert "description" in entry

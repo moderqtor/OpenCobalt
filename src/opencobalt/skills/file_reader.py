@@ -10,6 +10,7 @@ from opencobalt.skills.base_skill import BaseSkill, SkillResult
 class FileReader(BaseSkill):
     name = "file-reader"
     description = "Read file contents from the filesystem"
+    compatible_agents: list[str] = ["code-reviewer", "context-builder", "tagger"]
 
     def run(self, path: str, **kwargs) -> SkillResult:  # type: ignore[override]
         p = Path(path)

@@ -11,6 +11,8 @@ from .base_agent import BaseAgent
 class SummarizerAgent(BaseAgent):
     """Worker-tier agent that summarizes text via Ollama."""
 
+    compatible_skills: list[str] = ["context-injector"]
+
     profile = AgentProfile(
         agent_id="summarizer",
         name="summarizer",

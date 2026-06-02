@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from ..core.models import AgentProfile
+
+if TYPE_CHECKING:
+    from ..memory_bridge import MemoryBridge
 
 
 class BaseAgent(ABC):
     """Base class every concrete agent must subclass."""
 
     profile: AgentProfile  # class-level attribute each subclass sets
+    memory_bridge: "MemoryBridge | None" = None  # set externally to enable post-run recording
 
     @abstractmethod
     def run(self, task: str, *, dry_run: bool = False) -> str:
