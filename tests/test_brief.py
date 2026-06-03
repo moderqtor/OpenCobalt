@@ -107,3 +107,28 @@ def test_token_count_under_limit(tmp_path: Path) -> None:
     word_count = len(output.split())
     # 600 words max (spec says under 600 words)
     assert word_count < 600, f"Brief too long: {word_count} words"
+
+
+def test_generate_startup_is_compact(tmp_path: Path) -> None:
+    ledger = _make_ledger(tmp_path)
+    gen = BriefGenerator(ledger, bridge_path=tmp_path / "memories.db")
+    output = gen.generate_startup()
+    lines = [line for line in output.splitlines() if line.strip()]
+    assert len(lines) <= 6
+    assert "BRIEF" in output or "brief" in output.lower()
+
+
+def test_generate_startup_with_routes(tmp_path: Path) -> None:
+    ledger = _make_ledger(tmp_path)
+    d = RouteDecision(
+        task="implement JWT rotation",
+        recommended_tool="claude-code",
+        score=94,
+        reasoning="test",
+        tier="executive",
+        scores={"claude-code": 94},
+    )
+    ledger.insert_route_decision(d)
+    gen = BriefGenerator(ledger, bridge_path=tmp_path / "memories.db")
+    output = gen.generate_startup()
+    assert "claude-code" in output or "JWT" in output

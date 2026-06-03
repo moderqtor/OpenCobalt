@@ -114,6 +114,44 @@ class BriefGenerator:
 
         return "\n".join(sections)
 
+    def generate_startup(self) -> str:
+        """Return a compact 4-6 line brief for shell startup."""
+        cutoff = _now_utc() - timedelta(days=1)
+        decisions = self._ledger.list_route_decisions(limit=100)
+        recent = [
+            d for d in decisions
+            if (_parse_ts(d.timestamp) or _now_utc()) >= cutoff
+        ]
+
+        lines = ["BRIEF  yesterday"]
+        if recent:
+            tool_counts: dict[str, int] = {}
+            for d in recent:
+                tool_counts[d.recommended_tool] = tool_counts.get(d.recommended_tool, 0) + 1
+            summary = " · ".join(
+                f"{tool} ×{count}"
+                for tool, count in sorted(tool_counts.items(), key=lambda item: -item[1])
+            )
+            lines.append(f"→ {len(recent)} routes · {summary}")
+            last = recent[0]
+            lines.append(f"→ last: {last.task[:60]}")
+        else:
+            lines.append("→ no activity yesterday")
+
+        risks = self._get_recent_notes(cutoff=_now_utc() - timedelta(days=7), tag="risk")
+        decisions_tagged = self._get_recent_notes(
+            cutoff=_now_utc() - timedelta(days=7),
+            tag="decision",
+        )
+        if risks:
+            lines.append(f"! risk: {risks[0].get('content', '')[:60]}")
+        if decisions_tagged:
+            lines.append(f"! open: {decisions_tagged[0].get('content', '')[:60]}")
+        if not risks and not decisions_tagged:
+            lines.append("✓ no open risks or decisions")
+
+        return "\n".join(lines)
+
     def _get_recent_notes(self, cutoff: datetime, tag: str | None) -> list[dict]:
         try:
             import sqlite3
