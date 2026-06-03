@@ -17,7 +17,12 @@ OpenCobalt routes work across coding agents, local models, session logs, project
 | CLI routing | Functional |
 | SQLite session ledger | Functional |
 | Pydantic v2 schemas | Functional |
-| pytest / ruff / CI | Passing (244 tests, verified 2026-06-02) |
+| pytest / ruff / CI | Passing (321 tests, verified 2026-06-03) |
+| Cobalt shell (interactive REPL) | Functional |
+| Background multi-model council | Functional |
+| Task pipelines (/pipe) | Functional |
+| Self-learning router | Functional |
+| Knowledge graph (/graph) | Functional |
 | Memory bridge (mem0) | Wired, mem0 optional install required |
 | Agent observability | SQLite-backed, local only |
 | UI | Live React dashboard, starts with `opencobalt ui` |
@@ -210,7 +215,7 @@ opencobalt ui
 - External integration registry with 6 integrations
 - CI workflow via GitHub Actions
 - UI dashboard (React + Tailwind + FastAPI, `opencobalt ui`)
-- 244 passing tests (verified 2026-06-02)
+- 321 passing tests (verified 2026-06-03)
 
 ---
 
