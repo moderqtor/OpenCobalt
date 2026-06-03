@@ -13,8 +13,8 @@ from rich.console import Console
 
 from .core.background import BackgroundResult, BackgroundRunner
 from .core.brief import BriefGenerator
+from .core.learning_router import LearningRouter
 from .core.ledger import Ledger
-from .core.router import route_task
 
 _COBALT = "#7B9EFF"
 _GREEN = "#3DFFA0"
@@ -67,6 +67,7 @@ class CobaltShell:
         self._db_path = db_path
         self._bridge_path = bridge_path
         self._ledger = Ledger(db_path)
+        self._learning_router = LearningRouter(self._ledger)
         self._runner = BackgroundRunner(max_workers=3)
         self._council_cache: dict[str, list[BackgroundResult]] = {}
         self._session: PromptSession = PromptSession(
@@ -236,7 +237,7 @@ class CobaltShell:
         self._council_cache.clear()
 
     def _route_and_open(self, task: str) -> None:
-        decision = route_task(task, record=False)
+        decision = self._learning_router.route(task)
         try:
             self._ledger.insert_route_decision(decision)
         except Exception:

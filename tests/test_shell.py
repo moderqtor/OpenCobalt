@@ -32,7 +32,7 @@ def test_dispatch_slash_with_args(shell: CobaltShell) -> None:
 
 def test_dispatch_plain_prompt_calls_router(shell: CobaltShell) -> None:
     with (
-        patch("opencobalt.shell.route_task") as mock_route,
+        patch.object(shell._learning_router, "route") as mock_route,
         patch.object(shell, "_open_tool") as mock_open,
         patch.object(shell, "_queue_background_council"),
     ):
@@ -46,7 +46,7 @@ def test_dispatch_plain_prompt_calls_router(shell: CobaltShell) -> None:
             scores={"claude-code": 86},
         )
         shell.dispatch("design the auth module")
-    mock_route.assert_called_once_with("design the auth module", record=False)
+    mock_route.assert_called_once_with("design the auth module")
     mock_open.assert_called_once()
 
 
