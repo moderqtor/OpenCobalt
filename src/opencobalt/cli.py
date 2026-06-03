@@ -59,7 +59,7 @@ from .core.verify import run_all
 app = typer.Typer(
     name="opencobalt",
     help="Local-first AI orchestration and memory control plane.",
-    no_args_is_help=True,
+    no_args_is_help=False,
     add_completion=False,
 )
 memory_app = typer.Typer(help="Memory commands.")
@@ -91,6 +91,7 @@ console = Console()
 err = Console(stderr=True)
 
 _DB_PATH = Path(".opencobalt") / "ledger.db"
+_MEMORIES_DB = Path(".opencobalt") / "memories.db"
 _EXPORT_PATH = Path(".opencobalt") / "exports"
 _CONTEXT_PATH = Path(".opencobalt") / "context" / "latest.md"
 
@@ -118,6 +119,16 @@ def _tier_color(tier: str) -> str:
         "manager": _YELLOW,
         "worker": "dim",
     }.get(tier, "")
+
+
+@app.callback(invoke_without_command=True)
+def _main(ctx: typer.Context) -> None:
+    """OpenCobalt: local-first AI orchestration shell."""
+    if ctx.invoked_subcommand is None:
+        from .shell import CobaltShell
+
+        shell = CobaltShell(db_path=_DB_PATH, bridge_path=_MEMORIES_DB)
+        shell.run()
 
 
 @app.command()
@@ -444,10 +455,6 @@ def day(
     except Exception:
         pass
     console.print()
-
-
-_MEMORIES_DB = Path(".opencobalt") / "memories.db"
-
 
 def _memory_bridge():
     from .memory_bridge import MemoryBridge

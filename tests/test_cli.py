@@ -23,6 +23,22 @@ from opencobalt.cli import app
 runner = CliRunner()
 
 
+def test_no_args_entry_point_exists():
+    """opencobalt with no args should not error; it invokes the shell."""
+    import tempfile
+    from pathlib import Path
+
+    from opencobalt.shell import CobaltShell
+
+    with tempfile.TemporaryDirectory() as directory:
+        shell = CobaltShell(
+            db_path=Path(directory) / "ledger.db",
+            bridge_path=Path(directory) / "memories.db",
+        )
+        assert hasattr(shell, "run")
+        assert hasattr(shell, "dispatch")
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _invoke(*args: str, **kwargs) -> object:
