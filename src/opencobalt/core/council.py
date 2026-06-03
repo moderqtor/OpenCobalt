@@ -43,6 +43,51 @@ class CouncilSession:
         return _build_result(task, responses, synthesize)
 
 
+def consult_subprocess(task: str, model: str = "claude") -> str:
+    """Call a CLI binary non-interactively and return its text output.
+
+    Uses installed subscription binaries, not REST APIs. Falls back gracefully
+    if the requested binary is missing or the call fails.
+    """
+    import shutil
+    import subprocess
+
+    binary_map = {
+        "claude": ["claude", "--print"],
+        "codex": ["codex", "--quiet"],
+        "gemini": ["gemini", "--print"],
+    }
+    install_hint = {
+        "claude": "npm install -g @anthropic-ai/claude-code",
+        "codex": "npm install -g @openai/codex",
+        "gemini": "npm install -g @google/gemini-cli",
+    }
+
+    cmd_prefix = binary_map.get(model, [model])
+    binary = cmd_prefix[0]
+
+    if not shutil.which(binary):
+        hint = install_hint.get(model, "check tool documentation")
+        return f"[{model} unavailable - not found on PATH. Install: {hint}]"
+
+    prompt = (
+        f"You are a technical advisor. Task: {task}\n\n"
+        "Give your recommendation in 3-5 bullet points. Be specific and direct."
+    )
+    try:
+        result = subprocess.run(
+            cmd_prefix + [prompt],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        return result.stdout.strip() or f"[{model}: no output]"
+    except subprocess.TimeoutExpired:
+        return f"[{model}: timed out after 60s]"
+    except Exception as exc:
+        return f"[{model}: error - {exc}]"
+
+
 def _available_models() -> list[str]:
     available = []
     if os.environ.get("ANTHROPIC_API_KEY"):

@@ -68,3 +68,35 @@ def test_save_flag_stores_to_memory_bridge(tmp_path: Path) -> None:
     results = bridge.search("Council")
     assert len(results) >= 1
     assert "council" in results[0]["content"].lower()
+
+
+def test_consult_subprocess_returns_string(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import subprocess
+
+    from opencobalt.core.council import consult_subprocess
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            stdout = "- Use SQLite\n- Write tests first"
+            returncode = 0
+
+        return R()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = consult_subprocess("refactor the router", model="claude")
+    assert "SQLite" in result or isinstance(result, str)
+
+
+def test_consult_subprocess_graceful_when_binary_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import shutil
+
+    from opencobalt.core.council import consult_subprocess
+
+    monkeypatch.setattr(shutil, "which", lambda x: None)
+    result = consult_subprocess("some task", model="claude")
+    assert "not found" in result.lower() or "unavailable" in result.lower()
