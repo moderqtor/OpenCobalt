@@ -161,11 +161,78 @@ function AgentsView({agents, loading, error}) {
   );
 }
 
-function LedgerView({sessions, loading, error}) {
+const TYPE_COLORS = {
+  route:     "var(--acc)",
+  note:      "var(--t2)",
+  commit:    "var(--ok)",
+  benchmark: "var(--wn)",
+  verify:    "#3DFFC8",
+};
+
+const TYPE_SHAPES = {
+  route:     "circle",
+  benchmark: "diamond",
+  note:      "square",
+};
+
+function TimelineNode({event, expanded, onToggle}) {
+  const color = TYPE_COLORS[event.type] || "var(--t2)";
+  const shape = TYPE_SHAPES[event.type] || "circle";
+  const ts = (event.timestamp || "").slice(11,16);
+  const shapeStyle = {
+    width:10, height:10, flexShrink:0,
+    background: color, opacity:.85,
+    borderRadius: shape==="circle" ? "50%" : shape==="diamond" ? 0 : 2,
+    transform: shape==="diamond" ? "rotate(45deg)" : "none",
+  };
+  return (
+    <div style={{display:"flex",gap:16,marginBottom:20,alignItems:"flex-start",cursor:"pointer"}} onClick={onToggle}>
+      <div style={{display:"flex",flexDirection:"column",alignItems:"center",paddingTop:4}}>
+        <div style={shapeStyle}/>
+        <div style={{width:1,height:expanded?32:16,background:"var(--ln)",marginTop:4}}/>
+      </div>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:4}}>
+          <span className="mono" style={{color:"var(--t3)",fontSize:10}}>{ts}</span>
+          <span style={{
+            fontFamily:"var(--fmo)",fontSize:9,fontWeight:600,letterSpacing:".12em",
+            textTransform:"uppercase",color,
+          }}>{event.type}</span>
+          {event.model && <span className="mono" style={{fontSize:11,color:"var(--t2)"}}>{event.model}</span>}
+        </div>
+        <div style={{fontSize:13,color:"var(--t1)",lineHeight:1.45}}>{event.title}</div>
+        {expanded && event.detail && (
+          <div style={{marginTop:8,fontSize:11,color:"var(--t2)",lineHeight:1.5,fontFamily:"var(--fmo)"}}>{event.detail}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TimelineView({events, loading, error}) {
+  const [expandedId, setExpandedId] = useState(null);
+  if (error) return <Offline/>;
+  if (!loading && events.length === 0) return <Empty msg="No timeline events yet."/>;
+  return (
+    <div style={{paddingTop:8}}>
+      {events.map(e => (
+        <TimelineNode
+          key={e.id}
+          event={e}
+          expanded={expandedId===e.id}
+          onToggle={() => setExpandedId(expandedId===e.id ? null : e.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function LedgerView({sessions, timeline, loading, error}) {
+  const [viewMode, setViewMode] = useState("timeline");
   const total = sessions.reduce((s,r)=>s+parseFloat(r.cost.replace("$","")),0);
   return (
     <div className={`view${loading?" loading":""}`} style={{paddingTop:88}}>
-      <div style={{marginBottom:64}}>
+      <div style={{marginBottom:40}}>
         <div className="lbl" style={{marginBottom:20}}>Session ledger</div>
         {error ? <Offline/> : (
           <>
@@ -179,15 +246,36 @@ function LedgerView({sessions, loading, error}) {
         )}
       </div>
 
-      {!error && sessions.length === 0 && <Empty msg="No route decisions yet."/>}
-      {!error && sessions.map((s,i) => (
-        <div key={i} className="row">
-          <span className="mono" style={{color:"var(--t3)",fontSize:11,flexShrink:0,width:64}}>{s.ts}</span>
-          <span style={{flex:1,fontSize:14,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",paddingRight:16}}>{s.task}</span>
-          <span className="mono" style={{color:"var(--acc)",fontSize:12,flexShrink:0,marginRight:16}}>{s.model}</span>
-          <span className="mono" style={{color:"var(--t1)",fontSize:13,flexShrink:0}}>{s.cost}</span>
+      {!error && (
+        <div style={{display:"flex",gap:2,marginBottom:24}}>
+          {["timeline","table"].map(m => (
+            <button key={m} onClick={()=>setViewMode(m)} style={{
+              background: viewMode===m ? "rgba(123,158,255,.1)" : "none",
+              border:"1px solid " + (viewMode===m ? "var(--acc)" : "var(--ln)"),
+              color: viewMode===m ? "var(--acc)" : "var(--t2)",
+              borderRadius:6, padding:"4px 12px",
+              fontFamily:"var(--fmo)", fontSize:11, cursor:"pointer",
+              letterSpacing:".08em", textTransform:"uppercase",
+            }}>{m}</button>
+          ))}
         </div>
-      ))}
+      )}
+
+      {!error && viewMode==="timeline" && <TimelineView events={timeline} loading={loading} error={error}/>}
+
+      {!error && viewMode==="table" && (
+        <>
+          {sessions.length === 0 && <Empty msg="No route decisions yet."/>}
+          {sessions.map((s,i) => (
+            <div key={i} className="row">
+              <span className="mono" style={{color:"var(--t3)",fontSize:11,flexShrink:0,width:64}}>{s.ts}</span>
+              <span style={{flex:1,fontSize:14,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",paddingRight:16}}>{s.task}</span>
+              <span className="mono" style={{color:"var(--acc)",fontSize:12,flexShrink:0,marginRight:16}}>{s.model}</span>
+              <span className="mono" style={{color:"var(--t1)",fontSize:13,flexShrink:0}}>{s.cost}</span>
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
@@ -416,6 +504,7 @@ const _EMPTY_DATA = {
   benchmarks: [],
   integrations: [],
   context: null,
+  timeline: [],
 };
 
 export default function App() {
@@ -431,8 +520,9 @@ export default function App() {
       fetch(`${API}/api/benchmarks`).then(r=>r.json()),
       fetch(`${API}/api/integrations`).then(r=>r.json()),
       fetch(`${API}/api/context`).then(r=>r.json()),
-    ]).then(([sessions, agents, benchmarks, integrations, context]) => {
-      setData({sessions, agents, benchmarks, integrations, context});
+      fetch(`${API}/api/timeline`).then(r=>r.json()),
+    ]).then(([sessions, agents, benchmarks, integrations, context, timeline]) => {
+      setData({sessions, agents, benchmarks, integrations, context, timeline});
       setError(false);
       setLoading(false);
     }).catch(() => {
@@ -450,7 +540,7 @@ export default function App() {
   const views = {
     command:      <CommandView      sessions={data.sessions}      loading={loading} error={error}/>,
     agents:       <AgentsView       agents={data.agents}           loading={loading} error={error}/>,
-    ledger:       <LedgerView       sessions={data.sessions}       loading={loading} error={error}/>,
+    ledger:       <LedgerView       sessions={data.sessions} timeline={data.timeline} loading={loading} error={error}/>,
     benchmarks:   <BenchmarksView   benchmarks={data.benchmarks}   loading={loading} error={error}/>,
     integrations: <IntegrationsView integrations={data.integrations} loading={loading} error={error}/>,
     context:      <ContextView      context={data.context}         loading={loading} error={error}/>,

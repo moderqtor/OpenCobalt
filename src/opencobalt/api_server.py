@@ -212,6 +212,70 @@ def get_cost() -> dict[str, Any]:
         }
 
 
+@app.get("/api/timeline")
+def get_timeline() -> list[dict[str, Any]]:
+    """Return last 50 events merged across route_decisions, events, and benchmark_records."""
+    events: list[dict[str, Any]] = []
+
+    try:
+        ledger = _ledger()
+        for d in ledger.list_route_decisions(limit=50):
+            ts = d.timestamp
+            ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            events.append({
+                "id": d.id,
+                "timestamp": ts_iso,
+                "type": "route",
+                "title": d.task[:60],
+                "detail": d.reasoning,
+                "model": d.recommended_tool,
+                "tier": d.tier,
+                "cost": "$0.000",
+                "status": "ok",
+            })
+    except Exception:
+        pass
+
+    try:
+        ledger = _ledger()
+        for e in ledger.list_events(limit=50):
+            ts = e.timestamp
+            ts_iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+            events.append({
+                "id": e.id,
+                "timestamp": ts_iso,
+                "type": "note" if e.event_type == "manual_log" else e.event_type,
+                "title": e.summary[:60],
+                "detail": e.summary,
+                "model": e.source,
+                "tier": "",
+                "cost": "$0.000",
+                "status": "ok",
+            })
+    except Exception:
+        pass
+
+    try:
+        from .core.benchmark import BenchmarkStore
+        for rec in BenchmarkStore(Path(".opencobalt") / "ledger.db").list_recent(limit=50):
+            events.append({
+                "id": rec.get("id", ""),
+                "timestamp": rec.get("timestamp", ""),
+                "type": "benchmark",
+                "title": f"{rec.get('agent_id', '')} benchmark",
+                "detail": f"task_type={rec.get('task_type', '')} latency={rec.get('latency_ms', 0)}ms",
+                "model": rec.get("agent_id", ""),
+                "tier": rec.get("tier", ""),
+                "cost": "$0.000",
+                "status": "ok" if rec.get("success") else "fail",
+            })
+    except Exception:
+        pass
+
+    events.sort(key=lambda x: x["timestamp"], reverse=True)
+    return events[:50]
+
+
 @app.get("/api/context")
 def get_context() -> dict[str, Any]:
     ctx_path = Path(".opencobalt") / "context" / "latest.md"

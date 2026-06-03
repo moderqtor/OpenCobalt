@@ -164,6 +164,15 @@ class BenchmarkStore:
             "max_latency_ms": row["max_latency"],
         }
 
+    def list_recent(self, limit: int = 50) -> list[dict]:
+        """Return the most recent benchmark records as plain dicts."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM benchmark_records ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_best_for_task_type(self, task_type: str) -> str | None:
         """Return the agent_id with best composite score for a given task type.
 

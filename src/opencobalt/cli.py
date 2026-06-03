@@ -662,6 +662,8 @@ def route(
     no_record: bool = typer.Option(False, "--no-record", help="Skip writing decision to ledger"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show per-tool keyword matches"),
     estimate: bool = typer.Option(False, "--estimate", help="Show estimated API cost per tier (assumes ~2K tokens)"),
+    exec_: bool = typer.Option(False, "--exec", help="Open the winning tool after routing"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what --exec would do without opening anything"),
 ) -> None:
     """Return a routing recommendation with full score table. Logs to ledger by default."""
     with console.status("[dim]Scoring...[/dim]", spinner="dots"):
@@ -707,10 +709,10 @@ def route(
         "  [dim]To log what you did:[/dim]  "
         'opencobalt note "[what you accomplished]"'
     )
+    console.print("  [dim]Context for this session:[/dim]  opencobalt brief --copy")
 
     if estimate:
         tracker = CostTracker(_DB_PATH)
-        # Estimate cost for ~2K input + ~500 output tokens per tier's representative model
         est_models = [
             ("claude-opus-4", "executive tier"),
             ("claude-sonnet-4-6", "manager tier"),
@@ -721,6 +723,10 @@ def route(
             cost = tracker.estimate_cost(model_id, input_tokens=2000, output_tokens=500)
             cost_str = "free" if cost == 0.0 else f"${cost:.4f}"
             console.print(f"  [dim]{label:<22}[/dim]  {cost_str}")
+
+    if exec_ or dry_run:
+        _route_exec(decision.recommended_tool, task, dry_run=dry_run)
+
     console.print()
 
 
@@ -1768,3 +1774,315 @@ def khoj_status() -> None:
         )
         console.print("  [dim]Start with:[/dim]  cd ~/.khoj && docker-compose up -d")
     console.print()
+
+
+# ── Brief command ──────────────────────────────────────────────────────────────
+
+@app.command()
+def brief(
+    days: int = typer.Option(7, "--days", "-d", help="How far back to look (days)"),
+    copy: bool = typer.Option(False, "--copy", "-c", help="Copy output to clipboard (pbcopy/xclip)"),
+    fmt: str = typer.Option("markdown", "--format", "-f", help="Output format: markdown or plain"),
+) -> None:
+    """Generate a temporal context brief from session history. Paste into any AI tool."""
+    from .core.brief import BriefGenerator
+
+    gen = BriefGenerator(_ledger(), bridge_path=_MEMORIES_DB)
+    output = gen.generate(days=days)
+
+    if fmt == "plain":
+        import re as _re
+        output = _re.sub(r"#+ ", "", output)
+        output = _re.sub(r"\*\*(.+?)\*\*", r"\1", output)
+        output = _re.sub(r"_(.+?)_", r"\1", output)
+
+    if copy:
+        import platform
+        import subprocess as _sp
+        try:
+            if platform.system() == "Darwin":
+                _sp.run(["pbcopy"], input=output.encode(), check=True)
+            else:
+                _sp.run(["xclip", "-selection", "clipboard"], input=output.encode(), check=True)
+            console.print(f"  [{_GREEN}]Copied to clipboard.[/{_GREEN}]  {len(output.split())} words\n")
+        except (FileNotFoundError, Exception) as exc:
+            err.print(f"  [{_YELLOW}]Clipboard copy failed:[/{_YELLOW}]  {exc}\n")
+    else:
+        console.print(output)
+
+
+# ── Install-hooks command ──────────────────────────────────────────────────────
+
+@app.command("install-hooks")
+def install_hooks(
+    uninstall: bool = typer.Option(False, "--uninstall", help="Remove OpenCobalt hooks"),
+    status_only: bool = typer.Option(False, "--status", help="Show which hooks are installed"),
+) -> None:
+    """Install (or remove) git hooks that auto-log commits and verify before push."""
+    import subprocess as _sp
+
+    from .core.hooks import HookManager
+
+    # Find .git/hooks directory
+    try:
+        result_git = _sp.run(
+            ["git", "rev-parse", "--git-dir"],
+            capture_output=True, text=True, check=True,
+        )
+        git_dir = Path(result_git.stdout.strip())
+        hooks_dir = git_dir / "hooks"
+    except Exception:
+        err.print(f"\n  [{_RED}]Not in a git repository.[/{_RED}]\n")
+        raise typer.Exit(1)
+
+    mgr = HookManager()
+
+    if status_only:
+        statuses = mgr.status(hooks_dir)
+        console.print(f"\n  [bold {_COBALT}]Hook status[/bold {_COBALT}]  [dim]{hooks_dir}[/dim]\n")
+        for name, installed in statuses.items():
+            dot = _dot(installed)
+            label = f"[{_GREEN}]installed[/{_GREEN}]" if installed else "[dim]not installed[/dim]"
+            console.print(f"  {dot}  {name:<14}  {label}")
+        console.print()
+        return
+
+    if uninstall:
+        results = mgr.uninstall(hooks_dir)
+        console.print(f"\n  [bold {_COBALT}]Uninstall hooks[/bold {_COBALT}]\n")
+        for name, outcome in results.items():
+            icon = f"[{_GREEN}]removed[/{_GREEN}]" if outcome == "removed" else f"[dim]{outcome}[/dim]"
+            console.print(f"  {name:<14}  {icon}")
+        console.print()
+        return
+
+    results = mgr.install(hooks_dir)
+    console.print(f"\n  [bold {_COBALT}]Install hooks[/bold {_COBALT}]  [dim]{hooks_dir}[/dim]\n")
+    for name, outcome in results.items():
+        color = _GREEN if outcome == "installed" else _YELLOW
+        icon = f"[{color}]{outcome}[/{color}]"
+        console.print(f"  {name:<14}  {icon}")
+    console.print()
+
+
+# ── Council command ────────────────────────────────────────────────────────────
+
+@app.command()
+def council(
+    task: str = typer.Argument(..., help="Task or question to consult on"),
+    models_str: str = typer.Option("", "--models", "-m", help="Comma-separated models (claude,gemini,ollama)"),
+    no_synthesis: bool = typer.Option(False, "--no-synthesis", help="Show raw responses only"),
+    save: bool = typer.Option(False, "--save", help="Save result to memory bridge"),
+) -> None:
+    """Consult multiple AI models in parallel. Synthesises agreements and flags disagreements."""
+    from .core.council import CouncilSession
+
+    models = [m.strip() for m in models_str.split(",") if m.strip()] or None
+
+    console.print(f"\n  [bold {_COBALT}]COUNCIL[/bold {_COBALT}]  [dim]{task[:60]}[/dim]\n")
+
+    with console.status("[dim]Consulting models...[/dim]", spinner="dots"):
+        session = CouncilSession()
+        result = session.consult(task, models=models, synthesize=not no_synthesis)
+
+    model_list = ", ".join(result.responses.keys()) or "none"
+    agreement_pct = f"{result.agreement_score * 100:.0f}%"
+
+    from rich.panel import Panel
+    console.print(Panel(
+        f"  Task: {task[:60]}\n  Models: {model_list}\n  Agreement: {agreement_pct}",
+        title="[dim]Council Result[/dim]",
+        border_style="dim",
+    ))
+
+    for model_name, response in result.responses.items():
+        color = _tier_color("executive") if model_name != "ollama" else "dim"
+        console.print(f"\n  [{color}][{model_name.upper()}][/{color}]")
+        for line in response.splitlines()[:8]:
+            console.print(f"  [dim]{line}[/dim]")
+
+    if result.agreements:
+        console.print(f"\n  [{_GREEN}]AGREED[/{_GREEN}]")
+        for a in result.agreements:
+            console.print(f"  [dim]+[/dim]  {a}")
+
+    if result.disagreements:
+        console.print(f"\n  [{_YELLOW}]VARIED[/{_YELLOW}]")
+        for d in result.disagreements:
+            console.print(f"  [dim]~[/dim]  {d}")
+
+    if result.synthesis:
+        console.print("\n  [bold]SYNTHESIS[/bold]")
+        for line in result.synthesis.splitlines():
+            console.print(f"  {line}")
+
+    if result.recommended_action:
+        console.print(f"\n  [bold {_COBALT}]RECOMMENDATION[/bold {_COBALT}]  {result.recommended_action}")
+
+    if save and result.synthesis:
+        try:
+            bridge = _memory_bridge()
+            bridge.add(
+                content=f"Council on '{task[:60]}': {result.synthesis[:300]}",
+                agent_id="council",
+                metadata={"type": "council", "agreement": result.agreement_score},
+            )
+            console.print(f"  [{_GREEN}]Saved to memory bridge.[/{_GREEN}]")
+        except Exception:
+            pass
+
+    console.print()
+
+
+# ── Debate command ─────────────────────────────────────────────────────────────
+
+@app.command()
+def debate(
+    question: str = typer.Argument(..., help="Question or position to debate"),
+    for_model: str = typer.Option("", "--for-model", help="Model to argue FOR"),
+    against_model: str = typer.Option("", "--against-model", help="Model to argue AGAINST"),
+    judge: str = typer.Option("", "--judge", help="Adjudicator model"),
+    save: bool = typer.Option(False, "--save", help="Save debate result to memory bridge"),
+) -> None:
+    """Two models argue for/against a position. A third adjudicates."""
+    from .core.debate import DebateSession
+
+    console.print(f"\n  [bold {_COBALT}]DEBATE[/bold {_COBALT}]  [dim]{question[:60]}[/dim]\n")
+
+    with console.status("[dim]Running debate...[/dim]", spinner="dots"):
+        session = DebateSession()
+        result = session.run(
+            question=question,
+            for_model=for_model or None,
+            against_model=against_model or None,
+            judge_model=judge or None,
+        )
+
+    from rich.panel import Panel
+    console.print(Panel(
+        f"  FOR ({result.for_model}) vs AGAINST ({result.against_model})\n"
+        f"  Judge: {result.judge_model}",
+        title=f"[dim]Debate: {question[:50]}[/dim]",
+        border_style="dim",
+    ))
+
+    console.print(f"\n  [{_GREEN}]FOR ({result.for_model})[/{_GREEN}]")
+    for line in result.for_argument.splitlines()[:6]:
+        console.print(f"  [dim]{line}[/dim]")
+
+    console.print(f"\n  [{_RED}]AGAINST ({result.against_model})[/{_RED}]")
+    for line in result.against_argument.splitlines()[:6]:
+        console.print(f"  [dim]{line}[/dim]")
+
+    console.print(f"\n  [bold]JUDGMENT ({result.judge_model})[/bold]")
+    for line in result.judgment.splitlines()[:8]:
+        console.print(f"  [dim]{line}[/dim]")
+
+    winner_color = _GREEN if result.winner == "FOR" else _RED
+    console.print(f"\n  [{winner_color}]WINNER: {result.winner}[/{winner_color}]")
+
+    if result.recommendation:
+        console.print(f"\n  [bold {_COBALT}]RECOMMENDATION[/bold {_COBALT}]  {result.recommendation[:120]}")
+
+    if save and result.judgment:
+        try:
+            bridge = _memory_bridge()
+            bridge.add(
+                content=f"Debate on '{question[:60]}': Winner={result.winner}. {result.recommendation[:200]}",
+                agent_id="debate",
+                metadata={"type": "debate", "winner": result.winner},
+            )
+            console.print(f"  [{_GREEN}]Saved to memory bridge.[/{_GREEN}]")
+        except Exception:
+            pass
+
+    console.print()
+
+
+# ── Skills evolve command (stub) ────────────────────────────────────────────────
+
+@skills_app.command("evolve")
+def skills_evolve(
+    skill_name: str = typer.Argument(..., help="Skill name to evolve"),
+    task: str = typer.Option("", "--task", "-t", help="Test task to evaluate against"),
+    auto_promote: bool = typer.Option(False, "--auto-promote", help="Promote without asking"),
+) -> None:
+    """Evaluate a skill against a task and promote if it improves. (Stub -- deferred.)"""
+    from .core.skill_evolver import SkillEvolver
+
+    evolver = SkillEvolver()
+    result = evolver.evolve(skill_name=skill_name, test_task=task, auto_promote=auto_promote)
+
+    console.print(f"\n  [bold {_COBALT}]Skill Evolution[/bold {_COBALT}]  {skill_name}\n")
+    console.print(f"  [{_YELLOW}]{result.notes}[/{_YELLOW}]")
+    console.print(f"  [dim]Current version: {result.version}[/dim]\n")
+
+
+# ── Route exec helper ──────────────────────────────────────────────────────────
+
+_TOOL_LAUNCH: dict[str, list[str]] = {
+    "claude-code": ["claude"],
+    "codex-cli": ["codex"],
+    "gemini-cli": ["gemini"],
+    "cursor": ["cursor", "."],
+    "ollama": [],  # print-only, never auto-exec
+}
+
+_TOOL_INSTALL: dict[str, str] = {
+    "claude-code": "npm install -g @anthropic-ai/claude-code",
+    "codex-cli": "npm install -g @openai/codex",
+    "gemini-cli": "npm install -g @google/gemini-cli",
+    "cursor": "Download from https://cursor.sh",
+    "ollama": "Download from https://ollama.ai",
+}
+
+
+def _route_exec(tool: str, task: str, dry_run: bool = False) -> None:
+    import shutil
+    import subprocess as _sp
+
+    cmd = _TOOL_LAUNCH.get(tool, [])
+    binary = cmd[0] if cmd else None
+
+    # Copy brief to clipboard
+    _clipboard_brief(dry_run, tool=tool)
+
+    if tool == "ollama":
+        console.print("\n  [dim]Ollama (worker-tier) -- run manually:[/dim]")
+        console.print(f"  ollama run llama3 \"{task[:60]}\"")
+        return
+
+    if dry_run:
+        if binary and shutil.which(binary):
+            console.print(f"\n  [dim]--dry-run: would run[/dim]  {' '.join(cmd)}")
+        elif binary:
+            console.print(f"\n  [dim]--dry-run: {binary} not found -- would print install instructions[/dim]")
+        return
+
+    if not binary or not shutil.which(binary):
+        install = _TOOL_INSTALL.get(tool, "Check tool documentation")
+        console.print(f"\n  [{_YELLOW}]{tool} not found.[/{_YELLOW}]  Install: {install}")
+        return
+
+    console.print(f"\n  [{_GREEN}]Opening {tool}...[/{_GREEN}]")
+    _sp.Popen(cmd)  # noqa: S603
+
+
+def _clipboard_brief(dry_run: bool = False, tool: str = "the tool") -> None:
+    import platform
+    import subprocess as _sp
+
+    from .core.brief import BriefGenerator
+    try:
+        gen = BriefGenerator(_ledger(), bridge_path=_MEMORIES_DB)
+        output = gen.generate(days=7)
+        if dry_run:
+            console.print(f"  [dim]--dry-run: would copy brief ({len(output.split())} words) to clipboard[/dim]")
+            return
+        if platform.system() == "Darwin":
+            _sp.run(["pbcopy"], input=output.encode(), check=True)
+            console.print(f"  [{_GREEN}]Context copied to clipboard.[/{_GREEN}]  Paste it into {tool} when it opens.")
+        else:
+            _sp.run(["xclip", "-selection", "clipboard"], input=output.encode(), check=False)
+    except Exception:
+        pass

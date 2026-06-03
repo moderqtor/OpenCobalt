@@ -249,3 +249,59 @@ class TestContext:
         for f in data["files"]:
             for key in ("n", "tok", "pct"):
                 assert key in f, f"missing key: {key}"
+
+
+# ---------------------------------------------------------------------------
+# /api/timeline
+# ---------------------------------------------------------------------------
+
+class TestTimeline:
+    def test_timeline_endpoint_returns_200(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert client.get("/api/timeline").status_code == 200
+
+    def test_timeline_returns_list(self, tmp_path, monkeypatch):
+        data = _get("/api/timeline", tmp_path, monkeypatch)
+        assert isinstance(data, list)
+
+    def test_timeline_empty_when_no_data(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        data = client.get("/api/timeline").json()
+        assert data == []
+
+    def test_timeline_merges_event_types(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from opencobalt.core.ledger import Ledger
+        from opencobalt.core.models import SessionEvent
+        from opencobalt.core.router import route_task
+
+        ledger = Ledger(tmp_path / ".opencobalt" / "ledger.db")
+        # Insert a route decision
+        ledger.insert_route_decision(route_task("design the auth module", record=False))
+        # Insert a session event
+        ledger.insert_event(SessionEvent(
+            project="test",
+            source="cli",
+            event_type="manual_log",
+            summary="reviewed the module",
+        ))
+
+        data = client.get("/api/timeline").json()
+        assert len(data) >= 2
+        types = {e["type"] for e in data}
+        assert "route" in types
+        assert "note" in types or "manual_log" in types
+
+    def test_timeline_entry_has_required_keys(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from opencobalt.core.ledger import Ledger
+        from opencobalt.core.router import route_task
+
+        ledger = Ledger(tmp_path / ".opencobalt" / "ledger.db")
+        ledger.insert_route_decision(route_task("design the auth module", record=False))
+
+        data = client.get("/api/timeline").json()
+        assert len(data) >= 1
+        entry = data[0]
+        for key in ("id", "timestamp", "type", "title", "model", "tier", "status"):
+            assert key in entry, f"missing key: {key}"
