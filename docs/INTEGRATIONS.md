@@ -13,12 +13,14 @@ Integrations are not dependencies. If the external tool is not installed, the in
 
 ## Current integrations
 
-| Name   | Source URL                              | What it does                                   | Install check |
-|--------|-----------------------------------------|------------------------------------------------|---------------|
-| aider  | https://github.com/paul-gauthier/aider  | Code editing via aider (AI pair programmer)    | `shutil.which("aider") is not None` |
-| ollama | https://github.com/ollama/ollama        | Local model inference via Ollama               | `subprocess.run(["ollama", "list"], timeout=3)` returns 0 |
-
-Note: both integrations are stubs. Their `invoke()` methods return a string describing what the tool would do -- they do not actually run the tool.
+| Name | Source | Tier | Capabilities | Install check | Status |
+|------|--------|------|-------------|---------------|--------|
+| aider | https://github.com/paul-gauthier/aider | worker | (code editing) | `shutil.which("aider")` | stub if not installed |
+| ollama | https://github.com/ollama/ollama | worker | (local inference) | `subprocess.run(["ollama", "list"])` returns 0 | stub if not installed |
+| claude-code | https://github.com/anthropics/claude-code | executive | architecture, code, review, debug, security | `shutil.which("claude")` | stub if not installed |
+| gemini-cli | https://github.com/google-gemini/gemini-cli | executive | long-context, search, analyze, audit | `shutil.which("gemini")` | stub if not installed |
+| cursor | https://www.cursor.com | manager | ui, editor, frontend, component, style | not checkable via PATH | always available |
+| context7 | https://github.com/upstash/context7 | manager | docs, search, mcp, library-context | not checkable via PATH | always available |
 
 ## Adding a new integration
 
@@ -34,6 +36,8 @@ class MyToolIntegration(BaseIntegration):
     name = "mytool"
     description = "Brief description of what mytool does"
     source_url = "https://github.com/example/mytool"
+    tier = "worker"
+    capabilities = ["task-type-a", "task-type-b"]
 
     def install_check(self) -> bool:
         return shutil.which("mytool") is not None
@@ -48,8 +52,7 @@ class MyToolIntegration(BaseIntegration):
 from .mytool_integration import MyToolIntegration
 
 REGISTRY: dict[str, BaseIntegration] = {
-    "aider": AiderIntegration(),
-    "ollama": OllamaIntegration(),
+    ...
     "mytool": MyToolIntegration(),  # add here
 }
 ```
@@ -70,6 +73,8 @@ REGISTRY: dict[str, BaseIntegration] = {
 
 ```
 opencobalt integrations list
+opencobalt integrations check
 ```
 
-Lists all registered integrations with their name, description, and installed status.
+`integrations list` lists all registered integrations with their name, tier, capabilities, and status.
+`integrations check` runs `install_check()` on all integrations and reports which are active or inactive.

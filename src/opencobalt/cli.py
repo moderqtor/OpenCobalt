@@ -314,6 +314,138 @@ def log_list(
     console.print(f"  [dim]{len(events)} event(s).[/dim]\n")
 
 
+@app.command("note")
+def note(
+    text: str = typer.Argument(..., help="Note content to store"),
+    agent: str = typer.Option("user", "--agent", "-a", help="Agent name to tag this note"),
+    tags: str = typer.Option("", "--tags", "-t", help="Comma-separated tags"),
+) -> None:
+    """Store a quick note in the memory bridge."""
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+    metadata: dict = {"type": "note", "tags": tag_list}
+    try:
+        bridge = _memory_bridge()
+        bridge.add(text, agent_id=agent, metadata=metadata)
+    except Exception as exc:
+        console.print(f"  [{_YELLOW}]memory bridge unavailable:[/{_YELLOW}]  {exc}")
+        return
+    console.print(f"  [{_GREEN}]Noted.[/{_GREEN}] [dim]Search it later with: opencobalt memory search[/dim]")
+    console.print(f"  [dim]content : [/dim] {text[:80]}")
+
+
+@app.command("day")
+def day(
+    date: str = typer.Option("", "--date", "-d", help="Date to show (YYYY-MM-DD). Defaults to today UTC."),
+) -> None:
+    """Show a daily summary: route decisions, notes, and session range."""
+    import json as _json
+    from datetime import date as _date
+    from datetime import timezone
+
+    if date:
+        try:
+            target_date = _date.fromisoformat(date)
+        except ValueError:
+            console.print(f"  [{_RED}]Invalid date format:[/{_RED}]  {date}  (use YYYY-MM-DD)")
+            raise typer.Exit(1)
+    else:
+        target_date = datetime.now(tz=timezone.utc).date()
+
+    target_str = target_date.isoformat()
+
+    # Fetch route decisions
+    try:
+        ledger = _ledger()
+        all_decisions = ledger.list_route_decisions(limit=500)
+        routes = [
+            d for d in all_decisions
+            if (d.timestamp.date() if hasattr(d.timestamp, "date") else _date.fromisoformat(str(d.timestamp)[:10])) == target_date
+        ]
+    except Exception:
+        routes = []
+
+    # Fetch notes from memory bridge
+    try:
+        bridge = _memory_bridge()
+        all_mems = bridge.recent(limit=500)
+        notes = [
+            m for m in all_mems
+            if m.get("timestamp", "")[:10] == target_str
+            and _json.loads(m.get("metadata", "{}")).get("type") == "note"
+        ]
+    except Exception:
+        notes = []
+
+    # Fetch events
+    try:
+        ledger = _ledger()
+        all_events = ledger.list_events(limit=500)
+        events = [
+            e for e in all_events
+            if (e.timestamp.date() if hasattr(e.timestamp, "date") else _date.fromisoformat(str(e.timestamp)[:10])) == target_date
+        ]
+    except Exception:
+        events = []
+
+    if not routes and not notes and not events:
+        console.print(
+            f"\n  No activity logged for {target_str}. "
+            r"Start with: opencobalt route \[your task]"
+            "\n"
+        )
+        return
+
+    console.print(f"\n  [bold {_COBALT}]Day summary[/bold {_COBALT}]  [dim]{target_str}[/dim]\n")
+
+    # Routes table
+    console.print(f"  [bold]ROUTES TODAY ({len(routes)})[/bold]")
+    if routes:
+        rt = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+        rt.add_column("Time", style="dim")
+        rt.add_column("Tool", style=f"{_COBALT}")
+        rt.add_column("Tier", style="dim")
+        rt.add_column("Task")
+        for d in routes:
+            ts = d.timestamp.strftime("%H:%M") if hasattr(d.timestamp, "strftime") else str(d.timestamp)[11:16]
+            tc = _tier_color(d.tier)
+            tool_str = f"[{tc}]{d.recommended_tool}[/{tc}]" if tc != "dim" else f"[dim]{d.recommended_tool}[/dim]"
+            rt.add_row(ts, tool_str, d.tier, d.task[:50])
+        console.print(rt)
+    console.print()
+
+    # Notes table
+    console.print(f"  [bold]NOTES TODAY ({len(notes)})[/bold]")
+    if notes:
+        nt = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+        nt.add_column("Time", style="dim")
+        nt.add_column("Agent", style="dim")
+        nt.add_column("Content")
+        for m in notes:
+            ts = m.get("timestamp", "")[11:16]
+            nt.add_row(ts, m.get("agent_id", ""), m.get("content", "")[:70])
+        console.print(nt)
+    console.print()
+
+    # Sessions time range
+    all_ts: list[str] = []
+    for d in routes:
+        all_ts.append(d.timestamp.isoformat() if hasattr(d.timestamp, "isoformat") else str(d.timestamp))
+    for e in events:
+        all_ts.append(e.timestamp.isoformat() if hasattr(e.timestamp, "isoformat") else str(e.timestamp))
+    if all_ts:
+        earliest = min(all_ts)[:16].replace("T", " ")
+        latest = max(all_ts)[:16].replace("T", " ")
+        console.print(f"  [bold]SESSIONS[/bold]  [dim]{earliest} -- {latest}[/dim]")
+
+    # Cost (month-to-date approximation -- no per-day breakdown)
+    try:
+        spend = CostTracker(_DB_PATH).monthly_spend()
+        console.print(f"  [bold]COST[/bold]  [dim]~${spend:.4f} month-to-date (approx)[/dim]")
+    except Exception:
+        pass
+    console.print()
+
+
 _MEMORIES_DB = Path(".opencobalt") / "memories.db"
 
 
@@ -571,6 +703,10 @@ def route(
 
     console.print(table)
     console.print(f"  [dim]{decision.reasoning}[/dim]")
+    console.print(
+        "  [dim]To log what you did:[/dim]  "
+        'opencobalt note "[what you accomplished]"'
+    )
 
     if estimate:
         tracker = CostTracker(_DB_PATH)
@@ -1131,8 +1267,23 @@ def ui_shell(
         console.print(f"  [{_GREEN}]Dashboard running at[/{_GREEN}]  http://localhost:{port}")
         console.print("  [dim]Ctrl+C to stop.[/dim]\n")
 
+        # Wait for servers to start, then verify API is up before opening browser
+        _time.sleep(3)
+        import urllib.error
+        import urllib.request
+        try:
+            urllib.request.urlopen(f"http://localhost:{api_port}/api/status", timeout=3)
+        except urllib.error.URLError:
+            # API failed -- could be missing server extras
+            if api_proc.poll() is not None:
+                err.print(
+                    f"\n[{_RED}]API server failed to start.[/{_RED}]  "
+                    f"Run: pip install -e '.[server]'\n"
+                )
+                vite_proc.terminate()
+                raise typer.Exit(1)
+
         if not no_browser:
-            _time.sleep(2)
             webbrowser.open(f"http://localhost:{port}")
 
         for p in procs:

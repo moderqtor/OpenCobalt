@@ -84,9 +84,9 @@ architecture constraints. Ask "what does this break?" before "what does this add
 Sync only OpenCobalt-related subfolders -- not the whole vault.
 
 Recommended subfolders to sync:
-- `~/cobaltos-vault/architecture/` -- design decisions and rationale
-- `~/cobaltos-vault/sessions/` -- session logs you want searchable
-- `~/cobaltos-vault/research/` -- notes on AI tools and integrations
+- `~/your-vault/architecture/` -- design decisions and rationale
+- `~/your-vault/sessions/` -- session logs you want searchable
+- `~/your-vault/research/` -- notes on AI tools and integrations
 
 Do not sync:
 - Personal notes unrelated to OpenCobalt

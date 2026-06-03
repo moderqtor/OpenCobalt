@@ -136,7 +136,7 @@ optional adapter interfaces only.
 | subsystems/.env | Secrets file |
 | subsystems/agent-memory/.env | Secrets file |
 | subsystems/adversarial-ideation/.env | Secrets file |
-| core/config.py | Line 80 has hardcoded NEO4J_PASSWORD default "cobalt2026" |
+| core/config.py | Line 80 has hardcoded NEO4J_PASSWORD default [REDACTED] |
 | logs/ | 4,579 files, private session data, raw prompts, personal info |
 | memory_store/ | Private JSONL memories and cobalt.db |
 | vault_index/ | ChromaDB index of personal Obsidian vault |
@@ -153,13 +153,13 @@ optional adapter interfaces only.
 ### CRITICAL (blockers before any public push)
 
 1. NEXT_STEPS.md contains:
-   - Neo4j password in plaintext: "cobalt2026"
-   - khoj admin password in plaintext: "cobalt123"
-   - khoj admin email: a personal Gmail address
+   - Neo4j password in plaintext: [REDACTED]
+   - khoj admin password in plaintext: [REDACTED]
+   - khoj admin email: [REDACTED -- personal email]
    This file must never be copied to OpenCobalt.
 
 2. core/config.py line 80:
-   NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "cobalt2026")
+   NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "[REDACTED]")
    The hardcoded default is a password. If config.py were copied without modification,
    the password would appear in the public repo. Must be stripped before any copy.
 

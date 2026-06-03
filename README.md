@@ -17,12 +17,12 @@ OpenCobalt routes work across coding agents, local models, session logs, project
 | CLI routing | Functional |
 | SQLite session ledger | Functional |
 | Pydantic v2 schemas | Functional |
-| pytest / ruff / CI | Passing (214 tests, verified 2026-06-01) |
+| pytest / ruff / CI | Passing (244 tests, verified 2026-06-02) |
 | Memory bridge (mem0) | Wired, mem0 optional install required |
 | Agent observability | SQLite-backed, local only |
-| UI | Scaffold only — backend not wired |
-| API adapters (OpenAI, Anthropic) | Planned, not active by default |
-| Khoj integration | Docker sidecar setup docs ready, not started |
+| UI | Live React dashboard, starts with `opencobalt ui` |
+| Local API server | FastAPI on port 8000, starts with `opencobalt ui` |
+| Khoj integration | Docker sidecar setup docs ready |
 | Persistent agent execution | Not implemented |
 
 ---
@@ -91,10 +91,10 @@ src/opencobalt/
   cli.py          CLI entry point
   core/           ledger, router, context, public_safety, cost, models
   agents/         BaseAgent ABC + 4 concrete agents
-  skills/         BaseSkill ABC + file-reader, diff-writer
+  skills/         BaseSkill ABC + file-reader, diff-writer, context-injector
   integrations/   BaseIntegration ABC + aider, ollama stubs
-ui/               React + Tailwind dashboard shell (run: cd ui && npm run dev)
-tests/            214 tests
+ui/               React + Tailwind dashboard (run: opencobalt ui)
+tests/            244 tests
 .github/          CI workflow (ubuntu-latest, Python 3.11)
 docs/             Architecture, design system, integrations, roadmap
 ```
@@ -191,7 +191,7 @@ opencobalt lint
 # Full health check (status + models + extra structural checks)
 opencobalt doctor
 
-# UI shell (React + Tailwind, backend not yet wired)
+# Start the live dashboard (React + FastAPI)
 opencobalt ui
 ```
 
@@ -206,11 +206,11 @@ opencobalt ui
 - Context pack compiler
 - Public safety scanner: .env detection, secret patterns, oversized files, private vault paths
 - Cost control module with per-run and monthly budget caps
-- Subagent and skill library system with 4 agents, 2 skills
-- External integration registry (aider, ollama stubs)
+- Subagent and skill library system with 4 agents, 3 skills
+- External integration registry with 6 integrations
 - CI workflow via GitHub Actions
-- UI dashboard shell (React + Tailwind, `cd ui && npm run dev`)
-- 214 passing tests (verified 2026-06-01)
+- UI dashboard (React + Tailwind + FastAPI, `opencobalt ui`)
+- 244 passing tests (verified 2026-06-02)
 
 ---
 
@@ -388,7 +388,7 @@ $ opencobalt session show
 ```
 $ opencobalt verify
 
-  PASS  pytest: 214 passed in 1.09s
+  PASS  pytest: 244 passed in 1.09s
   PASS  public-check: No public-safety issues detected.
 
   All checks passed.
@@ -396,19 +396,9 @@ $ opencobalt verify
 
 ---
 
-## Screenshots
+## Dashboard
 
-`opencobalt status` -- system health with grouped categories and health bar:
-
-![OpenCobalt status](assets/screenshots/status.png)
-
-`opencobalt route` -- full score table across all tools:
-
-![OpenCobalt route](assets/screenshots/route.png)
-
-Status with public safety scan output:
-
-![OpenCobalt status with safety](assets/screenshots/status-2.png)
+Run `opencobalt ui` to open the live dashboard. Run `opencobalt tui` for a terminal dashboard.
 
 ---
 
