@@ -116,3 +116,22 @@ def test_route_decision_stores_scores_in_metadata(tmp_path):
     results = ledger.list_route_decisions()
     assert "_scores" in results[0].metadata
     assert isinstance(results[0].metadata["_scores"], dict)
+
+
+def test_insert_and_list_outcomes(tmp_path):
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.insert_outcome(
+        task_id="task-123",
+        tool="claude-code",
+        outcome="committed",
+    )
+    outcomes = ledger.list_outcomes(limit=10)
+    assert len(outcomes) == 1
+    assert outcomes[0]["tool"] == "claude-code"
+    assert outcomes[0]["outcome"] == "committed"
+
+
+def test_outcomes_table_created_on_init(tmp_path):
+    ledger = Ledger(tmp_path / "ledger.db")
+    outcomes = ledger.list_outcomes()
+    assert outcomes == []

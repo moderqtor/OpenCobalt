@@ -60,6 +60,15 @@ CREATE TABLE IF NOT EXISTS memory_records (
     source    TEXT NOT NULL,
     metadata  TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS outcomes (
+    id          TEXT PRIMARY KEY,
+    timestamp   TEXT NOT NULL,
+    task_id     TEXT NOT NULL,
+    tool        TEXT NOT NULL,
+    outcome     TEXT NOT NULL,
+    metadata    TEXT NOT NULL DEFAULT '{}'
+);
 """
 
 
@@ -247,3 +256,40 @@ class Ledger:
     def count_memory_records(self) -> int:
         with self._connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM memory_records").fetchone()[0]
+
+    # --- Outcomes ---
+
+    def insert_outcome(
+        self,
+        task_id: str,
+        tool: str,
+        outcome: str,
+        metadata: dict | None = None,
+    ) -> None:
+        import uuid
+        from datetime import datetime, timezone
+
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO outcomes VALUES (?,?,?,?,?,?)",
+                (
+                    str(uuid.uuid4()),
+                    datetime.now(tz=timezone.utc).isoformat(),
+                    task_id,
+                    tool,
+                    outcome,
+                    json.dumps(metadata or {}),
+                ),
+            )
+
+    def list_outcomes(self, *, limit: int = 100, tool: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM outcomes"
+        params: list[str | int] = []
+        if tool:
+            sql += " WHERE tool = ?"
+            params.append(tool)
+        sql += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(row) for row in rows]
