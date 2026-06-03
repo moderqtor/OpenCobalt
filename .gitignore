@@ -71,3 +71,4 @@ logs/
 assets/screenshots/*.png
 assets/screenshots/*.gif
 assets/readme/*.png
+.superpowers/
