@@ -188,8 +188,52 @@ class CobaltShell:
 
     def _run_command(self, cmd: str, args: list[str]) -> None:
         """Invoke a CLI command via subprocess, inheriting the terminal."""
+        if cmd == "pipe":
+            self._run_pipe(" ".join(args))
+            return
+        if cmd == "council" and args and args[0] == "show":
+            self._show_council_cache()
+            return
         argv = ["opencobalt", cmd] + args
         subprocess.run(argv)
+
+    def _run_pipe(self, expr: str) -> None:
+        from rich.console import Console as RichConsole
+
+        from .core.pipeline import Pipeline
+
+        c = RichConsole()
+        try:
+            pipe = Pipeline()
+            task, steps = pipe.parse(f'/pipe "{expr}"' if not expr.startswith('"') else f"/pipe {expr}")
+            c.print(f"\n  [dim]Pipeline: {len(steps)} steps[/dim]\n")
+            for index, step in enumerate(steps, 1):
+                hint = f" {step.hint}" if step.hint else ""
+                c.print(f"  [dim]step {index}/{len(steps)}[/dim]  {step.tool}{hint}")
+            c.print()
+            result = pipe.run(task, steps)
+            if result.success:
+                c.print(f"  [bold {_GREEN}]VERIFIED ✓[/bold {_GREEN}]  [dim]pipeline complete[/dim]")
+            else:
+                c.print("  [bold #FF5577]pipeline stopped[/bold #FF5577]")
+                for error in result.errors:
+                    c.print(f"  [dim]{error}[/dim]")
+        except ValueError as exc:
+            c.print(f"  [{_AMBER}]pipeline error:[/{_AMBER}]  {exc}")
+
+    def _show_council_cache(self) -> None:
+        all_results = []
+        for results in self._council_cache.values():
+            all_results.extend(results)
+        if not all_results:
+            console.print("  [dim]No background council results yet.[/dim]")
+            return
+        for result in all_results[-6:]:
+            model = result.task_id.split(":")[-1] if ":" in result.task_id else result.task_id
+            console.print(f"\n  [bold][{model.upper()}][/bold]")
+            for line in result.output.splitlines()[:6]:
+                console.print(f"  [dim]{line}[/dim]")
+        self._council_cache.clear()
 
     def _route_and_open(self, task: str) -> None:
         decision = route_task(task, record=False)
