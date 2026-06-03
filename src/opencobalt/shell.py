@@ -192,6 +192,9 @@ class CobaltShell:
         if cmd == "pipe":
             self._run_pipe(" ".join(args))
             return
+        if cmd == "graph":
+            self._run_graph(args)
+            return
         if cmd == "council" and args and args[0] == "show":
             self._show_council_cache()
             return
@@ -235,6 +238,24 @@ class CobaltShell:
             for line in result.output.splitlines()[:6]:
                 console.print(f"  [dim]{line}[/dim]")
         self._council_cache.clear()
+
+    def _run_graph(self, args: list[str]) -> None:
+        from .core.knowledge import KnowledgeGraph
+
+        kg = KnowledgeGraph()
+        if not args:
+            console.print("  [dim]Usage: /graph why <file>  |  /graph <question>  |  /graph ingest[/dim]")
+            return
+        if args[0] == "ingest":
+            n1 = kg.ingest_git_log()
+            n2 = kg.ingest_imports(Path("src"))
+            console.print(f"  [dim]Ingested {n1} commits, {n2} import edges[/dim]")
+            return
+        if args[0] == "why" and len(args) > 1:
+            result = kg.why(args[1])
+        else:
+            result = kg.query(" ".join(args))
+        console.print(result)
 
     def _route_and_open(self, task: str) -> None:
         decision = self._learning_router.route(task)
