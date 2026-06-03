@@ -108,8 +108,9 @@ _DEFAULT_ROUTING_MODE = "standard"
 # ---------------------------------------------------------------------------
 
 class CostTracker:
-    """Tracks per-run costs, enforces monthly budget caps, and manages routing mode.
+    """Tracks per-run costs and manages routing mode.
 
+    # Cap estimation not yet implemented at adapter layer -- this tracks spend only.
     All state lives in the SQLite DB at db_path.
     """
 

@@ -87,13 +87,20 @@ that does not change the local-first default.
 
 ---
 
+### Phase 8: Live UI and API Server
+
+- UI backend bridge: React dashboard wired to FastAPI via REST API
+- FastAPI server on port 8000, Vite dev server on port 5173; both start via `opencobalt ui`
+- `context-diff` command (shows what changed since the last context build)
+- 244 passing tests
+
+---
+
 ## In Progress / Next
 
-- UI backend bridge: wire React dashboard to Python via WebSocket or simple HTTP API
 - API adapter layer: Anthropic, OpenAI, and Google adapters with per-call cost tracking
 - Router integration with benchmark data: `get_best_for_task_type()` replaces static tier rules for
   agents with sufficient benchmark history
-- `context diff` command
 - Obsidian export write path
 - DesignLab / Visual Compiler
 

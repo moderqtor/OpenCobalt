@@ -3,7 +3,7 @@
 ## Resume Bullets
 
 - Built OpenCobalt, a local-first AI orchestration CLI in Python that routes tasks across Claude Code, Codex CLI, Gemini CLI, Cursor, and Ollama using a deterministic scoring router with tiered model classification and a SQLite session ledger
-- Implemented persistent agent memory with SQLite-backed MemoryBridge, session observability tracking, agent benchmarking with composite scoring, and repo-hygiene public-check tooling; 214 tests, ruff lint clean, GitHub Actions CI
+- Implemented persistent agent memory with SQLite-backed MemoryBridge, session observability tracking, agent benchmarking with composite scoring, and repo-hygiene public-check tooling; 244 tests, ruff lint clean, GitHub Actions CI
 
 ## LinkedIn Bullets
 
@@ -13,7 +13,7 @@
 
 ## GitHub Pinned Description
 
-Local-first AI orchestration and memory control plane. Routes tasks across Claude Code, Codex CLI, Gemini CLI, Cursor, and Ollama. SQLite ledger, deterministic router, agents and skills registries, session tracking, public safety scanner. Python, Pydantic, Typer. 214 tests.
+Local-first AI orchestration and memory control plane. Routes tasks across Claude Code, Gemini CLI, Cursor, Aider, Context7, and Ollama. SQLite ledger, deterministic router, agents and skills registries, session tracking, public safety scanner, live React dashboard. Python, Pydantic, Typer. 244 tests.
 
 ## Recruiter Explanation (30 seconds)
 
@@ -27,12 +27,12 @@ The system includes an agents registry, a skills registry, and an integrations r
 
 The architectural constraint is tier separation: local Ollama models are worker-tier only (summarization, tagging, extraction) and are explicitly excluded from executive-tier tasks (architecture decisions, security review, public-facing content). This was a deliberate design choice, not a default.
 
-Ruff runs in CI. 214 tests cover units, ledger integration, router logic, and CLI commands.
+Ruff runs in CI. 244 tests cover units, ledger integration, router logic, and CLI commands.
 
 ## What Not to Overclaim
 
 - This is not a production system. It is a personal development tool that I built and use.
 - The router is deterministic and keyword-based. It does not do semantic inference.
 - The tests are unit and integration tests against real SQLite databases -- not end-to-end tests of real AI tool outputs.
-- The UI layer scaffold exists but is not wired to the backend. All primary interaction is CLI.
+- The UI layer is a live React dashboard wired to a FastAPI backend. Start both with `opencobalt ui`.
 - API adapters (Anthropic, OpenAI, Google) are next on the roadmap, not yet implemented.

@@ -146,9 +146,9 @@ opencobalt memory search "query"
 Sync only OpenCobalt-related Obsidian subfolders to Khoj (not the whole vault).
 
 Recommended subfolders to sync:
-- `~/cobaltos-vault/architecture/` -- design decisions and rationale
-- `~/cobaltos-vault/sessions/` -- searchable session logs
-- `~/cobaltos-vault/research/` -- notes on AI tools and integrations
+- `~/your-vault/architecture/` -- design decisions and rationale
+- `~/your-vault/sessions/` -- searchable session logs
+- `~/your-vault/research/` -- notes on AI tools and integrations
 
 Sync method: Khoj web UI at http://localhost:42110 or Khoj API file upload.
 The sync is manual (no daemon or file watcher is required).

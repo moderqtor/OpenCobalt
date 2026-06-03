@@ -1,13 +1,18 @@
 # OpenCobalt UI
 
-A web dashboard shell for OpenCobalt. Built with React and Tailwind CSS.
-
-## Status
-
-This is a layout skeleton. It shows the planned panel structure and placeholder data.
-The Python backend is not wired yet -- that is a future phase.
+A web dashboard for OpenCobalt. Built with React, Tailwind CSS, and a FastAPI backend.
 
 ## Run
+
+From the project root:
+
+```bash
+opencobalt ui
+```
+
+This starts the FastAPI backend on port 8000 and the Vite dev server on port 5173. Both stop when the command exits.
+
+To run the frontend alone (development):
 
 ```bash
 cd ui
@@ -22,10 +27,10 @@ Then open http://localhost:5173.
 | Panel | Description |
 |-------|-------------|
 | Command Center | Common CLI commands with copy-friendly display |
-| Context Pack Viewer | Planned: live view of the compiled context pack |
-| Session Ledger | Planned: live event feed from SQLite |
+| Context Pack Viewer | Live view of the compiled context pack |
+| Session Ledger | Live event feed from SQLite |
 | Agent Router | Shows routing tiers and tool assignments |
-| Verification Receipts | Planned: live test and public-check results |
+| Verification Receipts | Live test and public-check results |
 | DesignLab | Planned: design token engine (see docs/DESIGNLAB.md) |
 
 ## Tech
@@ -33,10 +38,6 @@ Then open http://localhost:5173.
 - React 18
 - Tailwind CSS 3
 - Vite 5
+- FastAPI (Python backend, port 8000)
 
 No component libraries. No Next.js. Portable and minimal.
-
-## Future
-
-A future phase will add a REST or WebSocket bridge from the Python CLI to this UI.
-See the main README for the architecture overview.

@@ -15,6 +15,11 @@ _SECRET_PATTERNS = [
     re.compile(r'(?i)(password|passwd|secret|api_key|apikey|token|private_key)\s*[=:]\s*["\']?\w{6,}'),
     re.compile(r'(?i)sk-[A-Za-z0-9]{20,}'),
     re.compile(r'(?i)AIza[A-Za-z0-9_\-]{35}'),
+    # Specific credential values that must not appear in the public repo
+    re.compile(r'\bcobalt2026\b'),
+    re.compile(r'\bcobalt123\b'),
+    # Personal email addresses
+    re.compile(r'[A-Za-z0-9._%+\-]+@(gmail|yahoo|hotmail)\.com'),
 ]
 
 _PRIVATE_VAULT_PATTERNS = [
@@ -22,17 +27,39 @@ _PRIVATE_VAULT_PATTERNS = [
     re.compile(r'/Users/\w+/cobaltos-vault'),
     re.compile(r'COBALT_VAULT\s*[=:]\s*["\']?[^"\'\n]{5,}'),
     re.compile(r'obsidian-vault[/"]'),
+    # Absolute user home paths (flags /Users/colin style references)
+    re.compile(r'/Users/[A-Za-z][A-Za-z0-9_\-]+(?:/|\s|$)'),
 ]
+
+# Lines containing these placeholders are safe -- they document what to replace,
+# not actual credentials. Skip pattern matches on lines with these strings.
+_SAFE_PLACEHOLDER_STRINGS = (
+    "[REDACTED",
+    "REPLACE_WITH_YOUR_EMAIL",
+    "REPLACE_WITH_STRONG_PASSWORD",
+    "your_email_here",
+    "<placeholder>",
+    "your-vault",
+    "your_name_here",
+)
 
 # Files that contain these strings as pattern definitions, not references
 _VAULT_SCAN_SKIP_FILES = {
     "public_safety.py",
     "context.py",
+    # Meta-docs that describe the scanning policy (not live configuration)
+    "PUBLIC_SAFETY.md",
+    "AUDIT_PROMPT.md",
+    "REPO_ANALYSIS.md",
 }
 
-# Directories exempt from vault-path scanning -- test files and audit docs
-# legitimately reference excluded path names without being actual disclosures.
-_VAULT_SCAN_SKIP_DIRS = {"tests", "docs"}
+# Directory name segments exempt from vault-path scanning.
+# These paths contain historical audit records and policy documentation
+# that legitimately quote the patterns they describe.
+_VAULT_SCAN_SKIP_DIRS = {
+    "tests",
+    "audits",
+}
 
 _SKIP_DIRS = {
     ".git",
@@ -44,7 +71,6 @@ _SKIP_DIRS = {
     ".pytest_cache",
     ".opencobalt",
     # Test source files legitimately embed pattern strings as test inputs.
-    # The scanner's own patterns should not flag test code.
     "tests",
 }
 
@@ -122,27 +148,37 @@ def _should_skip(item: Path, root: Path) -> bool:
     return False
 
 
+def _line_has_safe_placeholder(line: str) -> bool:
+    return any(placeholder in line for placeholder in _SAFE_PLACEHOLDER_STRINGS)
+
+
 def _scan_file_contents(path: Path, rel: str, result: ScanResult) -> None:
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return
 
+    lines = text.splitlines()
+
+    # Secret pattern scan -- line-by-line so allowlisted lines are skipped
     for pattern in _SECRET_PATTERNS:
-        if pattern.search(text):
-            result.secret_hits.append(rel)
-            result.issues.append(f"Possible secret pattern in: {rel}")
-            break
+        for line in lines:
+            if pattern.search(line) and not _line_has_safe_placeholder(line):
+                result.secret_hits.append(rel)
+                result.issues.append(f"Possible secret pattern in: {rel}")
+                return
 
     # Skip vault path check for files that define patterns (not paths)
-    parts = Path(rel).parts
     if path.name in _VAULT_SCAN_SKIP_FILES:
         return
-    if parts and parts[0] in _VAULT_SCAN_SKIP_DIRS:
+    # Skip vault path check for audit/policy subdirectories
+    rel_parts = Path(rel).parts
+    if any(p in _VAULT_SCAN_SKIP_DIRS for p in rel_parts):
         return
 
     for pattern in _PRIVATE_VAULT_PATTERNS:
-        if pattern.search(text):
-            result.vault_path_hits.append(rel)
-            result.issues.append(f"Private vault path reference in: {rel}")
-            break
+        for line in lines:
+            if pattern.search(line) and not _line_has_safe_placeholder(line):
+                result.vault_path_hits.append(rel)
+                result.issues.append(f"Private vault path reference in: {rel}")
+                return

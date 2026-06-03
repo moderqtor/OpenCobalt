@@ -3,7 +3,7 @@
 ## Resume Bullets
 
 - Built OpenCobalt, a local-first AI orchestration CLI in Python that routes tasks across Claude Code, Codex CLI, Gemini CLI, Cursor, and Ollama using a deterministic scoring router with tiered model classification and a SQLite session ledger
-- Implemented persistent agent memory with SQLite-backed MemoryBridge, session observability tracking, agent benchmarking with composite scoring, and repo-hygiene public-check tooling; 214 tests, ruff lint clean, GitHub Actions CI
+- Implemented persistent agent memory with SQLite-backed MemoryBridge, session observability tracking, agent benchmarking with composite scoring, and repo-hygiene public-check tooling; 244 tests, ruff lint clean, GitHub Actions CI
 
 ---
 
@@ -23,7 +23,7 @@ OpenCobalt provides a minimal, working answer to each of those problems.
 - Clean separation between source of truth (SQLite), generated mirrors (markdown), and runtime artifacts (context packs)
 
 ### Software engineering
-- 214 passing tests covering models, ledger, events, memory, router, public safety scanner, cost module, agents, skills, and integrations
+- 244 passing tests covering models, ledger, events, memory, router, public safety scanner, cost module, agents, skills, and integrations
 - No test mocking of core logic -- tests use real temp SQLite databases
 - Clean module design: each file has one responsibility, one public interface
 - CI workflow running on ubuntu-latest via GitHub Actions
@@ -33,8 +33,9 @@ OpenCobalt provides a minimal, working answer to each of those problems.
 - Ollama model discovery that degrades gracefully instead of crashing
 - Public safety scanner that catches real classes of pre-push mistakes
 - Cost control module with per-run and monthly budget caps
-- Subagent and skill library system (BaseAgent ABC + 4 concrete agents, BaseSkill ABC + 2 skills)
-- External integration registry pattern (aider, ollama stubs) with opt-in configuration
+- Subagent and skill library system (BaseAgent ABC + 4 concrete agents, BaseSkill ABC + 3 skills)
+- External integration registry with 6 integrations (aider, ollama, claude-code, gemini-cli, cursor, context7)
+- Live React dashboard with FastAPI backend, starts with `opencobalt ui`
 
 ### Applied analytics mindset
 - Routing decisions are scored, not binary
@@ -53,9 +54,9 @@ OpenCobalt provides a minimal, working answer to each of those problems.
 - Python (3.11+, Pydantic v2, Typer, Rich, sqlite3)
 - SQLite schema design
 - CLI design
-- Test design (pytest, 214 tests)
+- Test design (pytest, 244 tests)
 - AI tool orchestration patterns (routing tiers, cost awareness, agent/skill registries)
 - Public repo hygiene (gitignore, safety scanning, credential exclusion)
 - CI configuration (GitHub Actions)
-- Frontend shell (React + Tailwind)
+- Frontend and backend (React + Tailwind + FastAPI)
 - Documentation at the right level of detail

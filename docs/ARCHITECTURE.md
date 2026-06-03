@@ -5,8 +5,7 @@
 OpenCobalt is a local-first control plane. It does not replace the AI tools you use -- it
 coordinates them, logs their results, and routes future work based on what has worked before.
 
-The core is a Python package (`opencobalt`) with a Typer CLI. No servers. No background daemons.
-No external calls unless explicitly configured.
+The core is a Python package (`opencobalt`) with a Typer CLI. No persistent background daemons. The `opencobalt ui` command starts a local FastAPI server and Vite dev server on demand; both stop when the command exits. No external calls unless explicitly configured.
 
 ## Package Layout
 
@@ -65,8 +64,8 @@ src/opencobalt/
     cursor_integration.py      GUI app stub; manager tier; status=available
     context7_integration.py    MCP server stub; manager tier; status=available
 ui/
-  src/App.jsx          React 18 + Tailwind 3 skeleton, 6 panels
-  -- backend not wired yet
+  src/App.jsx          React 18 + Tailwind 3 dashboard, 6 panels
+  -- FastAPI backend on port 8000; start with opencobalt ui from project root
 ```
 
 ## Data Flow

@@ -18,7 +18,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install package
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,server]"
 
       - name: Lint (ruff)
         run: ruff check src/ tests/
