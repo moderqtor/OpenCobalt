@@ -67,3 +67,7 @@ def test_slash_commands_list(shell: CobaltShell) -> None:
     assert "route" in commands
     assert "brief" in commands
     assert "verify" in commands
+
+
+def test_on_exit_does_not_raise(shell: CobaltShell) -> None:
+    shell.on_exit()
