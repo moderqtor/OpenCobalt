@@ -308,6 +308,8 @@ class CobaltShell:
         self._copy_brief_to_clipboard()
         self._open_tool(decision.recommended_tool)
         self._queue_background_council(task, decision.id)
+        from .core.verify import verify_async
+        verify_async(self._runner, root=Path("."), ledger=self._ledger)
 
     def _copy_brief_to_clipboard(self) -> None:
         try:

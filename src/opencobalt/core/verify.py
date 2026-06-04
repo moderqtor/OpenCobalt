@@ -9,6 +9,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from .models import VerificationResult
 from .public_safety import ScanResult, scan_directory
@@ -53,3 +54,14 @@ def run_all(root: Path | None = None, ledger=None) -> list[VerificationResult]:
         for r in results:
             ledger.insert_verification_result(r)
     return results
+
+
+def verify_async(runner: Any, root: Path, ledger: Any) -> None:
+    """Queue a verify run in the background. Results appear via runner.drain()."""
+    def _run() -> str:
+        results = run_all(root=root, ledger=ledger)
+        passed = all(r.passed for r in results)
+        summary = " · ".join(r.output_summary for r in results)
+        return f"{'VERIFIED' if passed else 'FAILED'}: {summary}"
+
+    runner.submit("verify-async", _run)
