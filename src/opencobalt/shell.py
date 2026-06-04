@@ -11,7 +11,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
 from rich.console import Console
 
-from .core.background import BackgroundResult, BackgroundRunner
+from .core.background import BackgroundResult, BackgroundRunner, TestWatcher
 from .core.brief import BriefGenerator
 from .core.learning_router import LearningRouter
 from .core.ledger import Ledger
@@ -69,6 +69,7 @@ class CobaltShell:
         self._ledger = Ledger(db_path)
         self._learning_router = LearningRouter(self._ledger)
         self._runner = BackgroundRunner(max_workers=3)
+        self._watcher = TestWatcher(self._runner)
         self._council_cache: dict[str, list[BackgroundResult]] = {}
         self._session: PromptSession = PromptSession(
             completer=WordCompleter(
@@ -88,6 +89,7 @@ class CobaltShell:
             "Ctrl+C to exit.[/dim]\n"
         )
 
+        self._watcher.start()
         try:
             while True:
                 self._drain_and_notify()
@@ -145,8 +147,37 @@ class CobaltShell:
 
     def on_exit(self) -> None:
         """Shut down background work and print a session footer."""
+        self._watcher.stop()
         self._runner.shutdown()
-        console.print("\n  [dim]Session ended.[/dim]\n")
+
+        try:
+            decisions = self._ledger.list_route_decisions(limit=50)
+            tool_counts: dict[str, int] = {}
+            for d in decisions:
+                tool_counts[d.recommended_tool] = tool_counts.get(d.recommended_tool, 0) + 1
+            summary_lines = ["Session ended."]
+            if tool_counts:
+                parts = " · ".join(
+                    f"{t} ×{n}"
+                    for t, n in sorted(tool_counts.items(), key=lambda x: -x[1])
+                )
+                summary_lines.append(f"routes: {parts}")
+        except Exception:
+            summary_lines = ["Session ended."]
+
+        try:
+            import platform
+            import subprocess as _sp
+
+            gen = BriefGenerator(self._ledger, bridge_path=self._bridge_path)
+            brief_text = gen.generate(days=1)
+            if platform.system() == "Darwin":
+                _sp.run(["pbcopy"], input=brief_text.encode(), check=True, capture_output=True)
+                summary_lines.append("brief copied to clipboard — paste into next session")
+        except Exception:
+            pass
+
+        console.print("\n  [dim]" + "\n  ".join(summary_lines) + "[/dim]\n")
 
     def _print_header(self) -> None:
         import importlib.metadata
@@ -335,9 +366,30 @@ class CobaltShell:
         results = self._runner.drain()
         if not results:
             return
-        console.print(f"\n  [{_AMBER}]background ready[/{_AMBER}]  [dim]{len(results)} model(s)[/dim]")
+        council_results = []
         for result in results:
-            model = result.task_id.split(":")[-1] if ":" in result.task_id else result.task_id
-            preview = (result.output[:80] + "...") if len(result.output) > 80 else result.output
-            console.print(f"  [dim][{model}][/dim] {preview}")
-        console.print("  [dim]run [bold]/council show[/bold] for full synthesis[/dim]\n")
+            if result.task_id == "test-watch":
+                self._notify_test_watch(result)
+            elif result.task_id == "verify-async":
+                console.print(f"\n  [dim]verify: {result.output}[/dim]")
+            else:
+                council_results.append(result)
+        if council_results:
+            console.print(
+                f"\n  [{_AMBER}]background ready[/{_AMBER}]"
+                f"  [dim]{len(council_results)} model(s)[/dim]"
+            )
+            for result in council_results:
+                model = result.task_id.split(":")[-1] if ":" in result.task_id else result.task_id
+                preview = (result.output[:80] + "...") if len(result.output) > 80 else result.output
+                console.print(f"  [dim][{model}][/dim] {preview}")
+            console.print("  [dim]run [bold]/council show[/bold] for full synthesis[/dim]\n")
+
+    def _notify_test_watch(self, result: BackgroundResult) -> None:
+        output = result.output or result.error or ""
+        if "failed" in output.lower() or "error" in output.lower():
+            console.print("\n  [bold red]TESTS FAILING[/bold red]")
+            for line in output.splitlines()[:5]:
+                console.print(f"  [dim]{line}[/dim]")
+        elif "passed" in output.lower():
+            console.print("\n  [bold green]tests ok[/bold green]")

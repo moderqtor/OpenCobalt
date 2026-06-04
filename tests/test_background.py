@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
-from opencobalt.core.background import BackgroundRunner
+from opencobalt.core.background import BackgroundRunner, TestWatcher
 
 
 def test_submit_and_drain():
@@ -52,4 +53,13 @@ def test_multiple_tasks_all_drain():
 
 def test_shutdown_is_safe_when_idle():
     runner = BackgroundRunner()
+    runner.shutdown()
+
+
+def test_test_watcher_starts_and_stops(tmp_path: Path) -> None:
+    runner = BackgroundRunner()
+    watcher = TestWatcher(runner, src_dir=tmp_path, interval_s=1)
+    watcher.start()
+    time.sleep(0.1)
+    watcher.stop()
     runner.shutdown()
