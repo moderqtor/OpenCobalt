@@ -113,3 +113,18 @@ def test_ensure_session_branch_skips_on_dirty_tree(shell: CobaltShell) -> None:
         patch("subprocess.run", return_value=dirty_result),
     ):
         shell._ensure_session_branch()
+
+
+def test_orch_in_slash_commands(shell: CobaltShell) -> None:
+    assert "orch" in shell.list_slash_commands()
+
+
+def test_dispatch_orch_calls_run_orch(shell: CobaltShell) -> None:
+    called_with: dict = {}
+
+    def fake_run_orch(expr: str) -> None:
+        called_with["expr"] = expr
+
+    shell._run_orch = fake_run_orch  # type: ignore[method-assign]
+    shell.dispatch("/orch implement auth with tests")
+    assert called_with.get("expr") == "implement auth with tests"

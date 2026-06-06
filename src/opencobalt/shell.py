@@ -58,6 +58,7 @@ class CobaltShell:
         "hooks",
         "council",
         "debate",
+        "orch",
         "install-hooks",
         "tui",
         "ui",
@@ -245,6 +246,9 @@ class CobaltShell:
         if cmd == "pipe":
             self._run_pipe(" ".join(args))
             return
+        if cmd == "orch":
+            self._run_orch(" ".join(args))
+            return
         if cmd == "graph":
             self._run_graph(args)
             return
@@ -277,6 +281,47 @@ class CobaltShell:
                     c.print(f"  [dim]{error}[/dim]")
         except ValueError as exc:
             c.print(f"  [{_AMBER}]pipeline error:[/{_AMBER}]  {exc}")
+
+    def _run_orch(self, expr: str) -> None:
+        from .core.orchestrator import OrchestrationSession
+
+        if not expr.strip():
+            console.print(
+                f"  [{_AMBER}]Usage:[/{_AMBER}]  /orch \"task\""
+                " or /orch \"task\" -> [claude:impl, codex:tests] -> merge"
+            )
+            return
+
+        console.print(
+            f"\n  [{_COBALT}]orchestrating[/{_COBALT}]"
+            f"  [dim]{expr[:60]}[/dim]\n"
+        )
+        session = OrchestrationSession()
+        result = session.run(expr)
+
+        for st in result.subtasks:
+            status = "[dim]ok[/dim]" if st.id in result.outputs else "[dim]skipped[/dim]"
+            console.print(f"  {status}  [dim]{st.task_type} -> {st.preferred_tool}[/dim]")
+
+        console.print()
+        console.print(result.synthesis)
+        console.print(
+            f"\n  [dim]elapsed {result.elapsed_s}s · "
+            f"{'success' if result.success else 'partial'}[/dim]"
+        )
+
+        try:
+            from .core.models import MultiRouteDecision
+            decision = MultiRouteDecision(
+                task=result.task,
+                subtasks=result.subtasks,
+                tools_used=[s.preferred_tool for s in result.subtasks],
+                result_id=result.id,
+            )
+            from .core.ledger import Ledger
+            Ledger(self._db_path).insert_multi_route_decision(decision)
+        except Exception:
+            pass
 
     def _show_council_cache(self) -> None:
         all_results = []
@@ -315,6 +360,18 @@ class CobaltShell:
         decision = self._learning_router.route(task)
         try:
             self._ledger.insert_route_decision(decision)
+        except Exception:
+            pass
+
+        try:
+            from .core.router import _TOOL_PROFILES
+            tier_hits: set[str] = set()
+            task_lower = task.lower()
+            for profile in _TOOL_PROFILES.values():
+                if any(kw in task_lower for kw in profile["keywords"]):
+                    tier_hits.add(profile["tier"])
+            if len(tier_hits) >= 2:
+                console.print("  [dim][multi] try /orch for parallel dispatch[/dim]")
         except Exception:
             pass
 
