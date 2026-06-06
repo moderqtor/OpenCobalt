@@ -206,3 +206,33 @@ class TestDesktop:
         assert "Tauri" in result.output, _debug(result)
         assert "FastAPI" in result.output, _debug(result)
         assert "--api-port" in result.output, _debug(result)
+
+
+# ── orch command ───────────────────────────────────────────────────────────────
+
+class TestOrch:
+    def test_help_is_registered(self):
+        result = _invoke("orch", "--help")
+        assert result.exit_code == 0, _debug(result)
+        assert "task" in result.output.lower() or "orch" in result.output.lower()
+
+    def test_orch_runs_with_patched_session(self, monkeypatch):
+        from unittest.mock import MagicMock, patch
+        from opencobalt.core.models import SubTask, OrchestrationResult
+
+        st = SubTask(task_type="impl", prompt="build it", preferred_tool="claude-code")
+        fake_result = MagicMock(spec=OrchestrationResult)
+        fake_result.success = True
+        fake_result.task = "build auth"
+        fake_result.subtasks = [st]
+        fake_result.outputs = {st.id: "done"}
+        fake_result.synthesis = "## merged output"
+        fake_result.elapsed_s = 0.1
+        fake_result.errors = []
+        fake_result.id = "test-id"
+
+        with patch("opencobalt.cli.OrchestrationSession") as mock_cls:
+            mock_cls.return_value.run.return_value = fake_result
+            result = _invoke("orch", "build auth")
+
+        assert result.exit_code == 0, _debug(result)

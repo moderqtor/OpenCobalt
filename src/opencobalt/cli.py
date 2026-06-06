@@ -53,6 +53,7 @@ from .core.ledger import Ledger
 from .core.memory import MemoryStore
 from .core.models import MemoryRecord, SessionEvent
 from .core.models_discovery import discover_models, is_ollama_available
+from .core.orchestrator import OrchestrationSession
 from .core.public_safety import scan_directory
 from .core.router import _TOOL_PROFILES, route_task
 from .core.verify import run_all
@@ -756,6 +757,36 @@ def verify() -> None:
     else:
         console.print(f"  [{_RED}]One or more checks failed.[/{_RED}]\n")
         raise typer.Exit(1)
+
+
+@app.command()
+def orch(
+    task: str = typer.Argument(..., help="Task to orchestrate across multiple agents"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show full synthesis output"),
+) -> None:
+    """Dispatch a task to multiple specialized agents in parallel."""
+    session = OrchestrationSession()
+    console.print(f"\n  [bold]orchestrating[/bold]  [dim]{task[:60]}[/dim]\n")
+    result = session.run(task)
+
+    for st in result.subtasks:
+        status = "ok" if st.id in result.outputs else "skipped"
+        console.print(f"  [dim]{status}  {st.task_type} -> {st.preferred_tool}[/dim]")
+
+    console.print()
+    lines = result.synthesis.splitlines()
+    display_lines = lines if verbose else lines[:20]
+    for line in display_lines:
+        console.print(f"  {line}")
+    if not verbose and len(lines) > 20:
+        console.print(f"  [dim]... {len(lines) - 20} more lines (use --verbose)[/dim]")
+
+    status_str = "success" if result.success else "partial"
+    console.print(f"\n  [dim]{status_str} · {result.elapsed_s}s[/dim]\n")
+
+    if result.errors:
+        for err in result.errors:
+            console.print(f"  [dim]error: {err}[/dim]")
 
 
 @app.command()
