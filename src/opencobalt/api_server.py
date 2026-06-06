@@ -17,11 +17,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .agents.registry import list_agents
-from .core.router import route_task
 from .core.benchmark import BenchmarkStore
 from .core.cost import CostTracker
 from .core.ledger import Ledger
 from .core.public_safety import scan_directory
+from .core.router import route_task
 from .integrations.registry import REGISTRY as _INTEGRATION_REGISTRY
 
 _START_TIME = time.time()
@@ -232,6 +232,7 @@ def get_timeline() -> list[dict[str, Any]]:
                 "detail": d.reasoning,
                 "model": d.recommended_tool,
                 "tier": d.tier,
+                "scores": d.scores or d.metadata.get("_scores", {}),
                 "cost": "$0.000",
                 "status": "ok",
             })

@@ -195,3 +195,14 @@ class TestModels:
     def test_exits_zero(self):
         result = _invoke("models")
         assert result.exit_code == 0, _debug(result)
+
+
+# ── desktop command ───────────────────────────────────────────────────────────
+
+class TestDesktop:
+    def test_help_is_registered_and_describes_tauri(self):
+        result = _invoke("desktop", "--help")
+        assert result.exit_code == 0, _debug(result)
+        assert "Tauri" in result.output, _debug(result)
+        assert "FastAPI" in result.output, _debug(result)
+        assert "--api-port" in result.output, _debug(result)

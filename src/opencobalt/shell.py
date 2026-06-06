@@ -202,7 +202,7 @@ class CobaltShell:
             f"[bold {_COBALT}]OpenCobalt[/bold {_COBALT}]  [dim]v{version}[/dim]",
             f"[dim]{now}[/dim]",
             "",
-            f"[dim]local-first AI orchestration[/dim]",
+            "[dim]local-first AI orchestration[/dim]",
         ]
 
         console.print()

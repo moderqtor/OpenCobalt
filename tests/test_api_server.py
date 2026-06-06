@@ -306,6 +306,23 @@ class TestTimeline:
         for key in ("id", "timestamp", "type", "title", "model", "tier", "status"):
             assert key in entry, f"missing key: {key}"
 
+    def test_timeline_route_entry_includes_scores(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from opencobalt.core.ledger import Ledger
+        from opencobalt.core.router import route_task
+
+        ledger = Ledger(tmp_path / ".opencobalt" / "ledger.db")
+        decision = route_task("design the auth module", record=False)
+        ledger.insert_route_decision(decision)
+
+        data = client.get("/api/timeline").json()
+        route_entries = [entry for entry in data if entry["type"] == "route"]
+        assert route_entries
+        scores = route_entries[0]["scores"]
+        assert isinstance(scores, dict)
+        assert scores
+        assert decision.recommended_tool in scores
+
 
 # ---------------------------------------------------------------------------
 # /api/receipts

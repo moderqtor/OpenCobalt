@@ -3,6 +3,7 @@ import {
   Terminal, Layers, ScrollText, Network, CheckSquare,
   Palette, Trophy, GitBranch, ChevronRight, Plus, ExternalLink
 } from "lucide-react";
+import RoutingGraph from "./RoutingGraph";
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&family=DM+Mono:wght@400;500&display=swap');
@@ -560,6 +561,7 @@ const OcLogo = () => (
 const NAV = [
   {id:"command",      Icon:Terminal,    label:"Command"},
   {id:"agents",       Icon:Network,     label:"Agents"},
+  {id:"graph",        Icon:GitBranch,   label:"Graph"},
   {id:"ledger",       Icon:ScrollText,  label:"Ledger"},
   {id:"benchmarks",   Icon:Trophy,      label:"Benchmarks"},
   {id:"integrations", Icon:GitBranch,   label:"Integrations"},
@@ -603,13 +605,14 @@ export default function App() {
 
   useEffect(() => {
     fetchAll();
-    const id = setInterval(fetchAll, 30000);
+    const id = setInterval(fetchAll, 2000);
     return () => clearInterval(id);
   }, []);
 
   const views = {
     command:      <CommandView      sessions={data.sessions}      loading={loading} error={error} onRoute={fetchAll}/>,
     agents:       <AgentsView       agents={data.agents}           loading={loading} error={error}/>,
+    graph:        <RoutingGraph     timeline={data.timeline}       loading={loading} error={error}/>,
     ledger:       <LedgerView       sessions={data.sessions} timeline={data.timeline} loading={loading} error={error}/>,
     benchmarks:   <BenchmarksView   benchmarks={data.benchmarks}   loading={loading} error={error}/>,
     integrations: <IntegrationsView integrations={data.integrations} loading={loading} error={error}/>,

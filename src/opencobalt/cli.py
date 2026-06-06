@@ -26,6 +26,7 @@ Usage:
   opencobalt config set KEY VALUE
   opencobalt config list
   opencobalt ui
+  opencobalt desktop
   opencobalt design brief
 """
 
@@ -1309,6 +1310,114 @@ def ui_shell(
             if p.poll() is None:
                 p.terminate()
         console.print("\n  [dim]Stopped.[/dim]\n")
+
+
+# ── Desktop command ───────────────────────────────────────────────────────────
+
+def _check_cargo_tauri() -> bool:
+    """Return True when the Rust Tauri CLI is available as `cargo tauri`."""
+    import subprocess
+
+    result = subprocess.run(
+        ["cargo", "tauri", "--version"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+@app.command("desktop")
+def desktop_shell(
+    api_port: int = typer.Option(8000, "--api-port", help="FastAPI server port"),
+) -> None:
+    """Start FastAPI in-process and launch the Tauri desktop app."""
+    import shutil
+    import subprocess
+    import threading
+    import time as _time
+    import urllib.error
+    import urllib.request
+
+    ui_dir = Path("ui")
+    if not ui_dir.exists():
+        err.print(f"\n[{_RED}]ui/ directory not found.[/{_RED}]  Run from the project root.\n")
+        raise typer.Exit(1)
+
+    if not (ui_dir / "src-tauri").exists():
+        err.print(f"\n[{_RED}]ui/src-tauri/ not found.[/{_RED}]  Tauri project is missing.\n")
+        raise typer.Exit(1)
+
+    if not shutil.which("npm"):
+        err.print(f"\n[{_RED}]npm not found.[/{_RED}]  Install Node.js from https://nodejs.org\n")
+        raise typer.Exit(1)
+
+    if not shutil.which("cargo"):
+        err.print(f"\n[{_RED}]cargo not found.[/{_RED}]  Install Rust from https://rustup.rs\n")
+        raise typer.Exit(1)
+
+    if not _check_cargo_tauri():
+        err.print(
+            f"\n[{_RED}]cargo tauri not found.[/{_RED}]  "
+            "Install Tauri CLI with: cargo install tauri-cli --version '^2'\n"
+        )
+        raise typer.Exit(1)
+
+    try:
+        import uvicorn
+    except ImportError:
+        err.print(f"\n[{_RED}]uvicorn not found.[/{_RED}]  Run: pip install -e '.[server]'\n")
+        raise typer.Exit(1) from None
+
+    config = uvicorn.Config(
+        "opencobalt.api_server:app",
+        host="127.0.0.1",
+        port=api_port,
+        log_level="warning",
+    )
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+
+    console.print(
+        f"\n  [bold {_COBALT}]OpenCobalt Desktop[/bold {_COBALT}]"
+        f"  [dim]starting...[/dim]\n"
+    )
+    thread.start()
+    _time.sleep(1)
+
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{api_port}/api/status", timeout=3)
+    except urllib.error.URLError:
+        server.should_exit = True
+        thread.join(timeout=5)
+        err.print(
+            f"\n[{_RED}]FastAPI server failed to start.[/{_RED}]  "
+            f"Port {api_port} may already be in use.\n"
+        )
+        raise typer.Exit(1) from None
+
+    tauri_proc: subprocess.Popen | None = None
+    return_code = 0
+    try:
+        console.print(f"  [dim]FastAPI server:[/dim]  http://127.0.0.1:{api_port}")
+        console.print("  [dim]Launching Tauri desktop app...[/dim]\n")
+        tauri_proc = subprocess.Popen(["cargo", "tauri", "dev"], cwd=ui_dir)
+        return_code = tauri_proc.wait()
+    except KeyboardInterrupt:
+        return_code = 0
+    finally:
+        if tauri_proc and tauri_proc.poll() is None:
+            tauri_proc.terminate()
+            try:
+                tauri_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                tauri_proc.kill()
+        server.should_exit = True
+        thread.join(timeout=5)
+        console.print("\n  [dim]Stopped desktop services.[/dim]\n")
+
+    if return_code != 0:
+        raise typer.Exit(return_code)
 
 
 # ── Stats command ─────────────────────────────────────────────────────────────

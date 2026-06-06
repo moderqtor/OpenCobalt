@@ -42,6 +42,8 @@ node_modules/
 dist/
 .next/
 .nuxt/
+ui/src-tauri/target/
+ui/src-tauri/gen/
 
 # macOS
 .DS_Store
