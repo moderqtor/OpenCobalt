@@ -218,7 +218,8 @@ class TestOrch:
 
     def test_orch_runs_with_patched_session(self, monkeypatch):
         from unittest.mock import MagicMock, patch
-        from opencobalt.core.models import SubTask, OrchestrationResult
+
+        from opencobalt.core.models import OrchestrationResult, SubTask
 
         st = SubTask(task_type="impl", prompt="build it", preferred_tool="claude-code")
         fake_result = MagicMock(spec=OrchestrationResult)
