@@ -43,7 +43,8 @@ def test_no_args_entry_point_exists():
 
 def _invoke(*args: str, **kwargs) -> object:
     """Invoke a CLI command. Keyword args forwarded to runner.invoke()."""
-    return runner.invoke(app, list(args), **kwargs)
+    env = {**kwargs.pop("env", {}), "NO_COLOR": "1"}
+    return runner.invoke(app, list(args), env=env, **kwargs)
 
 
 def _debug(result) -> str:
