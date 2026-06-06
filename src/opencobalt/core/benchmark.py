@@ -39,6 +39,8 @@ class BenchmarkRecord:
     score: float
     id: str = field(default_factory=_uid)
     timestamp: str = field(default_factory=_now_iso)
+    subagent_id: str | None = None
+    prompt_style: str | None = None
 
 
 _SCHEMA = """
@@ -52,7 +54,9 @@ CREATE TABLE IF NOT EXISTS benchmark_records (
     success     INTEGER NOT NULL,
     model_used  TEXT NOT NULL,
     tier        TEXT NOT NULL,
-    score       REAL NOT NULL
+    score       REAL NOT NULL,
+    subagent_id  TEXT,
+    prompt_style TEXT
 );
 """
 
@@ -77,12 +81,19 @@ class BenchmarkStore:
     def _init_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            for col, typedef in [("subagent_id", "TEXT"), ("prompt_style", "TEXT")]:
+                try:
+                    conn.execute(
+                        f"ALTER TABLE benchmark_records ADD COLUMN {col} {typedef}"
+                    )
+                except Exception:
+                    pass
 
     def record(self, result: BenchmarkRecord) -> None:
         """Persist a single benchmark result."""
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO benchmark_records VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO benchmark_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     result.id,
                     result.timestamp,
@@ -94,6 +105,8 @@ class BenchmarkStore:
                     result.model_used,
                     result.tier,
                     result.score,
+                    result.subagent_id,
+                    result.prompt_style,
                 ),
             )
 
