@@ -1,4 +1,4 @@
-from opencobalt.core.subagent_registry import SubagentRegistry, SubagentSpec
+from opencobalt.core.subagent_registry import SubagentRegistry
 
 
 def test_registry_has_six_agents():

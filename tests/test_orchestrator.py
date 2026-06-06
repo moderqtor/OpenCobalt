@@ -1,12 +1,12 @@
-import pytest
 from unittest.mock import patch
+
+from opencobalt.core.models import SubTask
 from opencobalt.core.orchestrator import (
     OrchestrationDSLParser,
     OrchestrationExecutor,
     OrchestrationSession,
     ResultSynthesizer,
 )
-from opencobalt.core.models import SubTask, OrchestrationResult
 
 
 def _make_subtask(task_type: str, tool: str) -> SubTask:

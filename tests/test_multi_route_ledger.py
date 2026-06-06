@@ -1,4 +1,5 @@
 import pytest
+
 from opencobalt.core.ledger import Ledger
 from opencobalt.core.models import MultiRouteDecision, SubTask
 
