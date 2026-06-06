@@ -3,8 +3,11 @@ from opencobalt.core.models import (
     ContextPack,
     DesignBrief,
     MemoryRecord,
+    MultiRouteDecision,
+    OrchestrationResult,
     RouteDecision,
     SessionEvent,
+    SubTask,
     ToolRun,
     VerificationResult,
 )
@@ -63,3 +66,36 @@ def test_design_brief_defaults():
 def test_tool_run():
     tr = ToolRun(session_id="s1", tool="claude-code", command="implement auth")
     assert tr.exit_code is None
+
+
+def test_subtask_defaults():
+    st = SubTask(task_type="impl", prompt="build it", preferred_tool="claude-code")
+    assert st.id
+    assert st.preferred_agent is None
+
+
+def test_orchestration_result_success_flag():
+    st = SubTask(task_type="impl", prompt="build it", preferred_tool="claude-code")
+    r = OrchestrationResult(
+        task="build auth",
+        subtasks=[st],
+        outputs={st.id: "done"},
+        synthesis="merged",
+        elapsed_s=1.2,
+        success=True,
+    )
+    assert r.success
+    assert r.errors == []
+
+
+def test_multi_route_decision_fields():
+    st = SubTask(task_type="tests", prompt="write tests", preferred_tool="codex-cli")
+    d = MultiRouteDecision(
+        task="build auth",
+        subtasks=[st],
+        tools_used=["codex-cli"],
+        result_id="abc",
+    )
+    assert d.id
+    assert d.timestamp
+    assert d.tools_used == ["codex-cli"]

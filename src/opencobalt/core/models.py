@@ -99,3 +99,33 @@ class DesignBrief(BaseModel):
     design_tokens: dict[str, str] = Field(default_factory=dict)
     anti_slop_rules: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SubTask(BaseModel):
+    id: str = Field(default_factory=_uid)
+    task_type: str
+    prompt: str
+    preferred_tool: str
+    preferred_agent: str | None = None
+
+
+class OrchestrationResult(BaseModel):
+    id: str = Field(default_factory=_uid)
+    timestamp: datetime = Field(default_factory=_now)
+    task: str
+    subtasks: list[SubTask]
+    outputs: dict[str, str] = Field(default_factory=dict)
+    synthesis: str = ""
+    elapsed_s: float = 0.0
+    success: bool = False
+    errors: list[str] = Field(default_factory=list)
+
+
+class MultiRouteDecision(BaseModel):
+    id: str = Field(default_factory=_uid)
+    timestamp: datetime = Field(default_factory=_now)
+    task: str
+    subtasks: list[SubTask]
+    tools_used: list[str] = Field(default_factory=list)
+    result_id: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
