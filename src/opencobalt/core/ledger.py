@@ -11,8 +11,10 @@ from pathlib import Path
 
 from .models import (
     MemoryRecord,
+    MultiRouteDecision,
     RouteDecision,
     SessionEvent,
+    SubTask,
     VerificationResult,
 )
 
@@ -67,6 +69,16 @@ CREATE TABLE IF NOT EXISTS outcomes (
     task_id     TEXT NOT NULL,
     tool        TEXT NOT NULL,
     outcome     TEXT NOT NULL,
+    metadata    TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS multi_route_decisions (
+    id          TEXT PRIMARY KEY,
+    timestamp   TEXT NOT NULL,
+    task        TEXT NOT NULL,
+    subtasks    TEXT NOT NULL DEFAULT '[]',
+    tools_used  TEXT NOT NULL DEFAULT '[]',
+    result_id   TEXT NOT NULL DEFAULT '',
     metadata    TEXT NOT NULL DEFAULT '{}'
 );
 """
@@ -293,3 +305,42 @@ class Ledger:
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [dict(row) for row in rows]
+
+    # --- Multi-route decisions ---
+
+    def insert_multi_route_decision(self, decision: MultiRouteDecision) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO multi_route_decisions VALUES (?,?,?,?,?,?,?)",
+                (
+                    decision.id,
+                    decision.timestamp.isoformat(),
+                    decision.task,
+                    json.dumps([st.model_dump() for st in decision.subtasks]),
+                    json.dumps(decision.tools_used),
+                    decision.result_id,
+                    json.dumps(decision.metadata),
+                ),
+            )
+
+    def list_multi_route_decisions(self, *, limit: int = 20) -> list[MultiRouteDecision]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM multi_route_decisions ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        results = []
+        for r in rows:
+            subtasks = [SubTask(**s) for s in json.loads(r["subtasks"])]
+            results.append(
+                MultiRouteDecision(
+                    id=r["id"],
+                    timestamp=r["timestamp"],
+                    task=r["task"],
+                    subtasks=subtasks,
+                    tools_used=json.loads(r["tools_used"]),
+                    result_id=r["result_id"],
+                    metadata=json.loads(r["metadata"]),
+                )
+            )
+        return results
