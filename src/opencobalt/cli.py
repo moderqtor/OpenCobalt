@@ -774,10 +774,11 @@ def orch(
         console.print(f"  [dim]{status}  {st.task_type} -> {st.preferred_tool}[/dim]")
 
     console.print()
+    from rich.markup import escape as _escape
     lines = result.synthesis.splitlines()
     display_lines = lines if verbose else lines[:20]
     for line in display_lines:
-        console.print(f"  {line}")
+        console.print(f"  {_escape(line)}")
     if not verbose and len(lines) > 20:
         console.print(f"  [dim]... {len(lines) - 20} more lines (use --verbose)[/dim]")
 

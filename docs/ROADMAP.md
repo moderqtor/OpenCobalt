@@ -107,8 +107,6 @@ that does not change the local-first default.
 
 ---
 
-## In Progress / Next
-
 ### Phase 10: Desktop App + Routing Visualization
 
 - Replace localhost React UI with a standalone desktop app (Tauri recommended: ~8MB, no Node runtime)
@@ -119,11 +117,24 @@ that does not change the local-first default.
 
 ### Phase 11: Multi-Agent Orchestration
 
+- Orchestration DSL: `/orch "task"` and `/orch "task" -> [claude:impl, codex:tests] -> merge`
+- `TaskDecomposer`: keyword-based split into typed subtasks (impl, tests, docs, review, analyze, summarize)
+- `SubagentRegistry`: 6 specialized agents (impl-agent, test-gen, doc-writer, security-reviewer, analyst-agent/gemini, summarizer/ollama)
+- `OrchestrationExecutor`: parallel fan-out via dedicated `BackgroundRunner(max_workers=6)`
+- `MultiRouteDecision` model and ledger table for full fan-out audit trail
+- `BenchmarkRecord` extended with `subagent_id` and `prompt_style` columns
+- `opencobalt orch TASK` CLI command
+- Multi-route hint in shell when task spans multiple tiers
+
+### Phase 12: Connector Expansion
+
 - Prompt splitting: decompose a task into N subtasks, dispatch each to the best-fit tool in parallel
 - Cross-agent communication protocol: Claude + Codex can exchange sub-results within one session
 - Specialized subagent registry: agents tuned per task type (code review, refactor, test gen, docs)
 - Subagent benchmarking: track performance per subagent type, not just per top-level tool
 - Prompt style benchmarking: track which prompt forms produce the best results per model
+
+## In Progress / Next
 
 ### Phase 12: Connector Expansion
 

@@ -304,7 +304,8 @@ class CobaltShell:
             console.print(f"  {status}  [dim]{st.task_type} -> {st.preferred_tool}[/dim]")
 
         console.print()
-        console.print(result.synthesis)
+        from rich.markup import escape as _escape
+        console.print(_escape(result.synthesis))
         console.print(
             f"\n  [dim]elapsed {result.elapsed_s}s · "
             f"{'success' if result.success else 'partial'}[/dim]"
