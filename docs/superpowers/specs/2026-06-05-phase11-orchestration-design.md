@@ -154,6 +154,8 @@ New slash command registered in `CobaltShell._CLI_COMMANDS`:
 
 ## 10. Execution and error handling
 
+`OrchestrationExecutor` constructs its own `BackgroundRunner(max_workers=6)` -- separate from the shell's runner -- so orchestration jobs do not compete with background verify or test-watch slots.
+
 `OrchestrationExecutor.run()`:
 1. Dispatches all subtasks via `BackgroundRunner` simultaneously
 2. Waits for all futures with a configurable timeout (default 120s per subtask)
