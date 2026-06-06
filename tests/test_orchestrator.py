@@ -44,7 +44,7 @@ def test_executor_runs_subtasks():
 
     executor = OrchestrationExecutor()
     with patch.object(executor, "_dispatch_subtask", side_effect=fake_dispatch):
-        result = executor.run("build auth", [st1, st2])
+        result = executor.run("build auth", [st1, st2], show_live=False)
 
     assert result.success
     assert len(result.outputs) == 2
@@ -54,7 +54,7 @@ def test_executor_runs_subtasks():
 def test_executor_handles_missing_tool():
     st = _make_subtask("impl", "nonexistent-tool-xyz")
     executor = OrchestrationExecutor()
-    result = executor.run("build auth", [st])
+    result = executor.run("build auth", [st], show_live=False)
     output = result.outputs.get(st.id, "")
     assert output.startswith("[")
 
@@ -73,7 +73,7 @@ def test_executor_partial_failure_still_succeeds():
 
     executor = OrchestrationExecutor()
     with patch.object(executor, "_dispatch_subtask", side_effect=fake_dispatch):
-        result = executor.run("do stuff", [st_good, st_bad])
+        result = executor.run("do stuff", [st_good, st_bad], show_live=False)
 
     assert result.success
     assert call_count["n"] == 2
@@ -110,7 +110,7 @@ def test_session_run_auto():
     with patch.object(
         session._executor, "_dispatch_subtask", return_value="fake output"
     ):
-        result = session.run("implement OAuth2 with tests")
+        result = session.run("implement OAuth2 with tests", show_live=False)
 
     assert result.success
     assert result.synthesis
@@ -121,7 +121,10 @@ def test_session_run_explicit():
     with patch.object(
         session._executor, "_dispatch_subtask", return_value="fake output"
     ):
-        result = session.run('"implement auth" -> [claude:impl, codex:tests] -> merge')
+        result = session.run(
+            '"implement auth" -> [claude:impl, codex:tests] -> merge',
+            show_live=False,
+        )
 
     assert result.task == "implement auth"
     assert result.success

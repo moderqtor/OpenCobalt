@@ -43,4 +43,4 @@ def test_clipboard_content_contains_brief(tmp_path: Path) -> None:
     # Brief must have the required sections
     assert "Recent Work" in output
     assert "Last Session" in output
-    assert "Architecture" in output
+    assert "Project Context" in output

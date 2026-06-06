@@ -53,7 +53,6 @@ from .core.ledger import Ledger
 from .core.memory import MemoryStore
 from .core.models import MemoryRecord, SessionEvent
 from .core.models_discovery import discover_models, is_ollama_available
-from .core.orchestrator import OrchestrationSession
 from .core.public_safety import scan_directory
 from .core.router import _TOOL_PROFILES, route_task
 from .core.verify import run_all
@@ -762,32 +761,35 @@ def verify() -> None:
 @app.command()
 def orch(
     task: str = typer.Argument(..., help="Task to orchestrate across multiple agents"),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show full synthesis output"),
 ) -> None:
-    """Dispatch a task to multiple specialized agents in parallel."""
+    """Dispatch a task to multiple specialized agents in parallel with live status."""
+    from .core.orchestrator import OrchestrationSession, ResultSynthesizer  # noqa: PLC0415
+
     session = OrchestrationSession()
-    console.print(f"\n  [bold]orchestrating[/bold]  [dim]{task[:60]}[/dim]\n")
-    result = session.run(task)
+    result = session.run(task, show_live=True)
 
-    for st in result.subtasks:
-        status = "ok" if st.id in result.outputs else "skipped"
-        console.print(f"  [dim]{status}  {st.task_type} -> {st.preferred_tool}[/dim]")
+    synthesizer = ResultSynthesizer()
+    synthesizer.print_rich(result.task, result.subtasks, result.outputs)
 
-    console.print()
-    from rich.markup import escape as _escape
-    lines = result.synthesis.splitlines()
-    display_lines = lines if verbose else lines[:20]
-    for line in display_lines:
-        console.print(f"  {_escape(line)}")
-    if not verbose and len(lines) > 20:
-        console.print(f"  [dim]... {len(lines) - 20} more lines (use --verbose)[/dim]")
+    agent_word = "agent" if len(result.subtasks) == 1 else "agents"
+    console.print(
+        f"  [dim]completed in {result.elapsed_s:.1f}s"
+        f" · {len(result.subtasks)} {agent_word}"
+        f" · {'success' if result.success else 'partial'}[/dim]\n"
+    )
 
-    status_str = "success" if result.success else "partial"
-    console.print(f"\n  [dim]{status_str} · {result.elapsed_s}s[/dim]\n")
 
-    if result.errors:
-        for err in result.errors:
-            console.print(f"  [dim]error: {err}[/dim]")
+@app.command()
+def auto(
+    task: str = typer.Argument(..., help="Seed task for autonomous multi-hour execution"),
+    iterations: int = typer.Option(20, "--iterations", "-n", help="Max iterations"),
+    hours: float = typer.Option(5.0, "--hours", "-t", help="Max runtime in hours"),
+) -> None:
+    """Run an autonomous multi-agent session for hours. Rotates tools to spread usage limits."""
+    from .core.autonomous_runner import AutonomousRunner
+
+    runner = AutonomousRunner(max_iterations=iterations, max_hours=hours)
+    runner.run(task)
 
 
 @app.command()

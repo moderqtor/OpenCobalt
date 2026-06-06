@@ -59,6 +59,7 @@ class CobaltShell:
         "council",
         "debate",
         "orch",
+        "auto",
         "install-hooks",
         "tui",
         "ui",
@@ -249,11 +250,17 @@ class CobaltShell:
         if cmd == "orch":
             self._run_orch(" ".join(args))
             return
+        if cmd == "auto":
+            self._run_auto(" ".join(args))
+            return
         if cmd == "graph":
             self._run_graph(args)
             return
-        if cmd == "council" and args and args[0] == "show":
-            self._show_council_cache()
+        if cmd == "council":
+            if not args or args[0] == "show":
+                self._show_council_cache()
+            else:
+                subprocess.run(["opencobalt", "council"] + args)
             return
         argv = ["opencobalt", cmd] + args
         subprocess.run(argv)
@@ -283,7 +290,7 @@ class CobaltShell:
             c.print(f"  [{_AMBER}]pipeline error:[/{_AMBER}]  {exc}")
 
     def _run_orch(self, expr: str) -> None:
-        from .core.orchestrator import OrchestrationSession
+        from .core.orchestrator import OrchestrationSession, ResultSynthesizer
 
         if not expr.strip():
             console.print(
@@ -292,23 +299,19 @@ class CobaltShell:
             )
             return
 
-        console.print(
-            f"\n  [{_COBALT}]orchestrating[/{_COBALT}]"
-            f"  [dim]{expr[:60]}[/dim]\n"
-        )
         session = OrchestrationSession()
-        result = session.run(expr)
+        result = session.run(expr, show_live=True)
 
-        for st in result.subtasks:
-            status = "[dim]ok[/dim]" if st.id in result.outputs else "[dim]skipped[/dim]"
-            console.print(f"  {status}  [dim]{st.task_type} -> {st.preferred_tool}[/dim]")
+        # Rich panel display per agent
+        synthesizer = ResultSynthesizer()
+        synthesizer.print_rich(result.task, result.subtasks, result.outputs)
 
-        console.print()
-        from rich.markup import escape as _escape
-        console.print(_escape(result.synthesis))
+        elapsed_str = f"{result.elapsed_s:.1f}s"
+        agent_word = "agent" if len(result.subtasks) == 1 else "agents"
         console.print(
-            f"\n  [dim]elapsed {result.elapsed_s}s · "
-            f"{'success' if result.success else 'partial'}[/dim]"
+            f"  [dim]completed in {elapsed_str}"
+            f" · {len(result.subtasks)} {agent_word}"
+            f" · {'success' if result.success else 'partial'}[/dim]\n"
         )
 
         try:
@@ -323,6 +326,18 @@ class CobaltShell:
             Ledger(self._db_path).insert_multi_route_decision(decision)
         except Exception:
             pass
+
+    def _run_auto(self, task: str) -> None:
+        from .core.autonomous_runner import AutonomousRunner
+
+        if not task.strip():
+            console.print(
+                f"  [{_AMBER}]Usage:[/{_AMBER}]  /auto \"seed task\""
+                "  Runs for up to 5 hours across all available agents."
+            )
+            return
+        runner = AutonomousRunner()
+        runner.run(task)
 
     def _show_council_cache(self) -> None:
         all_results = []
@@ -387,7 +402,7 @@ class CobaltShell:
         )
 
         self._copy_brief_to_clipboard()
-        self._open_tool(decision.recommended_tool)
+        self._open_tool(decision.recommended_tool, task)
         self._queue_background_council(task, decision.id)
         from .core.verify import verify_async
         verify_async(self._runner, root=Path("."), ledger=self._ledger)
@@ -464,7 +479,7 @@ class CobaltShell:
         except Exception:
             pass
 
-    def _open_tool(self, tool: str) -> None:
+    def _open_tool(self, tool: str, task: str = "") -> None:
         import shutil
 
         binaries = {
@@ -485,7 +500,8 @@ class CobaltShell:
             console.print(f"  [{_AMBER}]{binary} not on PATH[/{_AMBER}]  [dim]check install[/dim]")
             return
         console.print(f"  [dim]opening {binary}...[/dim]\n")
-        subprocess.Popen([binary])
+        cmd = [binary, task] if task else [binary]
+        subprocess.Popen(cmd)
 
     def _queue_background_council(self, task: str, task_id: str) -> None:
         import shutil

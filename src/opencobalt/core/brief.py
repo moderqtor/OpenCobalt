@@ -1,15 +1,15 @@
-"""Temporal context injection -- generates a session brief from ledger + memory."""
+"""Temporal context injection -- session brief from ledger, memory, and project cwd."""
 
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from .ledger import Ledger
 
-_ARCH_DOC = Path("docs/ARCHITECTURE.md")
 _MEMORIES_DB = Path(".opencobalt") / "memories.db"
 _MARKER = "# OpenCobalt brief"
 
@@ -50,7 +50,10 @@ class BriefGenerator:
             tool_counts: dict[str, int] = {}
             for d in recent:
                 tool_counts[d.recommended_tool] = tool_counts.get(d.recommended_tool, 0) + 1
-            summary = ", ".join(f"{n} tasks to {t}" for t, n in sorted(tool_counts.items(), key=lambda x: -x[1]))
+            summary = ", ".join(
+                f"{n} tasks to {t}"
+                for t, n in sorted(tool_counts.items(), key=lambda x: -x[1])
+            )
             sections.append(f"_{summary}_\n")
             for d in recent[:8]:
                 _ts = _parse_ts(d.timestamp)
@@ -74,17 +77,15 @@ class BriefGenerator:
             sections.append("_No notes in this period._")
         sections.append("")
 
-        # ── Open decisions ────────────────────────────────────────────────────
         sections.append("## Open Decisions")
         if decisions_tagged:
             for n in decisions_tagged[:4]:
                 ts_str = n.get("timestamp", "")[:10]
                 sections.append(f"- {ts_str}: {n.get('content', '')[:100]}")
         else:
-            sections.append("_None recorded. Tag decisions with: opencobalt note \"...\" --tags decision_")
+            sections.append('_None recorded._')
         sections.append("")
 
-        # ── Current risks ─────────────────────────────────────────────────────
         if risks:
             sections.append("## Current Risks")
             for n in risks[:4]:
@@ -92,13 +93,9 @@ class BriefGenerator:
                 sections.append(f"- {ts_str}: {n.get('content', '')[:100]}")
             sections.append("")
 
-        # ── Architecture snapshot ──────────────────────────────────────────────
-        sections.append("## Architecture Snapshot")
-        if _ARCH_DOC.exists():
-            lines = _ARCH_DOC.read_text(encoding="utf-8").splitlines()[:20]
-            sections.append("\n".join(lines))
-        else:
-            sections.append("_docs/ARCHITECTURE.md not found_")
+        # ── Project context (replaces OpenCobalt architecture snapshot) ────────
+        sections.append("## Project Context")
+        sections.append(self._project_context())
         sections.append("")
 
         # ── Last session ──────────────────────────────────────────────────────
@@ -115,7 +112,8 @@ class BriefGenerator:
         return "\n".join(sections)
 
     def generate_startup(self) -> str:
-        """Return a compact 4-6 line brief for shell startup."""
+        """Return a compact brief for shell startup."""
+        cwd = Path.cwd()
         cutoff = _now_utc() - timedelta(days=1)
         decisions = self._ledger.list_route_decisions(limit=100)
         recent = [
@@ -123,7 +121,9 @@ class BriefGenerator:
             if (_parse_ts(d.timestamp) or _now_utc()) >= cutoff
         ]
 
-        lines = ["BRIEF  yesterday"]
+        project_name = cwd.name
+        lines = [f"BRIEF  {project_name}"]
+
         if recent:
             tool_counts: dict[str, int] = {}
             for d in recent:
@@ -136,12 +136,11 @@ class BriefGenerator:
             last = recent[0]
             lines.append(f"→ last: {last.task[:60]}")
         else:
-            lines.append("→ no activity yesterday")
+            lines.append("→ no activity yet in this project")
 
         risks = self._get_recent_notes(cutoff=_now_utc() - timedelta(days=7), tag="risk")
         decisions_tagged = self._get_recent_notes(
-            cutoff=_now_utc() - timedelta(days=7),
-            tag="decision",
+            cutoff=_now_utc() - timedelta(days=7), tag="decision",
         )
         if risks:
             lines.append(f"! risk: {risks[0].get('content', '')[:60]}")
@@ -150,7 +149,37 @@ class BriefGenerator:
         if not risks and not decisions_tagged:
             lines.append("✓ no open risks or decisions")
 
+        # Show stack if detectable
+        stack = _detect_stack(cwd)
+        if stack:
+            lines.append(f"  stack: {stack}")
+
         return "\n".join(lines)
+
+    def _project_context(self) -> str:
+        """Build project context from cwd — stack, git, readme."""
+        cwd = Path.cwd()
+        parts: list[str] = [f"**{cwd.name}**"]
+
+        stack = _detect_stack(cwd)
+        if stack:
+            parts.append(f"Stack: {stack}")
+
+        branch = _git_branch(cwd)
+        if branch:
+            parts.append(f"Branch: {branch}")
+
+        log = _git_log(cwd, n=6)
+        if log:
+            parts.append(f"\nRecent commits:\n{log}")
+        else:
+            parts.append("No git history yet")
+
+        readme_excerpt = _readme_excerpt(cwd)
+        if readme_excerpt:
+            parts.append(f"\n{readme_excerpt}")
+
+        return "\n".join(parts)
 
     def _get_recent_notes(self, cutoff: datetime, tag: str | None) -> list[dict]:
         try:
@@ -180,3 +209,73 @@ class BriefGenerator:
             return result
         except Exception:
             return []
+
+
+# ── Project detection helpers ──────────────────────────────────────────────────
+
+def _detect_stack(cwd: Path) -> str:
+    parts: list[str] = []
+
+    if (cwd / "package.json").exists():
+        try:
+            pkg = json.loads((cwd / "package.json").read_text(encoding="utf-8"))
+            deps = list(pkg.get("dependencies", {}).keys())
+            fw = next(
+                (d for d in deps if d in ("react", "vue", "svelte", "next", "nuxt", "astro")),
+                None,
+            )
+            parts.append(f"Node.js{f'/{fw}' if fw else ''}")
+        except Exception:
+            parts.append("Node.js")
+
+    if (cwd / "pyproject.toml").exists() or (cwd / "setup.py").exists():
+        parts.append("Python")
+
+    if (cwd / "Cargo.toml").exists():
+        parts.append("Rust")
+
+    if (cwd / "go.mod").exists():
+        parts.append("Go")
+
+    if (cwd / "pubspec.yaml").exists():
+        parts.append("Dart/Flutter")
+
+    if (cwd / "src-tauri").exists():
+        parts.append("Tauri")
+
+    return " · ".join(parts)
+
+
+def _git_branch(cwd: Path) -> str:
+    try:
+        r = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True, text=True, timeout=5, cwd=cwd,
+        )
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _git_log(cwd: Path, n: int = 5) -> str:
+    try:
+        r = subprocess.run(
+            ["git", "log", "--oneline", f"-{n}"],
+            capture_output=True, text=True, timeout=5, cwd=cwd,
+        )
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _readme_excerpt(cwd: Path) -> str:
+    for name in ("README.md", "readme.md", "README.rst", "README"):
+        p = cwd / name
+        if p.exists():
+            try:
+                content = p.read_text(encoding="utf-8")
+                para = content.split("\n\n")[0].strip()
+                return para[:200]
+            except Exception:
+                pass
+    return ""

@@ -128,6 +128,27 @@ class TestPublicCheck:
         result = _invoke("public-check")
         assert "clean" in result.output.lower(), _debug(result)
 
+    def test_exits_zero_with_generated_tauri_target_artifacts(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "ui" / "src-tauri" / "target" / "debug"
+        target.mkdir(parents=True)
+        (target / "opencobalt-desktop").write_bytes(b"x" * (11 * 1024 * 1024))
+        (target / "__global-api-script.js").write_text("~/cobaltos-vault build path")
+
+        result = _invoke("public-check")
+
+        assert result.exit_code == 0, _debug(result)
+        assert "clean" in result.output.lower(), _debug(result)
+
+    def test_exits_nonzero_when_temp_project_has_env_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text("OPENCOBALT_TOKEN=abcdefg\n")
+
+        result = _invoke("public-check")
+
+        assert result.exit_code == 1
+        assert ".env file present" in result.output
+
 
 # ── agents list command ───────────────────────────────────────────────────────
 
@@ -233,7 +254,7 @@ class TestOrch:
         fake_result.errors = []
         fake_result.id = "test-id"
 
-        with patch("opencobalt.cli.OrchestrationSession") as mock_cls:
+        with patch("opencobalt.core.orchestrator.OrchestrationSession") as mock_cls:
             mock_cls.return_value.run.return_value = fake_result
             result = _invoke("orch", "build auth")
 
