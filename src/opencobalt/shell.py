@@ -414,8 +414,10 @@ class CobaltShell:
             "codex-cli": "codex",
             "gemini-cli": "gemini",
             "antigravity-cli": "antigravity",
+            "github-cli": "gh",
             "cursor": "cursor",
             "ollama": None,
+            "obsidian": None,
         }
         binary = binaries.get(tool, tool)
         if binary is None:

@@ -13,6 +13,8 @@ from .claude_code_integration import ClaudeCodeIntegration
 from .context7_integration import Context7Integration
 from .cursor_integration import CursorIntegration
 from .gemini_cli_integration import GeminiCLIIntegration
+from .github_integration import GitHubIntegration
+from .obsidian_integration import ObsidianIntegration
 from .ollama_integration import OllamaIntegration
 
 REGISTRY: dict[str, BaseIntegration] = {
@@ -22,6 +24,8 @@ REGISTRY: dict[str, BaseIntegration] = {
     "context7": Context7Integration(),
     "cursor": CursorIntegration(),
     "gemini-cli": GeminiCLIIntegration(),
+    "github-cli": GitHubIntegration(),
+    "obsidian": ObsidianIntegration(),
     "ollama": OllamaIntegration(),
 }
 

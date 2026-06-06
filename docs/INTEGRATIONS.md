@@ -15,12 +15,15 @@ Integrations are not dependencies. If the external tool is not installed, the in
 
 | Name | Source | Tier | Capabilities | Install check | Status |
 |------|--------|------|-------------|---------------|--------|
-| aider | https://github.com/paul-gauthier/aider | worker | (code editing) | `shutil.which("aider")` | stub if not installed |
-| ollama | https://github.com/ollama/ollama | worker | (local inference) | `subprocess.run(["ollama", "list"])` returns 0 | stub if not installed |
+| aider | https://github.com/paul-gauthier/aider | worker | code editing | `shutil.which("aider")` | stub if not installed |
+| ollama | https://github.com/ollama/ollama | worker | local inference | `subprocess.run(["ollama", "list"])` returns 0 | stub if not installed |
 | claude-code | https://github.com/anthropics/claude-code | executive | architecture, code, review, debug, security | `shutil.which("claude")` | stub if not installed |
 | gemini-cli | https://github.com/google-gemini/gemini-cli | executive | long-context, search, analyze, audit | `shutil.which("gemini")` | stub if not installed |
+| antigravity-cli | https://antigravity.google/product/antigravity-cli | executive | long-context, search, analyze, multimodal | `shutil.which("antigravity")` | stub (successor to Gemini CLI) |
 | cursor | https://www.cursor.com | manager | ui, editor, frontend, component, style | not checkable via PATH | always available |
 | context7 | https://github.com/upstash/context7 | manager | docs, search, mcp, library-context | not checkable via PATH | always available |
+| github-cli | https://github.com/cli/cli | manager | pr-create, issue-link, branch, review | `shutil.which("gh")` | stub if not installed |
+| obsidian | https://obsidian.md | manager | notes, knowledge-base, export, search | `/Applications/Obsidian.app` exists | available if installed |
 
 ## Adding a new integration
 

@@ -39,6 +39,12 @@ _TOOL_PROFILES: dict[str, dict] = {
         "keywords": ["entire", "all files", "codebase", "read through", "scan", "analyze all", "find all", "long", "bulk", "comprehensive"],
         "base_score": 60,
     },
+    "antigravity-cli": {
+        "tier": "executive",
+        "task_types": ["long-context", "multimodal", "search", "analyze"],
+        "keywords": ["antigravity", "multimodal", "image", "screenshot", "visual analysis", "cross-file"],
+        "base_score": 58,
+    },
     "cursor": {
         "tier": "manager",
         "task_types": ["ui", "frontend", "editor", "component", "style", "css"],
@@ -84,7 +90,7 @@ def route_task(task: str, *, record: bool = False) -> RouteDecision:
     # Hard rules: worker-tier ceiling for certain task types
     if any(w in task_lower for w in _WORKER_ONLY_TASKS):
         scores["ollama"] += 30
-        for t in ("claude-code", "codex-cli", "gemini-cli", "cursor"):
+        for t in ("claude-code", "codex-cli", "gemini-cli", "antigravity-cli", "cursor"):
             scores[t] = max(scores[t] - 20, 0)
 
     # Hard rules: executive tasks must not route to Ollama

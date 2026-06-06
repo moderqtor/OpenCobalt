@@ -160,9 +160,9 @@ class TestIntegrations:
         data = _get("/api/integrations", tmp_path, monkeypatch)
         assert isinstance(data, list)
 
-    def test_has_seven_integrations(self, tmp_path, monkeypatch):
+    def test_has_nine_integrations(self, tmp_path, monkeypatch):
         data = _get("/api/integrations", tmp_path, monkeypatch)
-        assert len(data) == 7
+        assert len(data) == 9
 
     def test_entry_shape(self, tmp_path, monkeypatch):
         data = _get("/api/integrations", tmp_path, monkeypatch)
