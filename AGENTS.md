@@ -36,8 +36,8 @@ makes no API calls and requires no internet connection.
 
 | Tier | Tools | Task types |
 |------|-------|------------|
-| executive | Claude Code, Gemini CLI | Architecture, security, final code, public docs, strategy |
-| manager | Codex CLI, Cursor, Context7 | Tests, lint, structured cleanup, UI work, editor tasks |
+| executive | Claude Code, Gemini CLI, Antigravity CLI | Architecture, security, final code, public docs, strategy, multimodal analysis |
+| manager | Codex CLI, Cursor, Context7, GitHub CLI | Tests, lint, structured cleanup, UI work, editor tasks, PR/issue management |
 | worker | Ollama (local only) | Summarization, tagging, extraction, rough drafts, local fallback |
 
 Ollama is worker-tier only. It runs on demand, not 24/7. It is never used for
