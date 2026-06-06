@@ -14,8 +14,10 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from .agents.registry import list_agents
+from .core.router import route_task
 from .core.benchmark import BenchmarkStore
 from .core.cost import CostTracker
 from .core.ledger import Ledger
@@ -29,7 +31,7 @@ app = FastAPI(title="OpenCobalt API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -313,4 +315,46 @@ def get_context() -> dict[str, Any]:
         "project": "opencobalt",
         "total_tokens": total_tokens,
         "file_count": len(raw),
+    }
+
+
+@app.get("/api/receipts")
+def get_receipts() -> list[dict[str, Any]]:
+    try:
+        results = _ledger().list_verification_results(limit=20)
+    except Exception:
+        return []
+
+    out = []
+    for r in results:
+        ts = r.timestamp
+        ts_str = ts.strftime("%H:%M") if hasattr(ts, "strftime") else str(ts)[11:16]
+        out.append({
+            "id": r.id[:6].upper(),
+            "ok": r.passed,
+            "desc": r.command,
+            "ts": ts_str,
+            "exit_code": r.exit_code,
+            "detail": r.output_summary,
+        })
+    return out
+
+
+class _RouteRequest(BaseModel):
+    task: str
+
+
+@app.post("/api/route")
+def post_route(req: _RouteRequest) -> dict[str, Any]:
+    decision = route_task(req.task)
+    try:
+        _ledger().insert_route_decision(decision)
+    except Exception:
+        pass
+    return {
+        "tool": decision.recommended_tool,
+        "tier": decision.tier,
+        "score": decision.score,
+        "reasoning": decision.reasoning,
+        "scores": decision.scores,
     }

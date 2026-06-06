@@ -7,6 +7,7 @@ external tool -- adding it here does not install or depend on that tool.
 from __future__ import annotations
 
 from .aider_integration import AiderIntegration
+from .antigravity_integration import AntigravityIntegration
 from .base_integration import BaseIntegration, IntegrationProfile
 from .claude_code_integration import ClaudeCodeIntegration
 from .context7_integration import Context7Integration
@@ -16,6 +17,7 @@ from .ollama_integration import OllamaIntegration
 
 REGISTRY: dict[str, BaseIntegration] = {
     "aider": AiderIntegration(),
+    "antigravity-cli": AntigravityIntegration(),
     "claude-code": ClaudeCodeIntegration(),
     "context7": Context7Integration(),
     "cursor": CursorIntegration(),

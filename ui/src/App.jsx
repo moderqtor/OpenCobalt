@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   Terminal, Layers, ScrollText, Network, CheckSquare,
   Palette, Trophy, GitBranch, ChevronRight, Plus, ExternalLink
@@ -56,11 +56,6 @@ html,body,#root{height:100%;background:var(--bg);color:var(--t0);font-family:var
 
 const API = "http://localhost:8000";
 
-const RECEIPTS = [
-  {id:"8821", ok:true,  desc:"SHA-256 Checksum Match",    ts:"14:38", target:"build/artifact-v2.bin",  hash:"3b4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e"},
-  {id:"8819", ok:true,  desc:"Public Safety Check Clean", ts:"14:22", target:"repo root",              hash:"a1b2c3d4e5f67890abcdef1234567890abcdef12"},
-  {id:"8815", ok:false, desc:"Context Scope Violation",   ts:"13:55", target:"docs/NEXT_STEPS.md",     hash:null},
-];
 
 const StatusDot = ({s, sm}) => {
   const color = s==="ok"?"var(--ok)":s==="er"?"var(--er)":s==="if"?"var(--acc)":"var(--t3)";
@@ -77,29 +72,86 @@ const Empty = ({msg}) => (
   <div style={{color:"var(--t2)",fontSize:13,paddingTop:32}}>{msg || "No data yet."}</div>
 );
 
-function CommandView({sessions, loading, error}) {
+function CommandView({sessions, loading, error, onRoute}) {
+  const [input, setInput] = useState("");
+  const [routing, setRouting] = useState(false);
+  const [lastResult, setLastResult] = useState(null);
+  const inputRef = useRef(null);
+
   const cmds = sessions.map(s => ({
     c: s.task,
     t: s.ts.slice(0,5),
     s: s.ok ? "ok" : "er",
   }));
 
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const task = input.trim();
+    if (!task || routing) return;
+    setRouting(true);
+    setLastResult(null);
+    try {
+      const res = await fetch(`${API}/api/route`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({task}),
+      });
+      const data = await res.json();
+      setLastResult(data);
+      setInput("");
+      if (onRoute) onRoute();
+    } catch {
+      setLastResult({error: "API offline"});
+    } finally {
+      setRouting(false);
+    }
+  };
+
   return (
     <div className={`view${loading?" loading":""}`} style={{paddingTop:88}}>
       <div style={{marginBottom:56}}>
         <div className="lbl" style={{marginBottom:20}}>Command center</div>
-        <div className="cmd-input">
-          <span className="mono" style={{color:"var(--t2)",fontSize:14,flexShrink:0}}>$</span>
-          <span className="mono" style={{color:"var(--acc)",fontSize:14}}>opencobalt</span>
-          <span className="mono" style={{color:"var(--t2)",fontSize:14,marginLeft:2}}>›</span>
-          <span className="cur"/>
-          <span className="mono" style={{marginLeft:"auto",color:"var(--t3)",fontSize:11}}>control plane · active</span>
-        </div>
+        <form onSubmit={handleSubmit}>
+          <div className="cmd-input" onClick={()=>inputRef.current?.focus()}
+            style={{borderColor: routing ? "var(--acc)" : undefined}}>
+            <span className="mono" style={{color:"var(--t2)",fontSize:14,flexShrink:0}}>$</span>
+            <span className="mono" style={{color:"var(--acc)",fontSize:14,flexShrink:0}}>opencobalt</span>
+            <span className="mono" style={{color:"var(--t2)",fontSize:14,marginLeft:2,flexShrink:0}}>›</span>
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={e=>setInput(e.target.value)}
+              placeholder="type a task to route…"
+              disabled={routing}
+              style={{
+                flex:1, background:"none", border:"none", outline:"none",
+                color:"var(--t0)", fontFamily:"var(--fmo)", fontSize:14,
+                minWidth:0,
+              }}
+            />
+            {routing && <span className="cur"/>}
+            <span className="mono" style={{marginLeft:"auto",color:"var(--t3)",fontSize:11,flexShrink:0}}>
+              {routing ? "routing…" : "control plane · active"}
+            </span>
+          </div>
+        </form>
+        {lastResult && !lastResult.error && (
+          <div style={{marginTop:12,padding:"12px 16px",background:"rgba(123,158,255,.06)",borderRadius:8,border:"1px solid rgba(123,158,255,.12)"}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:6}}>
+              <span className="mono" style={{color:"var(--acc)",fontSize:13,fontWeight:600}}>→ {lastResult.tool}</span>
+              <span className="mono" style={{color:"var(--t3)",fontSize:11}}>{lastResult.tier} · score {lastResult.score}</span>
+            </div>
+            <div style={{fontSize:12,color:"var(--t2)",fontFamily:"var(--fmo)"}}>{lastResult.reasoning}</div>
+          </div>
+        )}
+        {lastResult?.error && (
+          <div style={{marginTop:8,color:"var(--er)",fontSize:12}}>{lastResult.error}</div>
+        )}
       </div>
 
       <div className="lbl" style={{marginBottom:0}}>Recent</div>
       {error && <Offline/>}
-      {!error && cmds.length === 0 && <Empty msg="No route decisions yet — run opencobalt route"/>}
+      {!error && cmds.length === 0 && <Empty msg="No route decisions yet — type a task above"/>}
       {cmds.map((c,i) => (
         <div key={i} className="row">
           <StatusDot s={c.s} sm/>
@@ -378,24 +430,45 @@ function IntegrationsView({integrations, loading, error}) {
 }
 
 function ReceiptsView() {
-  const [open,setOpen] = useState(null);
-  const passed = RECEIPTS.filter(r=>r.ok).length;
+  const [open, setOpen] = useState(null);
+  const [receipts, setReceipts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [offline, setOffline] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API}/api/receipts`)
+      .then(r => r.json())
+      .then(data => { setReceipts(data); setLoading(false); })
+      .catch(() => { setOffline(true); setLoading(false); });
+  }, []);
+
+  const passed = receipts.filter(r => r.ok).length;
+  const failed = receipts.filter(r => !r.ok).length;
+
   return (
     <div className="view" style={{paddingTop:88}}>
       <div style={{marginBottom:64}}>
         <div className="lbl" style={{marginBottom:20}}>Verification receipts</div>
-        <div style={{display:"flex",alignItems:"flex-end",gap:12}}>
-          <span style={{fontSize:52,fontWeight:300,letterSpacing:"-.02em",lineHeight:1}}>{passed}</span>
-          <span style={{fontSize:18,color:"var(--t2)",fontWeight:400,marginBottom:6}}>/ {RECEIPTS.length} passed</span>
-        </div>
-        {RECEIPTS.some(r=>!r.ok) && (
-          <div style={{marginTop:12,color:"var(--er)",fontSize:13}}>
-            {RECEIPTS.filter(r=>!r.ok).length} check{RECEIPTS.filter(r=>!r.ok).length>1?"s":""} failed
-          </div>
+        {offline ? <Offline/> : loading ? (
+          <div style={{color:"var(--t2)",fontSize:13}}>Loading…</div>
+        ) : receipts.length === 0 ? (
+          <Empty msg="No verification runs yet — run opencobalt verify"/>
+        ) : (
+          <>
+            <div style={{display:"flex",alignItems:"flex-end",gap:12}}>
+              <span style={{fontSize:52,fontWeight:300,letterSpacing:"-.02em",lineHeight:1}}>{passed}</span>
+              <span style={{fontSize:18,color:"var(--t2)",fontWeight:400,marginBottom:6}}>/ {receipts.length} passed</span>
+            </div>
+            {failed > 0 && (
+              <div style={{marginTop:12,color:"var(--er)",fontSize:13}}>
+                {failed} check{failed>1?"s":""} failed
+              </div>
+            )}
+          </>
         )}
       </div>
 
-      {RECEIPTS.map((r,i) => (
+      {!offline && receipts.map((r,i) => (
         <div key={i}>
           <div className="row" style={{cursor:"pointer"}} onClick={()=>setOpen(open===i?null:i)}>
             <div style={{width:6,height:6,borderRadius:"50%",background:r.ok?"var(--ok)":"var(--er)",flexShrink:0}}/>
@@ -407,12 +480,9 @@ function ReceiptsView() {
           {open===i && (
             <div style={{padding:"0 22px 20px",marginTop:-4}}>
               <div className="mono" style={{fontSize:11,color:"var(--t2)",marginBottom:6}}>
-                target: <span style={{color:"var(--t1)"}}>{r.target}</span>
+                exit code: <span style={{color:"var(--t1)"}}>{r.exit_code}</span>
               </div>
-              {r.hash
-                ?<div className="mono" style={{fontSize:10.5,color:"var(--t3)",wordBreak:"break-all"}}>sha256: {r.hash}</div>
-                :<div className="mono" style={{fontSize:10.5,color:"var(--er)"}}>private identifier found in scanned path</div>
-              }
+              <div className="mono" style={{fontSize:10.5,color:"var(--t3)",wordBreak:"break-all"}}>{r.detail}</div>
             </div>
           )}
         </div>
@@ -538,7 +608,7 @@ export default function App() {
   }, []);
 
   const views = {
-    command:      <CommandView      sessions={data.sessions}      loading={loading} error={error}/>,
+    command:      <CommandView      sessions={data.sessions}      loading={loading} error={error} onRoute={fetchAll}/>,
     agents:       <AgentsView       agents={data.agents}           loading={loading} error={error}/>,
     ledger:       <LedgerView       sessions={data.sessions} timeline={data.timeline} loading={loading} error={error}/>,
     benchmarks:   <BenchmarksView   benchmarks={data.benchmarks}   loading={loading} error={error}/>,

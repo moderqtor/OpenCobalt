@@ -83,6 +83,7 @@ class CobaltShell:
     def run(self) -> None:
         """Run the main prompt loop."""
         self._print_header()
+        self._ensure_session_branch()
         self._print_brief()
         console.print(
             "  [dim]Type a task to route it, or [bold]/[/bold] for commands. "
@@ -181,6 +182,7 @@ class CobaltShell:
 
     def _print_header(self) -> None:
         import importlib.metadata
+        import time
         from datetime import datetime
 
         try:
@@ -188,11 +190,31 @@ class CobaltShell:
         except Exception:
             version = "dev"
         now = datetime.now().strftime("%Y-%m-%d")
-        console.print(
-            f"\n  [bold {_COBALT}]OpenCobalt[/bold {_COBALT}]"
-            f"  [dim]v{version} · {now}[/dim]\n"
-            f"  [dim]{'-' * 52}[/dim]"
-        )
+
+        LOGO = [
+            "   ◈ ◈ ◈   ",
+            " ◈       ◈ ",
+            "◈    ●    ◈",
+            " ◈       ◈ ",
+            "   ◈ ◈ ◈   ",
+        ]
+        LINES = [
+            f"[bold {_COBALT}]OpenCobalt[/bold {_COBALT}]  [dim]v{version}[/dim]",
+            f"[dim]{now}[/dim]",
+            "",
+            f"[dim]local-first AI orchestration[/dim]",
+        ]
+
+        console.print()
+        for i, line in enumerate(LOGO):
+            logo_part = f"[bold {_COBALT}]{line}[/bold {_COBALT}]"
+            text_part = f"  {LINES[i]}" if i < len(LINES) else ""
+            console.print(f"  {logo_part}{text_part}")
+            time.sleep(0.04)
+        for line in LINES[len(LOGO):]:
+            console.print(f"               {line}")
+            time.sleep(0.03)
+        console.print(f"\n  [dim]{'─' * 48}[/dim]")
 
     def _print_brief(self) -> None:
         try:
@@ -289,6 +311,7 @@ class CobaltShell:
         console.print(result)
 
     def _route_and_open(self, task: str) -> None:
+        task = self._refine_prompt(task)
         decision = self._learning_router.route(task)
         try:
             self._ledger.insert_route_decision(decision)
@@ -310,6 +333,60 @@ class CobaltShell:
         self._queue_background_council(task, decision.id)
         from .core.verify import verify_async
         verify_async(self._runner, root=Path("."), ledger=self._ledger)
+
+    def _refine_prompt(self, task: str) -> str:
+        """Optionally refine the prompt via a local Ollama model. No-ops if unavailable."""
+        import shutil
+
+        if not shutil.which("ollama"):
+            return task
+        try:
+            system = (
+                "You are a prompt optimizer. Rewrite the user's task to be more precise, "
+                "specific, and actionable while preserving the original intent. "
+                "Output ONLY the rewritten task — no explanation, no preamble."
+            )
+            result = subprocess.run(
+                ["ollama", "run", "llama3", f"System: {system}\n\nTask: {task}"],
+                capture_output=True, text=True, timeout=12,
+            )
+            refined = result.stdout.strip()
+            if refined and len(refined) < 500 and refined != task:
+                console.print(f"  [dim]refined → {refined[:80]}{'…' if len(refined)>80 else ''}[/dim]")
+                return refined
+        except Exception:
+            pass
+        return task
+
+    def _ensure_session_branch(self) -> None:
+        """Create a session-scoped git branch if the tree is clean."""
+        import shutil
+        from datetime import datetime
+
+        if not shutil.which("git"):
+            return
+        try:
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if status.stdout.strip():
+                return
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            branch = f"oc/{date_str}-session"
+            existing = subprocess.run(
+                ["git", "rev-parse", "--verify", branch],
+                capture_output=True, text=True, timeout=5,
+            )
+            if existing.returncode == 0:
+                return
+            subprocess.run(
+                ["git", "checkout", "-b", branch],
+                capture_output=True, text=True, timeout=5,
+            )
+            console.print(f"  [dim]branch: {branch}[/dim]")
+        except Exception:
+            pass
 
     def _copy_brief_to_clipboard(self) -> None:
         try:
@@ -336,6 +413,7 @@ class CobaltShell:
             "claude-code": "claude",
             "codex-cli": "codex",
             "gemini-cli": "gemini",
+            "antigravity-cli": "antigravity",
             "cursor": "cursor",
             "ollama": None,
         }

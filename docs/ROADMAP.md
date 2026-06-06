@@ -96,13 +96,57 @@ that does not change the local-first default.
 
 ---
 
+### Phase 9: Bug Fixes + Functional Command Center
+
+- Fix Receipts panel: replace hardcoded mock data with real `/api/receipts` endpoint backed by ledger
+- Fix Command Center: real `<input>` that POSTs to `/api/route`, shows routing result inline
+- Fix CORS to allow POST for the route endpoint
+- CLI startup splash: animated ASCII hexagonal logo (Rich-based, like Claude Code / Gemini CLI)
+- Optional prompt refinement via Ollama before routing (graceful no-op if Ollama absent)
+- Session-scoped git branch (`oc/YYYY-MM-DD-session`) created on shell start if tree is clean
+
+---
+
 ## In Progress / Next
 
-- API adapter layer: Anthropic, OpenAI, and Google adapters with per-call cost tracking
-- Router integration with benchmark data: `get_best_for_task_type()` replaces static tier rules for
-  agents with sufficient benchmark history
-- Obsidian export write path
-- DesignLab / Visual Compiler
+### Phase 10: Desktop App + Routing Visualization
+
+- Replace localhost React UI with a standalone desktop app (Tauri recommended: ~8MB, no Node runtime)
+- Animated node-graph routing visualization: nodes pulse to life as routing decisions are made,
+  edges carry simulated "electricity" between tools (ComfyUI-style but cleaner)
+- Each active agent/tool gets a live card with token usage, progress, and click-to-expand details
+- Routing animation plays every time a task is dispatched from the Command Center
+
+### Phase 11: Multi-Agent Orchestration
+
+- Prompt splitting: decompose a task into N subtasks, dispatch each to the best-fit tool in parallel
+- Cross-agent communication protocol: Claude + Codex can exchange sub-results within one session
+- Specialized subagent registry: agents tuned per task type (code review, refactor, test gen, docs)
+- Subagent benchmarking: track performance per subagent type, not just per top-level tool
+- Prompt style benchmarking: track which prompt forms produce the best results per model
+
+### Phase 12: Connector Expansion
+
+- Obsidian (read/write vault notes via vault path config)
+- GitHub (PR creation, issue linking, auto-commit on route completion)
+- Antigravity CLI (Google's successor to Gemini CLI, replacing the current gemini integration)
+- Supabase (project-level logging of route decisions to a remote table, optional)
+- Additional connectors: Cursor Composer, Continue.dev, Windsurf
+
+---
+
+## End Goal: AI Powerhouse
+
+OpenCobalt's long-term vision is to be the most capable local AI orchestration layer available:
+- Every prompt is refined before routing
+- Every route is animated and observable
+- Every agent result is verified, logged, and benchmarked
+- Multiple agents collaborate on the same task simultaneously
+- The system learns which agents perform best per task type and routes accordingly
+- All of this runs locally with no vendor lock-in and no persistent background daemons
+
+The "neuron" model: each subagent is a neuron; the routing layer is the synaptic network.
+As benchmark data accumulates, routing becomes increasingly data-driven rather than rule-based.
 
 ---
 

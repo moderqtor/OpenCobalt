@@ -160,9 +160,9 @@ class TestIntegrations:
         data = _get("/api/integrations", tmp_path, monkeypatch)
         assert isinstance(data, list)
 
-    def test_has_six_integrations(self, tmp_path, monkeypatch):
+    def test_has_seven_integrations(self, tmp_path, monkeypatch):
         data = _get("/api/integrations", tmp_path, monkeypatch)
-        assert len(data) == 6
+        assert len(data) == 7
 
     def test_entry_shape(self, tmp_path, monkeypatch):
         data = _get("/api/integrations", tmp_path, monkeypatch)
@@ -305,3 +305,87 @@ class TestTimeline:
         entry = data[0]
         for key in ("id", "timestamp", "type", "title", "model", "tier", "status"):
             assert key in entry, f"missing key: {key}"
+
+
+# ---------------------------------------------------------------------------
+# /api/receipts
+# ---------------------------------------------------------------------------
+
+class TestReceipts:
+    def test_returns_200(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert client.get("/api/receipts").status_code == 200
+
+    def test_empty_when_no_records(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        data = client.get("/api/receipts").json()
+        assert data == []
+
+    def test_entry_shape_when_populated(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from opencobalt.core.ledger import Ledger
+        from opencobalt.core.models import VerificationResult
+
+        ledger = Ledger(tmp_path / ".opencobalt" / "ledger.db")
+        ledger.insert_verification_result(VerificationResult(
+            command="pytest", exit_code=0, passed=True,
+            output_summary="214 passed",
+        ))
+
+        data = client.get("/api/receipts").json()
+        assert len(data) == 1
+        entry = data[0]
+        for key in ("id", "ok", "desc", "ts", "exit_code", "detail"):
+            assert key in entry, f"missing key: {key}"
+        assert entry["ok"] is True
+        assert entry["exit_code"] == 0
+
+    def test_failed_receipt_ok_false(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from opencobalt.core.ledger import Ledger
+        from opencobalt.core.models import VerificationResult
+
+        ledger = Ledger(tmp_path / ".opencobalt" / "ledger.db")
+        ledger.insert_verification_result(VerificationResult(
+            command="pytest", exit_code=1, passed=False,
+            output_summary="3 failed",
+        ))
+
+        data = client.get("/api/receipts").json()
+        assert len(data) == 1
+        assert data[0]["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# POST /api/route
+# ---------------------------------------------------------------------------
+
+class TestRoutePost:
+    def test_returns_200(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        resp = client.post("/api/route", json={"task": "design the auth module"})
+        assert resp.status_code == 200
+
+    def test_returns_tool_and_tier(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        data = client.post("/api/route", json={"task": "review code quality"}).json()
+        for key in ("tool", "tier", "score", "reasoning", "scores"):
+            assert key in data, f"missing key: {key}"
+
+    def test_tool_is_string(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        data = client.post("/api/route", json={"task": "summarize the readme"}).json()
+        assert isinstance(data["tool"], str)
+        assert len(data["tool"]) > 0
+
+    def test_decision_persisted_to_ledger(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        client.post("/api/route", json={"task": "write unit tests"})
+        sessions = client.get("/api/sessions").json()
+        assert len(sessions) == 1
+        assert "unit tests" in sessions[0]["task"]
+
+    def test_empty_task_returns_422(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        resp = client.post("/api/route", json={})
+        assert resp.status_code == 422

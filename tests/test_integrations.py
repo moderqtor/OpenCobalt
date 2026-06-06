@@ -3,8 +3,8 @@ from opencobalt.integrations.aider_integration import AiderIntegration
 from opencobalt.integrations.ollama_integration import OllamaIntegration
 
 
-def test_registry_has_six_integrations():
-    assert len(REGISTRY) == 6
+def test_registry_has_seven_integrations():
+    assert len(REGISTRY) == 7
 
 
 def test_registry_contains_aider_and_ollama():
@@ -15,6 +15,7 @@ def test_registry_contains_aider_and_ollama():
 def test_registry_contains_all_integrations():
     assert "claude-code" in REGISTRY
     assert "gemini-cli" in REGISTRY
+    assert "antigravity-cli" in REGISTRY
     assert "cursor" in REGISTRY
     assert "context7" in REGISTRY
 
@@ -41,9 +42,9 @@ def test_ollama_install_check_returns_bool():
     assert isinstance(result, bool)
 
 
-def test_list_integrations_returns_six_profiles():
+def test_list_integrations_returns_seven_profiles():
     profiles = list_integrations()
-    assert len(profiles) == 6
+    assert len(profiles) == 7
 
 
 def test_list_integrations_profiles_have_required_fields():
