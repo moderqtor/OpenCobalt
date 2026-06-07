@@ -44,13 +44,18 @@ class ScoringEngine:
         latency_score = _score_latency(heuristics)
         convergence_quality = _score_convergence(heuristics)
 
-        all_scores = {
-            **{k: qualitative.get(k, 50) for k in _WEIGHTS if k not in
-               ("token_efficiency", "latency_score", "convergence_quality")},
-            "token_efficiency": token_efficiency,
-            "latency_score": latency_score,
-            "convergence_quality": convergence_quality,
-        }
+        all_scores: dict[str, int] = {}
+        for k in _WEIGHTS:
+            if k in ("token_efficiency", "latency_score", "convergence_quality"):
+                continue
+            val = qualitative.get(k, 50)
+            try:
+                all_scores[k] = max(1, min(100, int(val)))
+            except (ValueError, TypeError):
+                all_scores[k] = 50
+        all_scores["token_efficiency"] = token_efficiency
+        all_scores["latency_score"] = latency_score
+        all_scores["convergence_quality"] = convergence_quality
         overall = round(sum(all_scores[cat] * w for cat, w in _WEIGHTS.items()))
 
         judge_label = qualitative.get("_judge", self._judge.judge_name)
