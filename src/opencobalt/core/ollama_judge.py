@@ -93,7 +93,7 @@ class OllamaJudge:
         except json.JSONDecodeError:
             return self._fallback()
 
-        result: dict = {}
+        result: dict[str, object] = {}
         for key in _QUALITATIVE_KEYS:
             val = data.get(key, _FALLBACK)
             result[key] = int(val) if isinstance(val, (int, float)) else _FALLBACK
@@ -104,7 +104,7 @@ class OllamaJudge:
         return result
 
     def _fallback(self) -> dict:
-        result = {key: _FALLBACK for key in _QUALITATIVE_KEYS}
+        result: dict[str, object] = {key: _FALLBACK for key in _QUALITATIVE_KEYS}
         result["reasoning"] = ""
         result["summary"] = ""
         result["_judge"] = "heuristic"

@@ -39,7 +39,7 @@ def test_judge_falls_back_when_ollama_unavailable():
 
 def test_output_truncated_to_4000_chars():
     captured = {}
-    def fake_call(prompt: str) -> str:
+    def fake_call(prompt: str) -> str | None:
         captured["prompt"] = prompt
         return None
     judge = OllamaJudge()
