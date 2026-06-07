@@ -61,9 +61,42 @@ CREATE TABLE IF NOT EXISTS telemetry_scores (
 
 
 class TelemetrySession:
-    def __init__(self, run_id: str, store: TelemetryStore) -> None:
+    """Thin event accumulator attached to one telemetry run."""
+
+    def __init__(self, run_id: str, store: "TelemetryStore") -> None:
         self.run_id = run_id
         self._store = store
+
+    def record_tool_use(self, tool_name: str, *, success: bool = True, latency_ms: int = 0) -> None:
+        self._store.add_event(self.run_id, "tool_use", {"tool": tool_name, "success": success, "latency_ms": latency_ms})
+
+    def record_artifact(self, artifact_type: str, artifact_id: str) -> None:
+        self._store.add_event(self.run_id, "artifact", {"type": artifact_type, "id": artifact_id})
+
+    def record_retry(self, reason: str = "") -> None:
+        self._store.add_event(self.run_id, "retry", {"reason": reason})
+
+    def record_output(self, output: str, token_count: int | None = None) -> None:
+        self._store.add_event(self.run_id, "output", {"length": len(output), "token_count": token_count})
+        self._store.set_raw_output(self.run_id, output, token_count_out=token_count)
+
+    def record_agent_switch(self, from_agent: str, to_agent: str) -> None:
+        self._store.add_event(self.run_id, "agent_switch", {"from": from_agent, "to": to_agent})
+
+    def record_skill_use(self, skill_id: str) -> None:
+        self._store.add_event(self.run_id, "skill_use", {"skill_id": skill_id})
+
+    def record_connector_use(self, connector_id: str) -> None:
+        self._store.add_event(self.run_id, "connector_use", {"connector_id": connector_id})
+
+    def record_gate_pass(self, gate_name: str = "") -> None:
+        self._store.add_event(self.run_id, "gate_pass", {"gate": gate_name})
+
+    def record_gate_fail(self, gate_name: str = "", reason: str = "") -> None:
+        self._store.add_event(self.run_id, "gate_fail", {"gate": gate_name, "reason": reason})
+
+    def finish(self, status: str = "complete") -> None:
+        self._store.finish_run(self.run_id, status)
 
 
 class TelemetryStore:

@@ -139,3 +139,29 @@ def test_set_summary(tmp_path):
     store.set_summary(session.run_id, "A helpful summary.")
     run = store.get_run(session.run_id)
     assert run["summary"] == "A helpful summary."
+
+
+def test_session_record_tool_use(tmp_path):
+    store = TelemetryStore(tmp_path / "t.db")
+    session = store.start_run(run_type="route", seed_prompt="x", agent_id="claude-code")
+    session.record_tool_use("pytest", success=True, latency_ms=200)
+    events = store.list_events(session.run_id)
+    assert events[0]["event_type"] == "tool_use"
+    assert json.loads(events[0]["payload_json"])["tool"] == "pytest"
+
+
+def test_session_record_output_sets_raw(tmp_path):
+    store = TelemetryStore(tmp_path / "t.db")
+    session = store.start_run(run_type="route", seed_prompt="x", agent_id="claude-code")
+    session.record_output("the result", token_count=42)
+    run = store.get_run(session.run_id)
+    assert run["raw_output"] == "the result"
+    assert run["token_count_out"] == 42
+
+
+def test_session_finish_delegates(tmp_path):
+    store = TelemetryStore(tmp_path / "t.db")
+    session = store.start_run(run_type="route", seed_prompt="x", agent_id="claude-code")
+    session.finish("complete")
+    run = store.get_run(session.run_id)
+    assert run["status"] == "complete"
