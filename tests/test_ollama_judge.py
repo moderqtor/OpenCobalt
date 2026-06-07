@@ -51,3 +51,37 @@ def test_output_truncated_to_4000_chars():
 
 def test_judge_name_property():
     assert OllamaJudge(model="mistral").judge_name == "ollama:mistral"
+
+
+def test_out_of_range_scores_clamped():
+    bad_range_json = json.dumps({
+        "output_quality": 999, "prompt_adherence": -5, "novel_ideation": 0,
+        "context_handling": 101, "tool_appropriateness": 50, "task_decomposition": 50,
+        "agent_selection": 50, "reasoning": "r", "summary": "s",
+    })
+    judge = OllamaJudge()
+    with patch.object(judge, "_call_ollama", return_value=bad_range_json):
+        result = judge.judge(prompt="p", output="o", heuristics={})
+    assert result["output_quality"] == 100
+    assert result["prompt_adherence"] == 1
+    assert result["novel_ideation"] == 1
+
+
+def test_prose_before_json_extracts_first_json_object():
+    prose_prefix = 'Here is my analysis {not valid}. Result: ' + json.dumps({
+        "output_quality": 75, "prompt_adherence": 80, "novel_ideation": 55,
+        "context_handling": 65, "tool_appropriateness": 70, "task_decomposition": 60,
+        "agent_selection": 72, "reasoning": "Good.", "summary": "Done.",
+    })
+    judge = OllamaJudge()
+    with patch.object(judge, "_call_ollama", return_value=prose_prefix):
+        result = judge.judge(prompt="p", output="o", heuristics={})
+    assert result["output_quality"] == 75
+    assert result["_judge"] == "ollama:llama3"
+
+
+def test_call_ollama_returns_none_on_permission_error():
+    judge = OllamaJudge()
+    with patch("opencobalt.core.ollama_judge.subprocess.run", side_effect=PermissionError("not executable")):
+        result = judge._call_ollama("prompt")
+    assert result is None

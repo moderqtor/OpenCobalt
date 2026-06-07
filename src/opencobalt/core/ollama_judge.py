@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 
 _QUALITATIVE_KEYS = [
@@ -81,22 +80,29 @@ class OllamaJudge:
                 timeout=120,
             )
             return result.stdout if result.returncode == 0 else None
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.SubprocessError):
             return None
 
     def _parse(self, raw: str) -> dict:
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not match:
-            return self._fallback()
-        try:
-            data = json.loads(match.group())
-        except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        data = None
+        for i, ch in enumerate(raw):
+            if ch == "{":
+                try:
+                    data, _ = decoder.raw_decode(raw, i)
+                    break
+                except json.JSONDecodeError:
+                    continue
+        if data is None:
             return self._fallback()
 
         result: dict[str, object] = {}
         for key in _QUALITATIVE_KEYS:
             val = data.get(key, _FALLBACK)
-            result[key] = int(val) if isinstance(val, (int, float)) else _FALLBACK
+            if isinstance(val, (int, float)):
+                result[key] = max(1, min(100, int(val)))
+            else:
+                result[key] = _FALLBACK
 
         result["reasoning"] = str(data.get("reasoning", ""))
         result["summary"] = str(data.get("summary", ""))
