@@ -88,6 +88,9 @@ app.add_typer(skills_app, name="skills")
 benchmark_app = typer.Typer(help="Benchmark commands.", invoke_without_command=True)
 app.add_typer(benchmark_app, name="benchmark")
 
+telemetry_app = typer.Typer(help="Telemetry commands.", invoke_without_command=True)
+app.add_typer(telemetry_app, name="telemetry")
+
 converge_app = typer.Typer(help="Convergence protocol commands.", invoke_without_command=True)
 app.add_typer(converge_app, name="converge")
 
@@ -101,6 +104,7 @@ console = Console()
 err = Console(stderr=True)
 
 _DB_PATH = Path(".opencobalt") / "ledger.db"
+_TELEMETRY_DB_PATH = Path(".opencobalt") / "telemetry.db"
 _MEMORIES_DB = Path(".opencobalt") / "memories.db"
 _EXPORT_PATH = Path(".opencobalt") / "exports"
 _CONTEXT_PATH = Path(".opencobalt") / "context" / "latest.md"
@@ -1916,8 +1920,34 @@ def benchmark(ctx: typer.Context) -> None:
 
 
 @benchmark_app.command("status")
-def benchmark_status() -> None:
+def benchmark_status(
+    telemetry: bool = typer.Option(False, "--telemetry", help="Show category scores from telemetry store"),
+) -> None:
     """Show the agent leaderboard from the benchmark store."""
+    if telemetry:
+        from .core.telemetry import TelemetryStore
+        t_store = TelemetryStore(_TELEMETRY_DB_PATH)
+        board = t_store.get_leaderboard()
+        console.print(f"\n  [bold {_COBALT}]Benchmark (Telemetry)[/bold {_COBALT}]\n")
+        if not board:
+            console.print("  [dim]No scored runs yet.[/dim]\n")
+            return
+        table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+        table.add_column("Agent", style=f"{_COBALT}")
+        table.add_column("Runs", justify="right", style="dim")
+        table.add_column("Overall", justify="right")
+        table.add_column("Quality", justify="right", style="dim")
+        table.add_column("Adherence", justify="right", style="dim")
+        for entry in board:
+            table.add_row(
+                entry["agent_id"], str(entry["total"]),
+                f"{entry['avg_overall']:.0f}",
+                f"{entry.get('avg_output_quality') or 0:.0f}",
+                f"{entry.get('avg_prompt_adherence') or 0:.0f}",
+            )
+        console.print(table)
+        console.print()
+        return
     from .core.benchmark import BenchmarkStore
 
     store = BenchmarkStore(_DB_PATH)
@@ -2523,3 +2553,211 @@ def _clipboard_brief(dry_run: bool = False, tool: str = "the tool") -> None:
             _sp.run(["xclip", "-selection", "clipboard"], input=output.encode(), check=False)
     except Exception:
         pass
+
+
+@telemetry_app.callback(invoke_without_command=True)
+def telemetry(ctx: typer.Context) -> None:
+    """Telemetry capture, scoring, and export."""
+    if ctx.invoked_subcommand is None:
+        console.print("[dim]Use: opencobalt telemetry <subcommand>[/dim]")
+        console.print("[dim]Subcommands: status, show, runs, scores, score, export[/dim]")
+
+
+@telemetry_app.command("status")
+def telemetry_status() -> None:
+    """Summary of scored runs and top agent."""
+    from .core.telemetry import TelemetryStore
+
+    store = TelemetryStore(_TELEMETRY_DB_PATH)
+    runs = store.list_runs(limit=1000)
+    scored = [r for r in runs if r["status"] == "scored"]
+    last_day = [r for r in runs if r.get("started_at", 0) > (time.time() - 86400)]
+    ollama_count = 0
+    heuristic_count = 0
+    for r in scored:
+        s = store.get_score(r["id"])
+        if s and s["judge"].startswith("ollama"):
+            ollama_count += 1
+        elif s:
+            heuristic_count += 1
+
+    console.print(f"\n  [bold {_COBALT}]Telemetry Status[/bold {_COBALT}]\n")
+    console.print(f"  Total runs:     {len(runs)}")
+    console.print(f"  Scored runs:    {len(scored)}")
+    console.print(f"  Last 24h:       {len(last_day)}")
+    console.print(f"  Ollama-scored:  {ollama_count}")
+    console.print(f"  Heuristic-only: {heuristic_count}")
+
+    board = store.get_leaderboard()
+    if board:
+        top = board[0]
+        console.print(f"  Top agent:      {top['agent_id']} (avg {top['avg_overall']:.0f})\n")
+    else:
+        console.print()
+
+
+@telemetry_app.command("runs")
+def telemetry_runs(
+    limit: int = typer.Option(20, "--limit", "-n"),
+    agent: str = typer.Option(None, "--agent", "-a"),
+    run_type: str = typer.Option(None, "--type", "-t"),
+) -> None:
+    """List recent telemetry runs with their scores."""
+    from .core.telemetry import TelemetryStore
+
+    store = TelemetryStore(_TELEMETRY_DB_PATH)
+    runs = store.list_runs(limit=limit, agent_id=agent, run_type=run_type)
+
+    console.print(f"\n  [bold {_COBALT}]Recent Runs[/bold {_COBALT}]\n")
+    if not runs:
+        console.print("  [dim]No runs recorded yet.[/dim]\n")
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("ID", style="dim")
+    table.add_column("Type")
+    table.add_column("Agent", style=f"{_COBALT}")
+    table.add_column("Prompt")
+    table.add_column("Score", justify="right")
+    table.add_column("Status", style="dim")
+
+    for r in runs:
+        score_row = store.get_score(r["id"])
+        score_str = str(score_row["overall"]) if score_row else "-"
+        prompt_short = r["seed_prompt"][:40] + "..." if len(r["seed_prompt"]) > 40 else r["seed_prompt"]
+        table.add_row(r["id"][:8], r["run_type"], r["agent_id"], prompt_short, score_str, r["status"])
+
+    console.print(table)
+
+
+@telemetry_app.command("show")
+def telemetry_show(run_id: str = typer.Argument(...)) -> None:
+    """Full breakdown for one run."""
+    from .core.telemetry import TelemetryStore
+
+    store = TelemetryStore(_TELEMETRY_DB_PATH)
+    run = store.get_run(run_id)
+    if run is None:
+        console.print(f"[red]Run not found: {run_id}[/red]")
+        raise typer.Exit(1)
+
+    score = store.get_score(run_id)
+    console.print(f"\n  [bold {_COBALT}]Run: {run['seed_prompt']}[/bold {_COBALT}]\n")
+    console.print(f"  ID:      {run['id']}")
+    console.print(f"  Type:    {run['run_type']}")
+    console.print(f"  Agent:   {run['agent_id']}")
+    console.print(f"  Status:  {run['status']}")
+    if run.get("summary"):
+        console.print(f"\n  {run['summary']}")
+
+    if score:
+        console.print(f"\n  [bold]Overall Score: {score['overall']}/100[/bold] ({score['judge']})\n")
+        table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+        for cat, label in [
+            ("output_quality", "Output Quality"),
+            ("prompt_adherence", "Prompt Adherence"),
+            ("novel_ideation", "Novel Ideation"),
+            ("context_handling", "Context Handling"),
+            ("tool_appropriateness", "Tool Appropriateness"),
+            ("token_efficiency", "Token Efficiency"),
+            ("latency_score", "Latency"),
+            ("task_decomposition", "Task Decomposition"),
+            ("agent_selection", "Agent Selection"),
+            ("convergence_quality", "Convergence Quality"),
+        ]:
+            val = score.get(cat)
+            table.add_row(label, str(val) if val is not None else "-")
+        console.print(table)
+        if score.get("judge_reasoning"):
+            console.print(f"\n  [dim]{score['judge_reasoning']}[/dim]")
+    console.print()
+
+
+@telemetry_app.command("scores")
+def telemetry_scores() -> None:
+    """Agent leaderboard by category."""
+    from .core.telemetry import TelemetryStore
+
+    store = TelemetryStore(_TELEMETRY_DB_PATH)
+    board = store.get_leaderboard()
+
+    console.print(f"\n  [bold {_COBALT}]Telemetry Leaderboard[/bold {_COBALT}]\n")
+    if not board:
+        console.print("  [dim]No scored runs yet.[/dim]\n")
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Agent", style=f"{_COBALT}")
+    table.add_column("Runs", justify="right", style="dim")
+    table.add_column("Overall", justify="right")
+    table.add_column("Quality", justify="right", style="dim")
+    table.add_column("Adherence", justify="right", style="dim")
+    table.add_column("Efficiency", justify="right", style="dim")
+
+    for entry in board:
+        table.add_row(
+            entry["agent_id"],
+            str(entry["total"]),
+            f"{entry['avg_overall']:.0f}",
+            f"{entry.get('avg_output_quality') or 0:.0f}",
+            f"{entry.get('avg_prompt_adherence') or 0:.0f}",
+            f"{entry.get('avg_token_efficiency') or 0:.0f}",
+        )
+    console.print(table)
+    console.print()
+
+
+@telemetry_app.command("score")
+def telemetry_score_run(run_id: str = typer.Argument(...)) -> None:
+    """Score or rescore a run."""
+    from .core.ollama_judge import OllamaJudge
+    from .core.scoring_engine import ScoringEngine
+    from .core.telemetry import TelemetryStore
+
+    store = TelemetryStore(_TELEMETRY_DB_PATH)
+    run = store.get_run(run_id)
+    if run is None:
+        console.print(f"[red]Run not found: {run_id}[/red]")
+        raise typer.Exit(1)
+
+    from .core.config import Config
+    model = Config().get("ollama_judge_model") or "llama3"
+    judge = OllamaJudge(model=model)
+    with console.status("[dim]Scoring...[/dim]", spinner="dots"):
+        result = ScoringEngine(store, judge=judge).score(run_id)
+    console.print(f"  Overall: {result['overall']}/100 ({result['judge']})\n")
+
+
+@telemetry_app.command("export")
+def telemetry_export(
+    output: str = typer.Option(None, "--output", "-o", help="Directory to write .md files"),
+) -> None:
+    """Export scored runs to markdown files."""
+    from pathlib import Path as _Path
+
+    from .core.config import Config
+    from .core.markdown_exporter import MarkdownExporter
+    from .core.telemetry import TelemetryStore
+
+    store = TelemetryStore(_TELEMETRY_DB_PATH)
+    export_dir = _Path(output) if output else None
+    if export_dir is None:
+        cfg = Config()
+        export_dir_str = cfg.get("telemetry_export_path")
+        if not export_dir_str:
+            console.print("[red]No export path configured.[/red]")
+            console.print("[dim]Set one with: opencobalt config set telemetry_export_path <dir>[/dim]")
+            raise typer.Exit(1)
+        export_dir = _Path(export_dir_str)
+
+    runs = store.list_runs(limit=10000)
+    exporter = MarkdownExporter()
+    count = 0
+    for r in runs:
+        score = store.get_score(r["id"])
+        if score is None:
+            continue
+        exporter.export_run(r, score, export_dir)
+        count += 1
+
+    console.print(f"  Exported {count} run(s) to {export_dir}\n")
