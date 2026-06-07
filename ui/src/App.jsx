@@ -1,16 +1,19 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
   Terminal, Layers, ScrollText, Network, CheckSquare,
-  Palette, Trophy, GitBranch, ChevronRight, Plus, ExternalLink
+  Palette, Trophy, GitBranch, ChevronRight, Plus, ExternalLink, Gauge
 } from "lucide-react";
 import RoutingGraph from "./RoutingGraph";
 
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&family=DM+Mono:wght@400;500&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#080A0F;
-  --sf:#0D1117;
+  --bg:#090B10;
+  --sf:#10151D;
+  --sf2:#151C27;
+  --ink:#F6F8FC;
+  --paper:#EAF1FF;
+  --paper-ink:#132033;
   --ln:rgba(255,255,255,.07);
   --t0:#FFFFFF;
   --t1:rgba(255,255,255,.55);
@@ -20,8 +23,9 @@ const CSS = `
   --ok:#3DFFA0;
   --er:#FF5577;
   --wn:#FFD166;
-  --fui:'DM Sans',-apple-system,sans-serif;
-  --fmo:'DM Mono','SF Mono',ui-monospace,monospace;
+  --vio:#B98CFF;
+  --fui:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --fmo:"SF Mono","Cascadia Code","Roboto Mono",ui-monospace,monospace;
 }
 html,body,#root{height:100%;background:var(--bg);color:var(--t0);font-family:var(--fui);-webkit-font-smoothing:antialiased}
 @keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
@@ -42,17 +46,26 @@ html,body,#root{height:100%;background:var(--bg);color:var(--t0);font-family:var
 .scr::-webkit-scrollbar{display:none}
 .scr{scrollbar-width:none}
 .cmd-input{
-  width:100%;background:var(--sf);border:1px solid rgba(255,255,255,.08);
-  border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:12px;
-  transition:border-color .15s;cursor:text;
+  width:100%;background:var(--paper);color:var(--paper-ink);
+  border:1px solid rgba(123,158,255,.32);border-radius:8px;
+  padding:16px 18px;display:flex;align-items:center;gap:12px;
+  box-shadow:0 18px 44px rgba(0,0,0,.24),0 0 0 1px rgba(255,255,255,.04) inset;
+  transition:border-color .15s,box-shadow .15s;cursor:text;
 }
-.cmd-input:hover{border-color:rgba(255,255,255,.14)}
+.cmd-input:hover{border-color:rgba(123,158,255,.58);box-shadow:0 22px 54px rgba(0,0,0,.28),0 0 0 1px rgba(123,158,255,.12) inset}
+.cmd-input input::placeholder{color:rgba(19,32,51,.42)}
+.score-track{height:4px;border-radius:99px;background:rgba(255,255,255,.08);overflow:hidden}
+.score-fill{height:100%;border-radius:99px;background:linear-gradient(90deg,var(--acc),var(--ok))}
 .tag{font-family:var(--fmo);font-size:11px;color:var(--t2);padding:0}
 .int-row{display:flex;align-items:center;gap:20px;padding:22px 0;border-top:1px solid var(--ln)}
 .int-row:last-child{border-bottom:1px solid var(--ln)}
 .int-row:hover .int-name{color:var(--t0)}
 .int-name{color:var(--t1);transition:color .12s}
 .loading{animation:pulse 1.6s ease infinite;pointer-events:none}
+@media (max-width:720px){
+  .cmd-input{align-items:flex-start;flex-wrap:wrap;padding:14px}
+  .cmd-input input{flex-basis:100%;margin-left:22px}
+}
 `;
 
 const API = "http://localhost:8000";
@@ -115,9 +128,9 @@ function CommandView({sessions, loading, error, onRoute}) {
         <form onSubmit={handleSubmit}>
           <div className="cmd-input" onClick={()=>inputRef.current?.focus()}
             style={{borderColor: routing ? "var(--acc)" : undefined}}>
-            <span className="mono" style={{color:"var(--t2)",fontSize:14,flexShrink:0}}>$</span>
-            <span className="mono" style={{color:"var(--acc)",fontSize:14,flexShrink:0}}>opencobalt</span>
-            <span className="mono" style={{color:"var(--t2)",fontSize:14,marginLeft:2,flexShrink:0}}>›</span>
+            <span className="mono" style={{color:"rgba(19,32,51,.45)",fontSize:14,flexShrink:0}}>$</span>
+            <span className="mono" style={{color:"#2856B8",fontSize:14,fontWeight:600,flexShrink:0}}>opencobalt</span>
+            <span className="mono" style={{color:"rgba(19,32,51,.42)",fontSize:14,marginLeft:2,flexShrink:0}}>›</span>
             <input
               ref={inputRef}
               value={input}
@@ -126,13 +139,13 @@ function CommandView({sessions, loading, error, onRoute}) {
               disabled={routing}
               style={{
                 flex:1, background:"none", border:"none", outline:"none",
-                color:"var(--t0)", fontFamily:"var(--fmo)", fontSize:14,
+                color:"var(--paper-ink)", fontFamily:"var(--fmo)", fontSize:14,
                 minWidth:0,
               }}
             />
             {routing && <span className="cur"/>}
-            <span className="mono" style={{marginLeft:"auto",color:"var(--t3)",fontSize:11,flexShrink:0}}>
-              {routing ? "routing…" : "control plane · active"}
+            <span className="mono" style={{marginLeft:"auto",color:"rgba(19,32,51,.38)",fontSize:11,flexShrink:0}}>
+              {routing ? "routing..." : "local control plane"}
             </span>
           </div>
         </form>
@@ -377,6 +390,61 @@ function BenchmarksView({benchmarks, loading, error}) {
   );
 }
 
+function TelemetryView({telemetry, loading, error}) {
+  const recent = telemetry?.recent || [];
+  const scored = telemetry?.scored_runs || 0;
+  const total = telemetry?.total_runs || 0;
+  const average = telemetry?.average_overall || 0;
+  return (
+    <div className={`view${loading?" loading":""}`} style={{paddingTop:88}}>
+      <div style={{marginBottom:56}}>
+        <div className="lbl" style={{marginBottom:20}}>Telemetry intelligence</div>
+        {error ? <Offline/> : (
+          <>
+            <div style={{display:"flex",alignItems:"flex-end",gap:14}}>
+              <span style={{fontSize:58,fontWeight:300,lineHeight:1,color:"var(--acc)"}}>{average}</span>
+              <span style={{fontSize:18,color:"var(--t2)",marginBottom:7}}>/ 100 average</span>
+            </div>
+            <div style={{marginTop:12,color:"var(--t2)",fontSize:13}}>
+              {scored} scored of {total} runs
+              {telemetry?.top_agent ? ` · top agent ${telemetry.top_agent}` : ""}
+            </div>
+          </>
+        )}
+      </div>
+
+      {!error && recent.length === 0 && <Empty msg="No scored telemetry yet. Run opencobalt telemetry score <run_id>."/>}
+      {!error && recent.length > 0 && (
+        <>
+          <div className="lbl" style={{marginBottom:0}}>Recent scored runs</div>
+          {recent.map((run) => (
+            <div key={run.id} className="row" style={{alignItems:"flex-start"}}>
+              <span className="mono" style={{color:"var(--t3)",fontSize:11,width:54,flexShrink:0}}>{run.id}</span>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                  <span style={{fontSize:14,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{run.prompt}</span>
+                </div>
+                <div style={{display:"flex",gap:10,flexWrap:"wrap",color:"var(--t2)",fontSize:11}}>
+                  <span className="mono">{run.run_type}</span>
+                  <span className="mono">{run.agent}</span>
+                  <span className="mono">{run.judge}</span>
+                  <span className="mono">{run.tool_count} tools</span>
+                </div>
+                <div className="score-track" style={{marginTop:14}}>
+                  <div className="score-fill" style={{width:`${Math.max(0, Math.min(100, run.overall))}%`}}/>
+                </div>
+              </div>
+              <span className="mono" style={{color:"var(--t0)",fontSize:18,fontWeight:600,width:42,textAlign:"right",flexShrink:0}}>
+                {run.overall}
+              </span>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 function IntegrationsView({integrations, loading, error}) {
   const active = integrations.filter(i=>i.on).length;
   return (
@@ -561,6 +629,7 @@ const OcLogo = () => (
 const NAV = [
   {id:"command",      Icon:Terminal,    label:"Command"},
   {id:"agents",       Icon:Network,     label:"Agents"},
+  {id:"telemetry",    Icon:Gauge,       label:"Telemetry"},
   {id:"graph",        Icon:GitBranch,   label:"Graph"},
   {id:"ledger",       Icon:ScrollText,  label:"Ledger"},
   {id:"benchmarks",   Icon:Trophy,      label:"Benchmarks"},
@@ -570,6 +639,11 @@ const NAV = [
   {id:"designlab",    Icon:Palette,     label:"DesignLab"},
 ];
 
+function initialView() {
+  const id = window.location.hash.replace("#", "");
+  return NAV.some((item) => item.id === id) ? id : "command";
+}
+
 const _EMPTY_DATA = {
   sessions: [],
   agents: [],
@@ -577,13 +651,19 @@ const _EMPTY_DATA = {
   integrations: [],
   context: null,
   timeline: [],
+  telemetry: null,
 };
 
 export default function App() {
-  const [active, setActive] = useState("command");
+  const [active, setActive] = useState(initialView);
   const [data, setData] = useState(_EMPTY_DATA);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+
+  const selectView = (id) => {
+    setActive(id);
+    window.location.hash = id;
+  };
 
   const fetchAll = () => {
     Promise.all([
@@ -593,8 +673,9 @@ export default function App() {
       fetch(`${API}/api/integrations`).then(r=>r.json()),
       fetch(`${API}/api/context`).then(r=>r.json()),
       fetch(`${API}/api/timeline`).then(r=>r.json()),
-    ]).then(([sessions, agents, benchmarks, integrations, context, timeline]) => {
-      setData({sessions, agents, benchmarks, integrations, context, timeline});
+      fetch(`${API}/api/telemetry`).then(r=>r.json()),
+    ]).then(([sessions, agents, benchmarks, integrations, context, timeline, telemetry]) => {
+      setData({sessions, agents, benchmarks, integrations, context, timeline, telemetry});
       setError(false);
       setLoading(false);
     }).catch(() => {
@@ -612,6 +693,7 @@ export default function App() {
   const views = {
     command:      <CommandView      sessions={data.sessions}      loading={loading} error={error} onRoute={fetchAll}/>,
     agents:       <AgentsView       agents={data.agents}           loading={loading} error={error}/>,
+    telemetry:    <TelemetryView    telemetry={data.telemetry}     loading={loading} error={error}/>,
     graph:        <RoutingGraph     timeline={data.timeline}       loading={loading} error={error}/>,
     ledger:       <LedgerView       sessions={data.sessions} timeline={data.timeline} loading={loading} error={error}/>,
     benchmarks:   <BenchmarksView   benchmarks={data.benchmarks}   loading={loading} error={error}/>,
@@ -636,7 +718,7 @@ export default function App() {
         <div style={{marginBottom:24}}><OcLogo/></div>
         {NAV.map(({id,Icon,label}) => (
           <button key={id} className="nb" title={label}
-            onClick={()=>setActive(id)}
+            onClick={()=>selectView(id)}
             style={{
               width:36, height:36, borderRadius:9,
               color: active===id ? "var(--acc)" : "rgba(255,255,255,.22)",

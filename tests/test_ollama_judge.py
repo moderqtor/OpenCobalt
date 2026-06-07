@@ -1,6 +1,7 @@
 import json
 from unittest.mock import patch
-from opencobalt.core.ollama_judge import OllamaJudge, _QUALITATIVE_KEYS
+
+from opencobalt.core.ollama_judge import _QUALITATIVE_KEYS, OllamaJudge
 
 
 def test_judge_returns_all_keys_on_good_response():
@@ -85,3 +86,18 @@ def test_call_ollama_returns_none_on_permission_error():
     with patch("opencobalt.core.ollama_judge.subprocess.run", side_effect=PermissionError("not executable")):
         result = judge._call_ollama("prompt")
     assert result is None
+
+
+def test_call_ollama_uses_short_timeout():
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+        raise TimeoutError("slow")
+
+    judge = OllamaJudge()
+    with patch("opencobalt.core.ollama_judge.subprocess.run", side_effect=fake_run):
+        result = judge._call_ollama("prompt")
+
+    assert result is None
+    assert captured["timeout"] <= 20

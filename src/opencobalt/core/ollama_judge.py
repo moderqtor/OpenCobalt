@@ -49,6 +49,7 @@ Score strictly. 50 = average. 80+ = genuinely good. 95+ = exceptional.\
 """
 
 _MAX_OUTPUT_CHARS = 4000
+_OLLAMA_TIMEOUT_SECONDS = 15
 
 
 class OllamaJudge:
@@ -77,7 +78,7 @@ class OllamaJudge:
                 ["ollama", "run", self.model, prompt],
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=_OLLAMA_TIMEOUT_SECONDS,
             )
             return result.stdout if result.returncode == 0 else None
         except (OSError, subprocess.SubprocessError):

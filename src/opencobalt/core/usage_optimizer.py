@@ -26,9 +26,11 @@ class UsageOptimizer:
         profile: str,
         router_scores: dict[str, int | float],
         run_id: str | None = None,
+        telemetry_session=None,
     ) -> ToolChoice:
         scores = {tool: float(score) for tool, score in router_scores.items()}
         reasons = ["router"]
+        router_winner = max(scores, key=lambda t: scores[t]) if scores else None
 
         if profile == "cheap" and task_type == "summarize" and "ollama" in scores:
             scores["ollama"] += 8.0
@@ -52,5 +54,9 @@ class UsageOptimizer:
                 scores[best] += 3.0
                 reasons.append("benchmark")
 
-        tool = max(scores, key=scores.get)
+        tool = max(scores, key=lambda t: scores[t])
+
+        if telemetry_session is not None and router_winner is not None and tool != router_winner:
+            telemetry_session.record_agent_switch(router_winner, tool)
+
         return ToolChoice(tool=tool, score=scores[tool], reasons=reasons)

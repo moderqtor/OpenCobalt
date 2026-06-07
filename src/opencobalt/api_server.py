@@ -7,6 +7,7 @@ Runs on port 8000; the React dev server runs on 5173.
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import re
 import time
 from pathlib import Path
@@ -30,7 +31,7 @@ app = FastAPI(title="OpenCobalt API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
@@ -277,6 +278,60 @@ def get_timeline() -> list[dict[str, Any]]:
 
     events.sort(key=lambda x: x["timestamp"], reverse=True)
     return events[:50]
+
+
+@app.get("/api/telemetry")
+def get_telemetry() -> dict[str, Any]:
+    """Return Phase 15 scoring aggregates for the dashboard."""
+    try:
+        from .core.telemetry import TelemetryStore
+
+        store = TelemetryStore(Path(".opencobalt") / "telemetry.db")
+        runs = store.list_runs(limit=1000)
+        scored_rows = []
+        for run in runs:
+            score = store.get_score(run["id"])
+            if score is None:
+                continue
+            tool_calls = json.loads(run.get("tool_calls_json") or "[]")
+            scored_rows.append({
+                "id": run["id"][:8],
+                "run_type": run["run_type"],
+                "agent": run["agent_id"],
+                "prompt": run["seed_prompt"],
+                "overall": score["overall"],
+                "judge": score["judge"],
+                "summary": run.get("summary") or "",
+                "tool_count": len(tool_calls),
+                "latency_ms": run.get("latency_ms") or 0,
+                "scores": {
+                    "quality": score.get("output_quality"),
+                    "adherence": score.get("prompt_adherence"),
+                    "efficiency": score.get("token_efficiency"),
+                    "tools": score.get("tool_appropriateness"),
+                    "convergence": score.get("convergence_quality"),
+                },
+            })
+
+        board = store.get_leaderboard()
+        average = round(sum(row["overall"] for row in scored_rows) / len(scored_rows)) if scored_rows else 0
+        return {
+            "total_runs": len(runs),
+            "scored_runs": len(scored_rows),
+            "average_overall": average,
+            "top_agent": board[0]["agent_id"] if board else None,
+            "leaderboard": board,
+            "recent": scored_rows[:12],
+        }
+    except Exception:
+        return {
+            "total_runs": 0,
+            "scored_runs": 0,
+            "average_overall": 0,
+            "top_agent": None,
+            "leaderboard": [],
+            "recent": [],
+        }
 
 
 @app.get("/api/context")

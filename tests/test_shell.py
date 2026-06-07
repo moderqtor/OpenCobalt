@@ -53,6 +53,7 @@ def test_slash_commands_list(shell: CobaltShell) -> None:
     assert "route" in commands
     assert "brief" in commands
     assert "verify" in commands
+    assert "telemetry" in commands
     assert "mission" in commands
     assert "limits" in commands
     assert "policy" in commands

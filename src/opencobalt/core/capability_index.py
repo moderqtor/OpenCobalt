@@ -30,13 +30,24 @@ _CLI_BINARIES = {
 class CapabilityIndex:
     """Build a deterministic inventory without invoking provider APIs."""
 
-    def discover(self) -> list[CapabilityEntry]:
+    def discover(self, telemetry_session=None) -> list[CapabilityEntry]:
         entries: list[CapabilityEntry] = []
         entries.extend(self._discover_skills())
         entries.extend(self._discover_integrations())
         entries.extend(self._discover_subagents())
         entries.extend(self._discover_clis())
+        if telemetry_session is not None:
+            self._record_discovery(entries, telemetry_session)
         return entries
+
+    def _record_discovery(self, entries: list[CapabilityEntry], telemetry_session) -> None:
+        for entry in entries:
+            if not entry.available:
+                continue
+            if entry.type == "skill":
+                telemetry_session.record_skill_use(entry.id.removeprefix("skill:"))
+            elif entry.type == "integration":
+                telemetry_session.record_connector_use(entry.id.removeprefix("integration:"))
 
     def _discover_skills(self) -> list[CapabilityEntry]:
         return [

@@ -20,7 +20,7 @@ def _score_run(store, run_id: str) -> dict:
     from .config import Config
     from .ollama_judge import OllamaJudge
     from .scoring_engine import ScoringEngine
-    model = Config().get("ollama_judge_model") or "llama3"
+    model = Config(_Path(".opencobalt") / "ledger.db").get("ollama_judge_model") or "llama3"
     return ScoringEngine(store, judge=OllamaJudge(model=model)).score(run_id)
 
 

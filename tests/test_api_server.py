@@ -325,6 +325,60 @@ class TestTimeline:
 
 
 # ---------------------------------------------------------------------------
+# /api/telemetry
+# ---------------------------------------------------------------------------
+
+class TestTelemetry:
+    def test_returns_200(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert client.get("/api/telemetry").status_code == 200
+
+    def test_empty_shape_when_no_runs(self, tmp_path, monkeypatch):
+        data = _get("/api/telemetry", tmp_path, monkeypatch)
+        assert data["total_runs"] == 0
+        assert data["scored_runs"] == 0
+        assert data["average_overall"] == 0
+        assert data["top_agent"] is None
+        assert data["recent"] == []
+
+    def test_returns_scored_run_summary(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from opencobalt.core.telemetry import TelemetryStore
+
+        store = TelemetryStore(tmp_path / ".opencobalt" / "telemetry.db")
+        session = store.start_run(run_type="route", seed_prompt="write tests", agent_id="codex-cli")
+        session.record_tool_use("pytest")
+        session.record_output("Implemented tests.")
+        session.finish("complete")
+        store.save_score({
+            "run_id": session.run_id,
+            "scored_at": "2026-06-07T00:00:00Z",
+            "judge": "heuristic",
+            "overall": 78,
+            "output_quality": 80,
+            "prompt_adherence": 82,
+            "novel_ideation": 55,
+            "context_handling": 60,
+            "token_efficiency": 70,
+            "latency_score": 88,
+            "tool_appropriateness": 85,
+            "task_decomposition": 65,
+            "agent_selection": 75,
+            "convergence_quality": 95,
+            "judge_reasoning": "Solid run.",
+            "heuristics": {"retry_count": 0},
+        })
+
+        data = client.get("/api/telemetry").json()
+        assert data["total_runs"] == 1
+        assert data["scored_runs"] == 1
+        assert data["average_overall"] == 78
+        assert data["top_agent"] == "codex-cli"
+        assert data["recent"][0]["overall"] == 78
+        assert data["recent"][0]["tool_count"] == 1
+
+
+# ---------------------------------------------------------------------------
 # /api/receipts
 # ---------------------------------------------------------------------------
 

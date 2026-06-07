@@ -1,7 +1,8 @@
 from unittest.mock import MagicMock
-from opencobalt.core.telemetry import TelemetryStore
-from opencobalt.core.scoring_engine import ScoringEngine
+
 from opencobalt.core.ollama_judge import OllamaJudge
+from opencobalt.core.scoring_engine import ScoringEngine
+from opencobalt.core.telemetry import TelemetryStore
 
 
 def _make_store(tmp_path):

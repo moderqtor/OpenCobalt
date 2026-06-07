@@ -1,15 +1,18 @@
 """Telemetry integration tests for ArtifactBus, ConvergenceChecker, and optional-session components."""
+import json
 import time
 import uuid
 from unittest.mock import MagicMock, patch
 
 from opencobalt.core.artifact_bus import AgentArtifact, ArtifactBus, ArtifactType
 from opencobalt.core.autonomy_engine import AutonomyEngine
+from opencobalt.core.capability_index import CapabilityIndex
 from opencobalt.core.convergence_checker import ConvergenceChecker
 from opencobalt.core.convergence_orchestrator import ConvergenceOrchestrator
 from opencobalt.core.ledger import Ledger
 from opencobalt.core.mission import MissionPlanner
 from opencobalt.core.telemetry import TelemetryStore
+from opencobalt.core.usage_optimizer import UsageOptimizer
 
 
 def test_artifact_bus_records_artifact_event(tmp_path):
@@ -111,3 +114,67 @@ def test_mission_planner_accepts_session(tmp_path):
         telemetry_session=session,
     )
     assert "run_id" in result
+
+
+def test_capability_index_accepts_session(tmp_path):
+    store = TelemetryStore(tmp_path / "t.db")
+    session = store.start_run(run_type="discover", seed_prompt="x", agent_id="claude-code")
+    index = CapabilityIndex()
+    entries = index.discover(telemetry_session=session)
+    assert isinstance(entries, list)
+
+
+def test_capability_index_records_skill_and_connector_events(tmp_path):
+    store = TelemetryStore(tmp_path / "t.db")
+    session = store.start_run(run_type="discover", seed_prompt="x", agent_id="claude-code")
+
+    CapabilityIndex().discover(telemetry_session=session)
+
+    payloads = [
+        (event["event_type"], json.loads(event["payload_json"]))
+        for event in store.list_events(session.run_id)
+    ]
+    assert ("skill_use", {"skill_id": "file-reader"}) in payloads
+    assert any(
+        event_type == "connector_use" and payload["connector_id"] == "claude-code"
+        for event_type, payload in payloads
+    )
+
+
+def test_capability_index_no_session_still_works():
+    index = CapabilityIndex()
+    entries = index.discover()
+    assert isinstance(entries, list)
+
+
+def test_usage_optimizer_no_switch_no_event(tmp_path):
+    store = TelemetryStore(tmp_path / "t.db")
+    session = store.start_run(run_type="optimize", seed_prompt="x", agent_id="claude-code")
+    ledger = Ledger(tmp_path / "ledger.db")
+    optimizer = UsageOptimizer(ledger=ledger)
+    optimizer.choose_tool(
+        task_type="impl",
+        profile="balanced",
+        router_scores={"claude-code": 10, "ollama": 5},
+        telemetry_session=session,
+    )
+    events = store.list_events(session.run_id)
+    assert not any(e["event_type"] == "agent_switch" for e in events)
+
+
+def test_usage_optimizer_switch_records_event(tmp_path):
+    store = TelemetryStore(tmp_path / "t.db")
+    session = store.start_run(run_type="optimize", seed_prompt="x", agent_id="claude-code")
+    ledger = Ledger(tmp_path / "ledger.db")
+    benchmark_store = MagicMock()
+    benchmark_store.get_best_for_task_type.return_value = "ollama"
+    optimizer = UsageOptimizer(ledger=ledger, benchmark_store=benchmark_store)
+    choice = optimizer.choose_tool(
+        task_type="impl",
+        profile="balanced",
+        router_scores={"claude-code": 5, "ollama": 5},
+        telemetry_session=session,
+    )
+    assert choice.tool == "ollama"
+    events = store.list_events(session.run_id)
+    assert any(e["event_type"] == "agent_switch" for e in events)

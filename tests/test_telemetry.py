@@ -1,14 +1,11 @@
 import json
 import sqlite3
-from pathlib import Path
-
-import pytest
 
 from opencobalt.core.telemetry import TelemetryStore
 
 
 def test_schema_creates_three_tables(tmp_path):
-    store = TelemetryStore(tmp_path / "telemetry.db")
+    TelemetryStore(tmp_path / "telemetry.db")
     conn = sqlite3.connect(tmp_path / "telemetry.db")
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     assert "telemetry_runs" in tables

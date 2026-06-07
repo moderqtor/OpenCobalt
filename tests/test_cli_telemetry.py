@@ -1,10 +1,11 @@
 # tests/test_cli_telemetry.py
-from typer.testing import CliRunner
-from opencobalt.cli import app
-from opencobalt.core.telemetry import TelemetryStore
-from opencobalt.core.scoring_engine import ScoringEngine
 from unittest.mock import MagicMock
 
+from typer.testing import CliRunner
+
+from opencobalt.cli import app
+from opencobalt.core.scoring_engine import ScoringEngine
+from opencobalt.core.telemetry import TelemetryStore
 
 runner = CliRunner()
 
@@ -64,6 +65,7 @@ def test_telemetry_show_prefix_id(tmp_path, monkeypatch):
     result = runner.invoke(app, ["telemetry", "show", run_id[:8]])
     assert result.exit_code == 0
     assert "summarize logs" in result.output
+    assert "Overall Score" in result.output
 
 
 def test_telemetry_show_not_found(tmp_path, monkeypatch):
@@ -76,6 +78,30 @@ def test_telemetry_score_not_found(tmp_path, monkeypatch):
     monkeypatch.setattr("opencobalt.cli._TELEMETRY_DB_PATH", tmp_path / "telemetry.db")
     result = runner.invoke(app, ["telemetry", "score", "nonexistent-run-id"])
     assert result.exit_code == 1
+
+
+def test_telemetry_score_scores_existing_run(tmp_path, monkeypatch):
+    store = TelemetryStore(tmp_path / "telemetry.db")
+    session = store.start_run(run_type="route", seed_prompt="summarize logs", agent_id="claude-code")
+    session.record_output("log summary", token_count=100)
+    session.finish("complete")
+    monkeypatch.setattr("opencobalt.cli._TELEMETRY_DB_PATH", tmp_path / "telemetry.db")
+    monkeypatch.setattr("opencobalt.cli._DB_PATH", tmp_path / "ledger.db")
+
+    judge = MagicMock()
+    judge.judge_name = "heuristic"
+    judge.judge.return_value = {
+        "output_quality": 70, "prompt_adherence": 70, "novel_ideation": 70,
+        "context_handling": 70, "tool_appropriateness": 70, "task_decomposition": 70,
+        "agent_selection": 70, "reasoning": "", "summary": "Done.", "_judge": "heuristic",
+    }
+    monkeypatch.setattr("opencobalt.core.ollama_judge.OllamaJudge", lambda model: judge)
+
+    result = runner.invoke(app, ["telemetry", "score", session.run_id[:8]])
+
+    assert result.exit_code == 0
+    assert "Overall:" in result.output
+    assert store.get_score(session.run_id) is not None
 
 
 def test_telemetry_export_no_path_configured(tmp_path, monkeypatch):
@@ -92,3 +118,18 @@ def test_telemetry_export_writes_files(tmp_path, monkeypatch):
     assert result.exit_code == 0
     md_files = list(export_dir.glob("*.md"))
     assert len(md_files) == 1
+
+
+def test_benchmark_status_telemetry_flag(tmp_path, monkeypatch):
+    _seed_db(tmp_path)
+    monkeypatch.setattr("opencobalt.cli._TELEMETRY_DB_PATH", tmp_path / "telemetry.db")
+    result = runner.invoke(app, ["benchmark", "status", "--telemetry"])
+    assert result.exit_code == 0
+    assert "claude-code" in result.output
+
+
+def test_benchmark_status_telemetry_flag_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr("opencobalt.cli._TELEMETRY_DB_PATH", tmp_path / "telemetry.db")
+    result = runner.invoke(app, ["benchmark", "status", "--telemetry"])
+    assert result.exit_code == 0
+    assert "No scored runs" in result.output

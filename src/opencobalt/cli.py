@@ -2721,7 +2721,7 @@ def telemetry_score_run(run_id: str = typer.Argument(...)) -> None:
         raise typer.Exit(1)
 
     from .core.config import Config
-    model = Config().get("ollama_judge_model") or "llama3"
+    model = Config(_DB_PATH).get("ollama_judge_model") or "llama3"
     judge = OllamaJudge(model=model)
     with console.status("[dim]Scoring...[/dim]", spinner="dots"):
         result = ScoringEngine(store, judge=judge).score(run_id)
@@ -2742,7 +2742,7 @@ def telemetry_export(
     store = TelemetryStore(_TELEMETRY_DB_PATH)
     export_dir = _Path(output) if output else None
     if export_dir is None:
-        cfg = Config()
+        cfg = Config(_DB_PATH)
         export_dir_str = cfg.get("telemetry_export_path")
         if not export_dir_str:
             console.print("[red]No export path configured.[/red]")

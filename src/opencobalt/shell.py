@@ -25,6 +25,8 @@ _DIM = "#555555"
 
 _STYLE = Style.from_dict({
     "prompt": f"bold {_COBALT}",
+    "prompt.app": f"bold {_COBALT}",
+    "prompt.sep": _DIM,
     "": "",
 })
 
@@ -41,6 +43,7 @@ class CobaltShell:
         "history",
         "stats",
         "benchmark",
+        "telemetry",
         "verify",
         "lint",
         "doctor",
@@ -112,7 +115,7 @@ class CobaltShell:
                 status = self.render_status()
                 try:
                     text = self._session.prompt(
-                        HTML("<ansicyan>›</ansicyan> "),
+                        HTML("<prompt.app>opencobalt</prompt.app> <prompt.sep>›</prompt.sep> "),
                         bottom_toolbar=HTML(f"<style fg='{_DIM}'>{status}</style>"),
                     )
                 except KeyboardInterrupt:
@@ -217,7 +220,7 @@ class CobaltShell:
             f"[bold {_COBALT}]OpenCobalt[/bold {_COBALT}]  [dim]v{version}[/dim]",
             f"[dim]{now}[/dim]",
             "",
-            "[dim]local-first AI orchestration[/dim]",
+            "[dim]local SQLite · deterministic routing · telemetry scoring[/dim]",
         ]
 
         console.print()
@@ -229,7 +232,7 @@ class CobaltShell:
         for line in LINES[len(LOGO):]:
             console.print(f"               {line}")
             time.sleep(0.03)
-        console.print(f"\n  [dim]{'─' * 48}[/dim]")
+        console.print(f"\n  [dim]{'─' * 56}[/dim]")
 
     def _print_brief(self) -> None:
         try:

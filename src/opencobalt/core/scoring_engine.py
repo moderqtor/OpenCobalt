@@ -31,7 +31,8 @@ class ScoringEngine:
         if run is None:
             raise ValueError(f"Unknown run: {run_id}")
 
-        events = self._store.list_events(run_id)
+        canonical_run_id = run["id"]
+        events = self._store.list_events(canonical_run_id)
         heuristics = self._compute_heuristics(run, events)
 
         qualitative = self._judge.judge(
@@ -61,7 +62,7 @@ class ScoringEngine:
         judge_label = qualitative.get("_judge", self._judge.judge_name)
 
         score = {
-            "run_id": run_id,
+            "run_id": canonical_run_id,
             "scored_at": datetime.now(tz=timezone.utc).isoformat(),
             "judge": judge_label,
             "overall": overall,
@@ -73,7 +74,7 @@ class ScoringEngine:
         self._store.save_score(score)
 
         if summary := qualitative.get("summary"):
-            self._store.set_summary(run_id, summary)
+            self._store.set_summary(canonical_run_id, summary)
 
         return score
 
