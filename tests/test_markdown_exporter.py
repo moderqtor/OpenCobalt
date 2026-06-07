@@ -67,10 +67,15 @@ def test_related_links_populated(tmp_path):
     exporter = MarkdownExporter()
     run1_id = "aaaaaaaa-0000-0000-0000-000000000000"
     run2_id = "bbbbbbbb-0000-0000-0000-000000000000"
-    # Write two older files first
     path1 = exporter.export_run({**_run(run1_id), "started_at": 1749340700.0}, _score(run1_id), tmp_path)
     path2 = exporter.export_run({**_run(run2_id), "started_at": 1749340750.0}, _score(run2_id), tmp_path)
-    # Now write a third -- should reference the two above
     path3 = exporter.export_run({**_run(), "started_at": 1749340800.0}, _score(), tmp_path)
     content = path3.read_text()
-    assert path1.stem in content or path2.stem in content
+    # Both siblings must appear in valid YAML list format
+    assert f'"[[{path1.stem}]]"' in content
+    assert f'"[[{path2.stem}]]"' in content
+    # related line must be a valid YAML flow sequence
+    for line in content.splitlines():
+        if line.startswith("related:"):
+            assert line.startswith("related: ["), f"not a YAML list: {line}"
+            break

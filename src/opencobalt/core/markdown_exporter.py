@@ -40,8 +40,6 @@ class MarkdownExporter:
         skills = json.loads(run.get("skills_used_json") or "[]")
         connectors = json.loads(run.get("connectors_used_json") or "[]")
         latency_s = f"{run['latency_ms'] // 1000}s" if run.get("latency_ms") else "unknown"
-        related_links = ", ".join(f"[[{r}]]" for r in related)
-
         lines = [
             "---",
             f"id: {run['id']}",
@@ -52,8 +50,9 @@ class MarkdownExporter:
             f"overall_score: {score['overall']}",
             f"tags: [{run['run_type']}, {run['agent_id']}]",
         ]
-        if related_links:
-            lines.append(f"related: {related_links}")
+        if related:
+            items = ", ".join(f'"[[{r}]]"' for r in related)
+            lines.append(f"related: [{items}]")
         lines += [
             "---",
             "",
