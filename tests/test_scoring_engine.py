@@ -1,4 +1,3 @@
-import json
 from unittest.mock import MagicMock
 from opencobalt.core.telemetry import TelemetryStore
 from opencobalt.core.scoring_engine import ScoringEngine
