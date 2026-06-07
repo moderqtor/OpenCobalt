@@ -74,7 +74,7 @@ class ConvergenceOrchestrator:
         self._ledger = ledger
         self._execute_subtask = execute_subtask or _default_execute_subtask
 
-    def run(self, seed_task: str, resume_session_id: str | None = None) -> ConvergenceSession:
+    def run(self, seed_task: str, resume_session_id: str | None = None, telemetry_session=None) -> ConvergenceSession:
         session_id = resume_session_id or str(uuid.uuid4())
         existing = self._get_existing_session(session_id) if resume_session_id else None
         session = ConvergenceSession(

@@ -26,6 +26,7 @@ class AutonomyEngine:
         hours: int | float | None = None,
         allowed_actions: list[str] | None = None,
         denied_actions: list[str] | None = None,
+        telemetry_session=None,
     ) -> dict:
         """Create a running autonomy run and persist its initial task queue."""
         metadata: dict[str, int | float] = {}

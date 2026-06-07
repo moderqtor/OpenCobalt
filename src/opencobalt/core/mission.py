@@ -35,6 +35,7 @@ class MissionPlanner:
         seed_goal: str,
         profile: str,
         envelope: PermissionEnvelope,
+        telemetry_session=None,
     ) -> dict:
         """Create a mission run and publish the selected deterministic plan."""
         engine = AutonomyEngine(ledger=self.ledger)
