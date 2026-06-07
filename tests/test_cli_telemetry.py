@@ -17,17 +17,17 @@ def _seed_db(tmp_path):
     session.finish("complete")
     judge = MagicMock()
     judge.judge_name = "heuristic"
-    judge.judge.return_value = {k: 70 for k in [
-        "output_quality","prompt_adherence","novel_ideation",
-        "context_handling","tool_appropriateness","task_decomposition","agent_selection",
-    ]}
-    judge.judge.return_value.update({"reasoning": "", "summary": "Done.", "_judge": "heuristic"})
+    judge.judge.return_value = {
+        "output_quality": 70, "prompt_adherence": 70, "novel_ideation": 70,
+        "context_handling": 70, "tool_appropriateness": 70, "task_decomposition": 70,
+        "agent_selection": 70, "reasoning": "", "summary": "Done.", "_judge": "heuristic",
+    }
     ScoringEngine(store, judge=judge).score(session.run_id)
-    return store, session.run_id
+    return session.run_id
 
 
 def test_telemetry_status(tmp_path, monkeypatch):
-    store, _ = _seed_db(tmp_path)
+    _seed_db(tmp_path)
     monkeypatch.setattr("opencobalt.cli._TELEMETRY_DB_PATH", tmp_path / "telemetry.db")
     result = runner.invoke(app, ["telemetry", "status"])
     assert result.exit_code == 0
@@ -35,7 +35,7 @@ def test_telemetry_status(tmp_path, monkeypatch):
 
 
 def test_telemetry_runs(tmp_path, monkeypatch):
-    store, run_id = _seed_db(tmp_path)
+    run_id = _seed_db(tmp_path)
     monkeypatch.setattr("opencobalt.cli._TELEMETRY_DB_PATH", tmp_path / "telemetry.db")
     result = runner.invoke(app, ["telemetry", "runs"])
     assert result.exit_code == 0
@@ -43,7 +43,7 @@ def test_telemetry_runs(tmp_path, monkeypatch):
 
 
 def test_telemetry_show(tmp_path, monkeypatch):
-    store, run_id = _seed_db(tmp_path)
+    run_id = _seed_db(tmp_path)
     monkeypatch.setattr("opencobalt.cli._TELEMETRY_DB_PATH", tmp_path / "telemetry.db")
     result = runner.invoke(app, ["telemetry", "show", run_id])
     assert result.exit_code == 0
@@ -51,7 +51,7 @@ def test_telemetry_show(tmp_path, monkeypatch):
 
 
 def test_telemetry_scores(tmp_path, monkeypatch):
-    store, _ = _seed_db(tmp_path)
+    _seed_db(tmp_path)
     monkeypatch.setattr("opencobalt.cli._TELEMETRY_DB_PATH", tmp_path / "telemetry.db")
     result = runner.invoke(app, ["telemetry", "scores"])
     assert result.exit_code == 0
