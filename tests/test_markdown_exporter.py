@@ -1,5 +1,3 @@
-import json
-from pathlib import Path
 from opencobalt.core.markdown_exporter import MarkdownExporter
 
 
@@ -25,6 +23,7 @@ def _run(run_id: str = "abc12345-0000-0000-0000-000000000000") -> dict:
 
 def _score(run_id: str = "abc12345-0000-0000-0000-000000000000") -> dict:
     return {
+        "run_id": run_id,
         "overall": 78, "judge": "ollama:llama3",
         "output_quality": 80, "prompt_adherence": 85, "novel_ideation": 55,
         "context_handling": 70, "token_efficiency": 75, "latency_score": 90,
