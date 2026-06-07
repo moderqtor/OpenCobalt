@@ -119,6 +119,7 @@ class ConvergenceChecker:
         task: str = "",
         diff: str = "",
         retry_count: int = 0,
+        telemetry_session=None,
     ) -> ConvergenceResult:
         gates = self._required_gates(task_types)
         tests_ok: bool | None = None
@@ -131,6 +132,11 @@ class ConvergenceChecker:
             tests_ok = ok
             if not ok:
                 feedback_parts.append(f"tests failed:\n{output[:500]}")
+            if telemetry_session is not None:
+                if ok:
+                    telemetry_session.record_gate_pass("tests")
+                else:
+                    telemetry_session.record_gate_fail("tests", output[:200])
 
         if "verifier" in gates:
             ok, score, fb = self._verifier_gate.check(task, diff)
@@ -138,6 +144,11 @@ class ConvergenceChecker:
             verifier_score = score
             if not ok:
                 feedback_parts.append(f"verifier score {score:.2f}: {fb}")
+            if telemetry_session is not None:
+                if ok:
+                    telemetry_session.record_gate_pass("verifier")
+                else:
+                    telemetry_session.record_gate_fail("verifier", fb[:200])
 
         passed = (tests_ok is not False) and (verifier_ok is not False)
         feedback = "\n".join(feedback_parts) if feedback_parts else "all gates passed"

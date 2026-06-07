@@ -79,7 +79,7 @@ class ArtifactBus:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
 
-    def publish(self, artifact: AgentArtifact) -> None:
+    def publish(self, artifact: AgentArtifact, *, telemetry_session=None) -> None:
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO convergence_artifacts "
@@ -96,6 +96,8 @@ class ArtifactBus:
                     artifact.timestamp,
                 ),
             )
+        if telemetry_session is not None:
+            telemetry_session.record_artifact(artifact.type, artifact.id)
 
     def subscribe(self, types: list[str], session_id: str) -> list[AgentArtifact]:
         if not types:
