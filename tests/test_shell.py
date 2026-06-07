@@ -30,27 +30,10 @@ def test_dispatch_slash_with_args(shell: CobaltShell) -> None:
     mock_cmd.assert_called_once_with("route", ["design the auth module"])
 
 
-def test_dispatch_plain_prompt_calls_router(shell: CobaltShell) -> None:
-    with (
-        patch.object(shell, "_refine_prompt", side_effect=lambda t: t),
-        patch.object(shell._learning_router, "route") as mock_route,
-        patch.object(shell, "_open_tool") as mock_open,
-        patch.object(shell, "_queue_background_council"),
-        patch("opencobalt.core.verify.verify_async") as mock_verify,
-    ):
-        mock_route.return_value = MagicMock(
-            recommended_tool="claude-code",
-            score=86,
-            tier="executive",
-            reasoning="test",
-            task="design auth",
-            id="test-id",
-            scores={"claude-code": 86},
-        )
+def test_dispatch_plain_prompt_calls_overlay(shell: CobaltShell) -> None:
+    with patch.object(shell, "_overlay") as mock_overlay:
         shell.dispatch("design the auth module")
-    mock_route.assert_called_once_with("design the auth module")
-    mock_open.assert_called_once()
-    mock_verify.assert_called_once()
+    mock_overlay.handle_prompt.assert_called_once_with("design the auth module")
 
 
 def test_dispatch_slash_palette(shell: CobaltShell, capsys) -> None:
@@ -70,6 +53,9 @@ def test_slash_commands_list(shell: CobaltShell) -> None:
     assert "route" in commands
     assert "brief" in commands
     assert "verify" in commands
+    assert "mission" in commands
+    assert "limits" in commands
+    assert "policy" in commands
 
 
 def test_on_exit_does_not_raise(shell: CobaltShell) -> None:
@@ -150,3 +136,37 @@ def test_dispatch_converge_empty_prints_usage(tmp_path, capsys):
     )
     shell.dispatch("/converge")
     # Just verify it doesn't raise
+
+
+def test_plain_prompt_routes_through_overlay(shell: CobaltShell) -> None:
+    with patch.object(shell, "_overlay") as mock_overlay:
+        shell.dispatch("build auth with tests and docs")
+
+    mock_overlay.handle_prompt.assert_called_once_with("build auth with tests and docs")
+
+
+def test_dispatch_mission_calls_run_mission(shell: CobaltShell) -> None:
+    called_with: dict = {}
+
+    def fake_run_mission(expr: str) -> None:
+        called_with["expr"] = expr
+
+    shell._run_mission = fake_run_mission  # type: ignore[method-assign]
+    shell.dispatch("/mission --hours 5 make me money")
+    assert called_with.get("expr") == "--hours 5 make me money"
+
+
+def test_dispatch_policy_calls_cli(shell: CobaltShell) -> None:
+    with patch("subprocess.run") as mock_run:
+        shell.dispatch("/policy show")
+
+    mock_run.assert_called_once_with(["opencobalt", "policy", "show"])
+
+
+def test_dispatch_council_mode_calls_typed_cli(shell: CobaltShell) -> None:
+    with patch("subprocess.run") as mock_run:
+        shell.dispatch("/council coordinate handoff to tests")
+
+    mock_run.assert_called_once_with(
+        ["opencobalt", "council", "--mode", "coordinate", "handoff to tests"]
+    )

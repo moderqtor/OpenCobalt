@@ -309,3 +309,72 @@ def test_auto_accepts_converge_flag_help():
     result = _invoke("auto", "--help")
     assert result.exit_code == 0
     assert "converge" in result.output
+    assert "use-limits" in result.output
+
+
+def test_auto_creates_checkpointed_run(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = _invoke("auto", "--hours", "1", "--use-limits", "max", "build auth with tests")
+    assert result.exit_code == 0, _debug(result)
+    assert "Autonomy run" in result.output
+    assert "max" in result.output
+
+
+def test_overlay_help_registered():
+    result = _invoke("overlay", "--help")
+    assert result.exit_code == 0, _debug(result)
+    assert "prompt" in result.output.lower()
+
+
+def test_policy_show_defaults(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = _invoke("policy", "show")
+    assert result.exit_code == 0, _debug(result)
+    assert "auto_commit" in result.output
+    assert "api_usage" in result.output
+
+
+def test_policy_set_round_trip(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = _invoke("policy", "set", "auto_commit", "false")
+    assert result.exit_code == 0, _debug(result)
+    result = _invoke("policy", "show")
+    assert "auto_commit" in result.output
+    assert "false" in result.output.lower()
+
+
+def test_limits_status_registered(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = _invoke("limits", "status")
+    assert result.exit_code == 0, _debug(result)
+    assert "usage" in result.output.lower()
+
+
+def test_mission_help_registered():
+    result = _invoke("mission", "--help")
+    assert result.exit_code == 0, _debug(result)
+    assert "hours" in result.output.lower()
+    assert "allow" in result.output.lower()
+
+
+def test_mission_creates_local_plan(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = _invoke(
+        "mission",
+        "--allow",
+        "local-build,draft-content",
+        "--deny",
+        "purchases,messages",
+        "make me money",
+    )
+    assert result.exit_code == 0, _debug(result)
+    assert "Mission" in result.output
+    assert "permission envelope" in result.output
+
+
+def test_council_coordinate_mode_publishes_artifact(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = _invoke("council", "--mode", "coordinate", "handoff to tests")
+    assert result.exit_code == 0, _debug(result)
+    assert "coordinate" in result.output
+    assert "artifact" in result.output.lower()

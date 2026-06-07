@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import (
@@ -80,6 +82,46 @@ CREATE TABLE IF NOT EXISTS multi_route_decisions (
     tools_used  TEXT NOT NULL DEFAULT '[]',
     result_id   TEXT NOT NULL DEFAULT '',
     metadata    TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS autonomy_runs (
+    id              TEXT PRIMARY KEY,
+    timestamp       TEXT NOT NULL,
+    seed_goal       TEXT NOT NULL,
+    profile         TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'queued',
+    allowed_actions TEXT NOT NULL DEFAULT '[]',
+    denied_actions  TEXT NOT NULL DEFAULT '[]',
+    metadata        TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS autonomy_tasks (
+    id                 TEXT PRIMARY KEY,
+    run_id             TEXT NOT NULL,
+    timestamp          TEXT NOT NULL,
+    prompt             TEXT NOT NULL,
+    task_type          TEXT NOT NULL,
+    preferred_tool     TEXT,
+    preferred_subagent TEXT,
+    priority           INTEGER NOT NULL DEFAULT 0,
+    status             TEXT NOT NULL DEFAULT 'queued',
+    artifact_ids       TEXT NOT NULL DEFAULT '[]',
+    metadata           TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (run_id) REFERENCES autonomy_runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS usage_observations (
+    id          TEXT PRIMARY KEY,
+    run_id      TEXT,
+    timestamp   TEXT NOT NULL,
+    tool        TEXT NOT NULL,
+    event_type  TEXT NOT NULL,
+    task_type   TEXT NOT NULL,
+    latency_ms  INTEGER,
+    success     INTEGER,
+    message     TEXT NOT NULL DEFAULT '',
+    metadata    TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (run_id) REFERENCES autonomy_runs(id)
 );
 """
 
@@ -270,6 +312,168 @@ class Ledger:
         with self._connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM memory_records").fetchone()[0]
 
+    # --- Autonomy runs ---
+
+    def create_autonomy_run(
+        self,
+        seed_goal: str,
+        *,
+        profile: str = "balanced",
+        allowed_actions: list[str] | None = None,
+        denied_actions: list[str] | None = None,
+        status: str = "queued",
+        metadata: dict | None = None,
+    ) -> str:
+        run_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO autonomy_runs VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    run_id,
+                    _utc_now(),
+                    seed_goal,
+                    profile,
+                    status,
+                    json.dumps(allowed_actions or []),
+                    json.dumps(denied_actions or []),
+                    json.dumps(metadata or {}),
+                ),
+            )
+        return run_id
+
+    def get_autonomy_run(self, run_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM autonomy_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+        return _decode_autonomy_run(row) if row else None
+
+    # --- Autonomy tasks ---
+
+    def add_autonomy_task(
+        self,
+        *,
+        run_id: str,
+        prompt: str,
+        task_type: str,
+        preferred_tool: str | None = None,
+        preferred_subagent: str | None = None,
+        priority: int = 0,
+        status: str = "queued",
+        artifact_ids: list[str] | None = None,
+        metadata: dict | None = None,
+    ) -> str:
+        task_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO autonomy_tasks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    task_id,
+                    run_id,
+                    _utc_now(),
+                    prompt,
+                    task_type,
+                    preferred_tool,
+                    preferred_subagent,
+                    priority,
+                    status,
+                    json.dumps(artifact_ids or []),
+                    json.dumps(metadata or {}),
+                ),
+            )
+        return task_id
+
+    def update_autonomy_task(
+        self,
+        task_id: str,
+        *,
+        status: str | None = None,
+        artifact_ids: list[str] | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        fields: list[str] = []
+        params: list[str] = []
+        if status is not None:
+            fields.append("status = ?")
+            params.append(status)
+        if artifact_ids is not None:
+            fields.append("artifact_ids = ?")
+            params.append(json.dumps(artifact_ids))
+        if metadata is not None:
+            fields.append("metadata = ?")
+            params.append(json.dumps(metadata))
+        if not fields:
+            return
+        params.append(task_id)
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE autonomy_tasks SET {', '.join(fields)} WHERE id = ?",
+                params,
+            )
+
+    def list_autonomy_tasks(self, run_id: str) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM autonomy_tasks WHERE run_id = ? ORDER BY priority DESC, timestamp",
+                (run_id,),
+            ).fetchall()
+        return [_decode_autonomy_task(row) for row in rows]
+
+    # --- Usage observations ---
+
+    def insert_usage_observation(
+        self,
+        *,
+        run_id: str | None = None,
+        tool: str,
+        event_type: str,
+        task_type: str,
+        latency_ms: int | None,
+        success: bool | None,
+        message: str = "",
+        metadata: dict | None = None,
+    ) -> str:
+        observation_id = str(uuid.uuid4())
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO usage_observations VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    observation_id,
+                    run_id,
+                    _utc_now(),
+                    tool,
+                    event_type,
+                    task_type,
+                    latency_ms,
+                    None if success is None else int(success),
+                    message,
+                    json.dumps(metadata or {}),
+                ),
+            )
+        return observation_id
+
+    def list_usage_observations(
+        self,
+        run_id: str | None = None,
+        *,
+        tool: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        sql = "SELECT * FROM usage_observations WHERE 1=1"
+        params: list[str | int] = []
+        if run_id is not None:
+            sql += " AND run_id = ?"
+            params.append(run_id)
+        if tool is not None:
+            sql += " AND tool = ?"
+            params.append(tool)
+        sql += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [_decode_usage_observation(row) for row in rows]
+
     # --- Outcomes ---
 
     def insert_outcome(
@@ -279,15 +483,12 @@ class Ledger:
         outcome: str,
         metadata: dict | None = None,
     ) -> None:
-        import uuid
-        from datetime import datetime, timezone
-
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO outcomes VALUES (?,?,?,?,?,?)",
                 (
                     str(uuid.uuid4()),
-                    datetime.now(tz=timezone.utc).isoformat(),
+                    _utc_now(),
                     task_id,
                     tool,
                     outcome,
@@ -454,3 +655,30 @@ class Ledger:
                 (session_id,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+
+def _utc_now() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _decode_autonomy_run(row: sqlite3.Row) -> dict:
+    result = dict(row)
+    result["allowed_actions"] = json.loads(result["allowed_actions"])
+    result["denied_actions"] = json.loads(result["denied_actions"])
+    result["metadata"] = json.loads(result["metadata"])
+    return result
+
+
+def _decode_autonomy_task(row: sqlite3.Row) -> dict:
+    result = dict(row)
+    result["artifact_ids"] = json.loads(result["artifact_ids"])
+    result["metadata"] = json.loads(result["metadata"])
+    return result
+
+
+def _decode_usage_observation(row: sqlite3.Row) -> dict:
+    result = dict(row)
+    if result["success"] is not None:
+        result["success"] = bool(result["success"])
+    result["metadata"] = json.loads(result["metadata"])
+    return result

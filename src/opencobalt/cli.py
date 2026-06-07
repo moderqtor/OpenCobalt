@@ -91,6 +91,12 @@ app.add_typer(benchmark_app, name="benchmark")
 converge_app = typer.Typer(help="Convergence protocol commands.", invoke_without_command=True)
 app.add_typer(converge_app, name="converge")
 
+policy_app = typer.Typer(help="Autonomy policy commands.")
+app.add_typer(policy_app, name="policy")
+
+limits_app = typer.Typer(help="Usage limit observation commands.")
+app.add_typer(limits_app, name="limits")
+
 console = Console()
 err = Console(stderr=True)
 
@@ -466,6 +472,10 @@ def _memory_bridge():
     return MemoryBridge(db_path=_MEMORIES_DB)
 
 
+def _split_cli_actions(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 @memory_app.command("status")
 def memory_status() -> None:
     """Show memory record counts and paths."""
@@ -787,20 +797,73 @@ def auto(
     task: str = typer.Argument(..., help="Seed task for autonomous multi-hour execution"),
     iterations: int = typer.Option(20, "--iterations", "-n", help="Max iterations"),
     hours: float = typer.Option(5.0, "--hours", "-t", help="Max runtime in hours"),
+    use_limits: str = typer.Option(
+        "balanced",
+        "--use-limits",
+        help="Autonomy profile: balanced, aggressive, max, cheap, or executive",
+    ),
     converge: bool = typer.Option(
         False, "--converge", help="Use convergence protocol (DAG + gating) instead of autonomous runner"
     ),
 ) -> None:
-    """Run an autonomous multi-agent session for hours. Rotates tools to spread usage limits."""
+    """Run an autonomous multi-agent session for hours."""
     if converge:
         from .core.convergence_orchestrator import ConvergenceOrchestrator
         orch = ConvergenceOrchestrator(ledger=_ledger())
         orch.run(task)
         return
-    from .core.autonomous_runner import AutonomousRunner
+    from .core.autonomy_engine import AutonomyEngine
 
-    runner = AutonomousRunner(max_iterations=iterations, max_hours=hours)
-    runner.run(task)
+    engine = AutonomyEngine(ledger=_ledger(), max_iterations=iterations)
+    run = engine.start(task, profile=use_limits, hours=hours)
+    tasks = _ledger().list_autonomy_tasks(run["id"])
+    console.print(f"\n  [bold {_COBALT}]Autonomy run[/bold {_COBALT}]  [dim]{run['id'][:8]}[/dim]")
+    console.print(f"  [dim]profile:[/dim] {run['profile']}  [dim]hours:[/dim] {hours:g}")
+    console.print(f"  [dim]tasks:[/dim]   {len(tasks)} checkpointed")
+    console.print("  [dim]external tools are not called until task execution is explicitly run[/dim]\n")
+
+
+@app.command("overlay")
+def overlay(
+    prompt: str = typer.Argument(..., help="Plain prompt to classify and dispatch"),
+) -> None:
+    """Classify a prompt through the Phase 14 overlay."""
+    from .core.overlay import OverlayController
+
+    controller = OverlayController(ledger=_ledger())
+    classification = controller.classify(prompt)
+    console.print(f"\n  [bold {_COBALT}]Overlay[/bold {_COBALT}]  [dim]{classification.mode}[/dim]")
+    console.print(f"  [dim]prompt:[/dim]  {classification.prompt}")
+    console.print(f"  [dim]profile:[/dim] {classification.profile}")
+    if classification.hours is not None:
+        console.print(f"  [dim]hours:[/dim]   {classification.hours:g}")
+    console.print()
+
+
+@app.command("mission")
+def mission(
+    task: str = typer.Argument(..., help="Open-ended mission goal"),
+    hours: float = typer.Option(5.0, "--hours", help="Max runtime in hours"),
+    profile: str = typer.Option("balanced", "--profile", help="Autonomy profile"),
+    allow: str = typer.Option("", "--allow", help="Comma-separated allowed action envelope"),
+    deny: str = typer.Option("", "--deny", help="Comma-separated denied actions"),
+) -> None:
+    """Create a checkpointed mission plan without external actions."""
+    from .core.artifact_bus import ArtifactBus
+    from .core.autonomy_policy import PermissionEnvelope
+    from .core.mission import MissionPlanner
+
+    envelope = PermissionEnvelope(
+        allowed_actions=_split_cli_actions(allow),
+        denied_actions=_split_cli_actions(deny),
+    )
+    planner = MissionPlanner(ledger=_ledger(), artifact_bus=ArtifactBus())
+    result = planner.plan(seed_goal=task, profile=profile, envelope=envelope)
+    console.print(f"\n  [bold {_COBALT}]Mission[/bold {_COBALT}]  [dim]{result['run_id'][:8]}[/dim]")
+    console.print(f"  [dim]goal:[/dim]    {task}")
+    console.print(f"  [dim]profile:[/dim] {profile}  [dim]hours:[/dim] {hours:g}")
+    console.print(f"  [dim]plan:[/dim]    {result['selected_plan']['title']}")
+    console.print("  [dim]permission envelope recorded; no external action was taken[/dim]\n")
 
 
 @converge_app.callback(invoke_without_command=True)
@@ -1212,6 +1275,71 @@ def cost_reset(
     tracker = CostTracker(_DB_PATH)
     tracker.reset_monthly_records()
     console.print(f"\n  [{_GREEN}]Monthly cost records cleared.[/{_GREEN}]\n")
+
+
+# ── Phase 14 policy and limits commands ───────────────────────────────────────
+
+@policy_app.command("show")
+def policy_show() -> None:
+    """Show the current autonomy policy defaults."""
+    from .core.autonomy_policy import PolicyStore
+
+    policy = PolicyStore(_DB_PATH).get_policy()
+    console.print()
+    table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
+    table.add_column("Key", style="dim")
+    table.add_column("Value")
+    for key in (
+        "profile",
+        "use_limits",
+        "auto_test",
+        "auto_retry",
+        "auto_commit",
+        "auto_push",
+        "api_usage",
+        "push_requires_explicit",
+    ):
+        table.add_row(key, str(getattr(policy, key)).lower())
+    console.print(table)
+    console.print()
+
+
+@policy_app.command("set")
+def policy_set(
+    key: str = typer.Argument(..., help="Policy key to set"),
+    value: str = typer.Argument(..., help="Policy value"),
+) -> None:
+    """Set an autonomy policy value in SQLite config."""
+    from .core.autonomy_policy import PolicyStore
+
+    PolicyStore(_DB_PATH).set(key, value)
+    console.print(f"\n  [{_GREEN}]Policy updated[/{_GREEN}]  [dim]{key}={value}[/dim]\n")
+
+
+@limits_app.command("status")
+def limits_status() -> None:
+    """Show observed usage limit signals."""
+    observations = _ledger().list_usage_observations(limit=20)
+    console.print(f"\n  [bold {_COBALT}]Usage observations[/bold {_COBALT}]\n")
+    if not observations:
+        console.print("  [dim]No usage observations recorded yet.[/dim]\n")
+        return
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Tool")
+    table.add_column("Event", style="dim")
+    table.add_column("Task", style="dim")
+    table.add_column("Success", style="dim")
+    table.add_column("Message")
+    for item in observations:
+        table.add_row(
+            item["tool"],
+            item["event_type"],
+            item["task_type"],
+            str(item["success"]).lower(),
+            item["message"][:60],
+        )
+    console.print(table)
+    console.print(f"  [dim]{len(observations)} observation(s)[/dim]\n")
 
 
 # ── Skills commands ───────────────────────────────────────────────────────────
@@ -2149,11 +2277,41 @@ def install_hooks(
 @app.command()
 def council(
     task: str = typer.Argument(..., help="Task or question to consult on"),
+    mode: str = typer.Option("advise", "--mode", help="Council mode: advise, coordinate, review, ideate, resolve"),
     models_str: str = typer.Option("", "--models", "-m", help="Comma-separated models (claude,gemini,ollama)"),
     no_synthesis: bool = typer.Option(False, "--no-synthesis", help="Show raw responses only"),
     save: bool = typer.Option(False, "--save", help="Save result to memory bridge"),
 ) -> None:
     """Consult multiple AI models in parallel. Synthesises agreements and flags disagreements."""
+    if mode != "advise":
+        from .core.artifact_bus import ArtifactBus, ArtifactType
+        from .core.council_protocol import CouncilProtocol
+
+        type_by_mode = {
+            "coordinate": ArtifactType.HANDOFF,
+            "review": ArtifactType.OBJECTION,
+            "ideate": ArtifactType.IDEA,
+            "resolve": ArtifactType.DECISION,
+        }
+        try:
+            artifact = CouncilProtocol(ArtifactBus()).publish(
+                session_id="council",
+                mode=mode,
+                artifact_type=type_by_mode.get(mode, ArtifactType.CLAIM),
+                content=task,
+                producer="council-cli",
+            )
+        except ValueError as exc:
+            err.print(f"\n[{_RED}]Error:[/{_RED}]  {exc}\n")
+            raise typer.Exit(1) from exc
+        console.print(
+            f"\n  [bold {_COBALT}]Council {mode}[/bold {_COBALT}]"
+            f"  [dim]artifact {artifact.id[:8]}[/dim]\n"
+        )
+        console.print(f"  [dim]type:[/dim] {artifact.type}")
+        console.print(f"  [dim]text:[/dim] {task}\n")
+        return
+
     from .core.council import CouncilSession
 
     models = [m.strip() for m in models_str.split(",") if m.strip()] or None

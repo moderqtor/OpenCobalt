@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from .core.background import BackgroundResult, BackgroundRunner, TestWatcher
 from .core.brief import BriefGenerator
 from .core.learning_router import LearningRouter
 from .core.ledger import Ledger
+from .core.overlay import OverlayController
 
 _COBALT = "#7B9EFF"
 _GREEN = "#3DFFA0"
@@ -60,6 +62,9 @@ class CobaltShell:
         "debate",
         "orch",
         "auto",
+        "mission",
+        "limits",
+        "policy",
         "converge",
         "install-hooks",
         "tui",
@@ -74,6 +79,13 @@ class CobaltShell:
         self._runner = BackgroundRunner(max_workers=3)
         self._watcher = TestWatcher(self._runner)
         self._council_cache: dict[str, list[BackgroundResult]] = {}
+        self._overlay = OverlayController(
+            ledger=self._ledger,
+            route_runner=self._route_and_open,
+            convergence_runner=self._run_converge,
+            auto_runner=self._run_auto,
+            mission_runner=self._run_mission,
+        )
         self._session: PromptSession = PromptSession(
             completer=WordCompleter(
                 [f"/{command}" for command in self._CLI_COMMANDS] + ["/pipe", "/graph"],
@@ -128,7 +140,7 @@ class CobaltShell:
                 args = parts[1].split() if len(parts) > 1 else []
             self._run_command(cmd, args)
             return
-        self._route_and_open(text)
+        self._overlay.handle_prompt(text)
 
     def render_status(self) -> str:
         """Return a one-line status string for the toolbar."""
@@ -254,6 +266,12 @@ class CobaltShell:
         if cmd == "auto":
             self._run_auto(" ".join(args))
             return
+        if cmd == "mission":
+            self._run_mission(" ".join(args))
+            return
+        if cmd in {"limits", "policy"}:
+            subprocess.run(["opencobalt", cmd] + args)
+            return
         if cmd == "converge":
             self._run_converge(" ".join(args))
             return
@@ -263,6 +281,9 @@ class CobaltShell:
         if cmd == "council":
             if not args or args[0] == "show":
                 self._show_council_cache()
+            elif args[0] in {"coordinate", "review", "ideate", "resolve"}:
+                content = " ".join(args[1:]) or args[0]
+                subprocess.run(["opencobalt", "council", "--mode", args[0], content])
             else:
                 subprocess.run(["opencobalt", "council"] + args)
             return
@@ -377,6 +398,14 @@ class CobaltShell:
         runner = AutonomousRunner()
         runner.run(task)
 
+    def _run_mission(self, task: str) -> None:
+        if not task.strip():
+            console.print(
+                f"  [{_AMBER}]Usage:[/{_AMBER}]  /mission --hours 5 \"seed goal\""
+            )
+            return
+        subprocess.run(["opencobalt", "mission"] + shlex.split(task))
+
     def _show_council_cache(self) -> None:
         all_results = []
         for results in self._council_cache.values():
@@ -410,6 +439,9 @@ class CobaltShell:
         console.print(result)
 
     def _route_and_open(self, task: str) -> None:
+        if task.startswith("/"):
+            self._overlay.handle_prompt(task)
+            return
         task = self._refine_prompt(task)
         decision = self._learning_router.route(task)
         try:

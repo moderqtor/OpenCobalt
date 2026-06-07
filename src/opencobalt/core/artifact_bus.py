@@ -35,6 +35,18 @@ class ArtifactType:
     ANALYSIS = "analysis"
     SUMMARY = "summary"
     ERROR_CONTEXT = "error_context"
+    PROPOSAL = "proposal"
+    OBJECTION = "objection"
+    QUESTION = "question"
+    ANSWER = "answer"
+    CLAIM = "claim"
+    DECISION = "decision"
+    HANDOFF = "handoff"
+    BLOCKED = "blocked"
+    APPROVAL = "approval"
+    RISK = "risk"
+    IDEA = "idea"
+    RANKED_PLAN = "ranked_plan"
 
 
 @dataclass
