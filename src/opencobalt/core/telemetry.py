@@ -187,7 +187,6 @@ class TelemetryStore:
                     json.dumps(score.get("heuristics", {})),
                 ),
             )
-        with self._connect() as conn:
             conn.execute(
                 "UPDATE telemetry_runs SET status='scored' WHERE id=?", (score["run_id"],)
             )

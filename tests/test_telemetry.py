@@ -92,3 +92,50 @@ def test_list_runs(tmp_path):
 
     runs_none = store.list_runs(run_type="converge")
     assert len(runs_none) == 0
+
+
+def test_get_leaderboard_returns_agent_stats(tmp_path):
+    store = TelemetryStore(tmp_path / "t.db")
+    session = store.start_run(run_type="route", seed_prompt="x", agent_id="claude-code")
+    store.finish_run(session.run_id, "complete")
+    score = {
+        "run_id": session.run_id,
+        "scored_at": "2026-06-07T00:00:00Z",
+        "judge": "heuristic",
+        "overall": 80,
+        "output_quality": 85,
+        "prompt_adherence": 75,
+        "novel_ideation": 50,
+        "context_handling": 60,
+        "token_efficiency": 70,
+        "latency_score": 90,
+        "tool_appropriateness": 65,
+        "task_decomposition": 55,
+        "agent_selection": 60,
+        "convergence_quality": 95,
+        "judge_reasoning": "",
+        "heuristics": {},
+    }
+    store.save_score(score)
+    board = store.get_leaderboard()
+    assert len(board) == 1
+    assert board[0]["agent_id"] == "claude-code"
+    assert board[0]["total"] == 1
+    assert board[0]["avg_overall"] == 80.0
+
+
+def test_set_raw_output(tmp_path):
+    store = TelemetryStore(tmp_path / "t.db")
+    session = store.start_run(run_type="route", seed_prompt="x", agent_id="claude-code")
+    store.set_raw_output(session.run_id, "the output", token_count_out=42)
+    run = store.get_run(session.run_id)
+    assert run["raw_output"] == "the output"
+    assert run["token_count_out"] == 42
+
+
+def test_set_summary(tmp_path):
+    store = TelemetryStore(tmp_path / "t.db")
+    session = store.start_run(run_type="route", seed_prompt="x", agent_id="claude-code")
+    store.set_summary(session.run_id, "A helpful summary.")
+    run = store.get_run(session.run_id)
+    assert run["summary"] == "A helpful summary."
