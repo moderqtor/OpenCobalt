@@ -60,6 +60,7 @@ class CobaltShell:
         "debate",
         "orch",
         "auto",
+        "converge",
         "install-hooks",
         "tui",
         "ui",
@@ -253,6 +254,9 @@ class CobaltShell:
         if cmd == "auto":
             self._run_auto(" ".join(args))
             return
+        if cmd == "converge":
+            self._run_converge(" ".join(args))
+            return
         if cmd == "graph":
             self._run_graph(args)
             return
@@ -326,6 +330,40 @@ class CobaltShell:
             Ledger(self._db_path).insert_multi_route_decision(decision)
         except Exception:
             pass
+
+    def _run_converge(self, task: str) -> None:
+        from .core.auto_committer import AutoCommitter
+        from .core.convergence_orchestrator import ConvergenceOrchestrator
+
+        if not task.strip():
+            console.print(
+                f"  [{_AMBER}]Usage:[/{_AMBER}]  /converge \"task\""
+                "  |  /converge --resume"
+            )
+            return
+
+        resume_id: str | None = None
+        actual_task = task.strip()
+
+        if actual_task == "--resume":
+            sessions = self._ledger.list_convergence_sessions(limit=1)
+            if not sessions:
+                console.print("  [dim]No sessions to resume.[/dim]")
+                return
+            last = sessions[0]
+            if last["status"] not in ("running", "failed", "interrupted"):
+                console.print(
+                    f"  [dim]Last session {last['id'][:8]} is already {last['status']}.[/dim]"
+                )
+                return
+            resume_id = last["id"]
+            actual_task = last["seed_task"]
+
+        orch = ConvergenceOrchestrator(
+            committer=AutoCommitter(),
+            ledger=self._ledger,
+        )
+        orch.run(actual_task, resume_session_id=resume_id)
 
     def _run_auto(self, task: str) -> None:
         from .core.autonomous_runner import AutonomousRunner

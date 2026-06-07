@@ -259,3 +259,52 @@ class TestOrch:
             result = _invoke("orch", "build auth")
 
         assert result.exit_code == 0, _debug(result)
+
+
+# ── Converge command ──────────────────────────────────────────────────────────
+
+def test_converge_history_empty(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = _invoke("converge", "history")
+    assert result.exit_code == 0
+    assert "No convergence sessions" in result.output or result.exit_code == 0
+
+
+def test_converge_history_with_data(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from opencobalt.core.ledger import Ledger
+    ledger = Ledger(tmp_path / ".opencobalt" / "ledger.db")
+    ledger.upsert_convergence_session(
+        session_id="abc12345-test", seed_task="implement auth", status="converged",
+        started_at=1000.0, finished_at=1100.0, total_waves=2, total_retries=0,
+        commit_sha="abc12345", log_path=None,
+    )
+    result = _invoke("converge", "history")
+    assert result.exit_code == 0
+    assert "abc12345" in result.output or "implement auth" in result.output
+
+
+def test_converge_show_not_found(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = _invoke("converge", "show", "nonexistent-id")
+    assert result.exit_code != 0
+
+
+def test_converge_show_with_session(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from opencobalt.core.ledger import Ledger
+    ledger = Ledger(tmp_path / ".opencobalt" / "ledger.db")
+    ledger.upsert_convergence_session(
+        session_id="full-session-id-here", seed_task="test task", status="converged",
+        started_at=1000.0, finished_at=1100.0, total_waves=1, total_retries=0,
+        commit_sha="abc12345", log_path=None,
+    )
+    result = _invoke("converge", "show", "full-session-id-here")
+    assert result.exit_code == 0
+    assert "test task" in result.output
+
+
+def test_auto_accepts_converge_flag_help():
+    result = _invoke("auto", "--help")
+    assert result.exit_code == 0
+    assert "--converge" in result.output

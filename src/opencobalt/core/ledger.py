@@ -89,6 +89,7 @@ class Ledger:
         self.db_path = (db_path or _DEFAULT_DB).expanduser().resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
+        self._create_convergence_tables()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -344,3 +345,112 @@ class Ledger:
                 )
             )
         return results
+
+    # --- Convergence tables ---
+
+    _CONVERGENCE_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS convergence_sessions (
+        id TEXT PRIMARY KEY,
+        seed_task TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued',
+        started_at REAL NOT NULL,
+        finished_at REAL,
+        total_waves INTEGER NOT NULL DEFAULT 0,
+        total_retries INTEGER NOT NULL DEFAULT 0,
+        commit_sha TEXT,
+        log_path TEXT
+    );
+    CREATE TABLE IF NOT EXISTS convergence_wave_results (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        wave INTEGER NOT NULL,
+        tests_ok INTEGER,
+        verifier_score REAL,
+        verifier_ok INTEGER,
+        passed INTEGER NOT NULL DEFAULT 0,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        feedback TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY (session_id) REFERENCES convergence_sessions(id)
+    );
+    """
+
+    def _create_convergence_tables(self) -> None:
+        with self._connect() as conn:
+            conn.executescript(self._CONVERGENCE_SCHEMA)
+
+    def upsert_convergence_session(
+        self,
+        session_id: str,
+        seed_task: str,
+        status: str,
+        started_at: float,
+        finished_at: float | None,
+        total_waves: int,
+        total_retries: int,
+        commit_sha: str | None,
+        log_path: str | None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO convergence_sessions "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    session_id, seed_task, status, started_at,
+                    finished_at, total_waves, total_retries,
+                    commit_sha, log_path,
+                ),
+            )
+
+    def get_convergence_session(self, session_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM convergence_sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_convergence_sessions(self, limit: int = 20) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM convergence_sessions "
+                "ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def insert_wave_result(
+        self,
+        session_id: str,
+        wave: int,
+        tests_ok: bool | None,
+        verifier_score: float | None,
+        verifier_ok: bool | None,
+        passed: bool,
+        retry_count: int,
+        feedback: str,
+    ) -> None:
+        import uuid as _uuid
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO convergence_wave_results VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    str(_uuid.uuid4()),
+                    session_id,
+                    wave,
+                    None if tests_ok is None else int(tests_ok),
+                    verifier_score,
+                    None if verifier_ok is None else int(verifier_ok),
+                    int(passed),
+                    retry_count,
+                    feedback,
+                ),
+            )
+
+    def get_wave_results(self, session_id: str) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM convergence_wave_results "
+                "WHERE session_id = ? ORDER BY wave, retry_count",
+                (session_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]

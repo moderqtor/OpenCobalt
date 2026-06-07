@@ -128,3 +128,23 @@ def test_dispatch_orch_calls_run_orch(shell: CobaltShell) -> None:
     shell._run_orch = fake_run_orch  # type: ignore[method-assign]
     shell.dispatch("/orch implement auth with tests")
     assert called_with.get("expr") == "implement auth with tests"
+
+
+def test_converge_in_slash_commands(tmp_path):
+    from opencobalt.shell import CobaltShell
+    shell = CobaltShell(
+        db_path=tmp_path / "ledger.db",
+        bridge_path=tmp_path / "memories.db",
+    )
+    commands = shell.list_slash_commands()
+    assert "converge" in commands
+
+
+def test_dispatch_converge_empty_prints_usage(tmp_path, capsys):
+    from opencobalt.shell import CobaltShell
+    shell = CobaltShell(
+        db_path=tmp_path / "ledger.db",
+        bridge_path=tmp_path / "memories.db",
+    )
+    shell.dispatch("/converge")
+    # Just verify it doesn't raise

@@ -88,6 +88,9 @@ app.add_typer(skills_app, name="skills")
 benchmark_app = typer.Typer(help="Benchmark commands.", invoke_without_command=True)
 app.add_typer(benchmark_app, name="benchmark")
 
+converge_app = typer.Typer(help="Convergence protocol commands.", invoke_without_command=True)
+app.add_typer(converge_app, name="converge")
+
 console = Console()
 err = Console(stderr=True)
 
@@ -784,12 +787,120 @@ def auto(
     task: str = typer.Argument(..., help="Seed task for autonomous multi-hour execution"),
     iterations: int = typer.Option(20, "--iterations", "-n", help="Max iterations"),
     hours: float = typer.Option(5.0, "--hours", "-t", help="Max runtime in hours"),
+    converge: bool = typer.Option(
+        False, "--converge", help="Use convergence protocol (DAG + gating) instead of autonomous runner"
+    ),
 ) -> None:
     """Run an autonomous multi-agent session for hours. Rotates tools to spread usage limits."""
+    if converge:
+        from .core.convergence_orchestrator import ConvergenceOrchestrator
+        orch = ConvergenceOrchestrator(ledger=_ledger())
+        orch.run(task)
+        return
     from .core.autonomous_runner import AutonomousRunner
 
     runner = AutonomousRunner(max_iterations=iterations, max_hours=hours)
     runner.run(task)
+
+
+@converge_app.callback(invoke_without_command=True)
+def converge_cmd(
+    ctx: typer.Context,
+    task: str = typer.Option("", "--task", "-t", help="Task to converge on"),
+    resume: str = typer.Option("", "--resume", help="Resume interrupted session by ID"),
+    push_on_converge: bool = typer.Option(
+        False, "--push-on-converge", help="Push to remote after successful convergence"
+    ),
+) -> None:
+    """Run convergence protocol: decompose task, execute DAG waves, verify, commit."""
+    if ctx.invoked_subcommand is not None:
+        return
+    if not task and not resume:
+        console.print("  [dim]Usage: opencobalt converge --task \"task\" | --resume SESSION_ID[/dim]")
+        return
+    from .core.auto_committer import AutoCommitter
+    from .core.convergence_orchestrator import ConvergenceOrchestrator
+
+    actual_task = task
+    resume_id: str | None = None
+    if resume:
+        resume_id = resume
+        if not actual_task:
+            row = _ledger().get_convergence_session(resume)
+            actual_task = row["seed_task"] if row else ""
+        if not actual_task:
+            err.print(f"  Session not found: {resume}")
+            raise typer.Exit(1)
+
+    orch = ConvergenceOrchestrator(
+        committer=AutoCommitter(push_on_converge=push_on_converge),
+        ledger=_ledger(),
+    )
+    orch.run(actual_task, resume_session_id=resume_id)
+
+
+@converge_app.command("history")
+def converge_history(
+    limit: int = typer.Option(10, "--limit", "-n", help="Max sessions to show"),
+) -> None:
+    """List recent convergence sessions."""
+    sessions = _ledger().list_convergence_sessions(limit=limit)
+    if not sessions:
+        console.print("\n  [dim]No convergence sessions found.[/dim]\n")
+        return
+
+    console.print()
+    table = Table(title="Convergence Sessions", box=box.SIMPLE, padding=(0, 2))
+    table.add_column("ID", style=_COBALT, width=10, no_wrap=True)
+    table.add_column("Task", width=40)
+    table.add_column("Status", width=12)
+    table.add_column("Waves", justify="right", width=6)
+    table.add_column("Retries", justify="right", width=8)
+    for s in sessions:
+        table.add_row(
+            s["id"][:8],
+            s["seed_task"][:40],
+            s["status"],
+            str(s["total_waves"]),
+            str(s["total_retries"]),
+        )
+    console.print(table)
+    console.print(f"  [dim]{len(sessions)} session(s)[/dim]\n")
+
+
+@converge_app.command("show")
+def converge_show(
+    session_id: str = typer.Argument(..., help="Session ID (or prefix) to inspect"),
+) -> None:
+    """Show wave results and artifact summary for a convergence session."""
+    ledger = _ledger()
+    session = ledger.get_convergence_session(session_id)
+    if not session:
+        sessions = ledger.list_convergence_sessions(limit=100)
+        matches = [s for s in sessions if s["id"].startswith(session_id)]
+        if not matches:
+            err.print(f"\n  Session not found: {session_id}\n")
+            raise typer.Exit(1)
+        session = matches[0]
+
+    console.print(f"\n  [bold {_COBALT}]Session {session['id'][:8]}[/bold {_COBALT}]")
+    console.print(f"  [dim]task:[/dim]    {session['seed_task']}")
+    console.print(f"  [dim]status:[/dim]  {session['status']}")
+    console.print(f"  [dim]waves:[/dim]   {session['total_waves']}  "
+                  f"[dim]retries:[/dim] {session['total_retries']}")
+    if session.get("commit_sha"):
+        console.print(f"  [dim]commit:[/dim]  {session['commit_sha']}")
+
+    wave_results = ledger.get_wave_results(session["id"])
+    if wave_results:
+        console.print(f"\n  [dim]Wave results ({len(wave_results)}):[/dim]")
+        for wr in wave_results:
+            ok = f"[{_GREEN}]v[/{_GREEN}]" if wr["passed"] else f"[{_RED}]x[/{_RED}]"
+            console.print(
+                f"    wave {wr['wave']} retry {wr['retry_count']}  {ok}  "
+                f"[dim]{str(wr['feedback'])[:60]}[/dim]"
+            )
+    console.print()
 
 
 @app.command()
