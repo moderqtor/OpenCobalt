@@ -5,9 +5,23 @@ from __future__ import annotations
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path as _Path
 
 from .ledger import Ledger
 from .router import route_task
+
+
+def _get_telemetry_store():
+    from .telemetry import TelemetryStore
+    return TelemetryStore(_Path(".opencobalt") / "telemetry.db")
+
+
+def _score_run(store, run_id: str) -> dict:
+    from .config import Config
+    from .ollama_judge import OllamaJudge
+    from .scoring_engine import ScoringEngine
+    model = Config().get("ollama_judge_model") or "llama3"
+    return ScoringEngine(store, judge=OllamaJudge(model=model)).score(run_id)
 
 
 @dataclass(frozen=True)
@@ -62,6 +76,26 @@ class OverlayController:
 
     def handle_prompt(self, text: str) -> OverlayOutcome:
         classification = self.classify(text)
+        store = _get_telemetry_store()
+        session = store.start_run(
+            run_type=classification.mode,
+            seed_prompt=text,
+            agent_id="overlay",
+        )
+        try:
+            outcome = self._dispatch(classification)
+            session.finish("complete")
+        except Exception:
+            session.finish("failed")
+            raise
+        finally:
+            try:
+                _score_run(store, session.run_id)
+            except Exception:
+                pass
+        return outcome
+
+    def _dispatch(self, classification: PromptClassification) -> OverlayOutcome:
         if classification.mode == "route":
             return self._handle_route(classification.prompt)
         if classification.mode == "converge":
