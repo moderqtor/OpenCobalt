@@ -139,14 +139,14 @@ Ten categories, each 1-100. `overall` is the weighted composite.
 |---|---|---|---|
 | `output_quality` | 25% | Correctness, completeness, coherence | yes |
 | `prompt_adherence` | 15% | Output addressed what was asked (creative deviation can still score high) | yes |
-| `token_efficiency` | 12% | Output value relative to tokens consumed | heuristic + context |
+| `token_efficiency` | 12% | Output value relative to tokens consumed | heuristic only |
 | `tool_appropriateness` | 10% | Right tools, skills, connectors for this task type | yes |
 | `novel_ideation` | 10% | Useful ideas surfaced beyond the explicit ask | yes |
 | `context_handling` | 8% | Available artifacts, files, history well used | yes |
-| `latency_score` | 8% | Speed relative to task complexity | heuristic |
+| `latency_score` | 8% | Speed relative to task complexity | heuristic only |
 | `task_decomposition` | 6% | Task broken into sensible, well-bounded subtasks | yes |
-| `agent_selection` | 5% | Best available agent matched to each subtask | heuristic + context |
-| `convergence_quality` | 1% | Clean convergence: retries, gate failures, wave count | heuristic |
+| `agent_selection` | 5% | Best available agent matched to each subtask | yes |
+| `convergence_quality` | 1% | Clean convergence: retries, gate failures, wave count | heuristic only |
 
 `overall` = round(sum(category * weight for each category))
 
@@ -207,11 +207,12 @@ Return ONLY valid JSON with these exact keys. Each value is an integer 1-100.
   "summary": "<string>"
 }
 
+`token_efficiency`, `latency_score`, and `convergence_quality` are not in the Ollama
+prompt -- they are computed from heuristics and merged into the score record after
+parsing.
+
 Score strictly. 50 = average. 80+ = genuinely good. 95+ = exceptional.
 ```
-
-`token_efficiency`, `latency_score`, and `convergence_quality` are not sent to Ollama.
-They are computed from heuristics and merged into the final score record after parsing.
 
 **Response parsing:** extract first `{...}` JSON block from Ollama stdout with
 `json.loads`. Missing qualitative keys fall back to 50. Raw Ollama response stored in
@@ -428,7 +429,20 @@ Phase 15 is complete when:
 
 ---
 
-## 13. Out of Scope
+## 13. Known Gaps
+
+**Token counting:** `token_count_in` and `token_count_out` in `telemetry_runs` depend
+on CLI tools emitting token usage in parseable output. Claude Code, Codex, and Gemini
+do not guarantee this in subprocess mode. In Phase 15, these fields are populated on a
+best-effort basis: `TelemetrySession.record_output()` accepts an optional `token_count`
+parameter, and callers populate it when available. When unavailable, the fields are
+NULL and `token_efficiency` falls back to a proxy heuristic (output character length
+divided by input character length). Accurate token counts are deferred to Phase 16 when
+structured output parsing or API adapters may be enabled.
+
+---
+
+## 15. Out of Scope
 
 - Phase 16 optimization loop (scores influencing routing, prompt style, tool selection)
 - Prompt optimization algorithms
@@ -441,7 +455,7 @@ Phase 15 is complete when:
 
 ---
 
-## 14. Guardrails
+## 16. Guardrails
 
 OpenCobalt policy still applies:
 
