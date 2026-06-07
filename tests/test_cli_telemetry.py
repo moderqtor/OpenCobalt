@@ -56,3 +56,39 @@ def test_telemetry_scores(tmp_path, monkeypatch):
     result = runner.invoke(app, ["telemetry", "scores"])
     assert result.exit_code == 0
     assert "claude-code" in result.output
+
+
+def test_telemetry_show_prefix_id(tmp_path, monkeypatch):
+    run_id = _seed_db(tmp_path)
+    monkeypatch.setattr("opencobalt.cli._TELEMETRY_DB_PATH", tmp_path / "telemetry.db")
+    result = runner.invoke(app, ["telemetry", "show", run_id[:8]])
+    assert result.exit_code == 0
+    assert "summarize logs" in result.output
+
+
+def test_telemetry_show_not_found(tmp_path, monkeypatch):
+    monkeypatch.setattr("opencobalt.cli._TELEMETRY_DB_PATH", tmp_path / "telemetry.db")
+    result = runner.invoke(app, ["telemetry", "show", "nonexistent-run-id"])
+    assert result.exit_code == 1
+
+
+def test_telemetry_score_not_found(tmp_path, monkeypatch):
+    monkeypatch.setattr("opencobalt.cli._TELEMETRY_DB_PATH", tmp_path / "telemetry.db")
+    result = runner.invoke(app, ["telemetry", "score", "nonexistent-run-id"])
+    assert result.exit_code == 1
+
+
+def test_telemetry_export_no_path_configured(tmp_path, monkeypatch):
+    monkeypatch.setattr("opencobalt.cli._TELEMETRY_DB_PATH", tmp_path / "telemetry.db")
+    result = runner.invoke(app, ["telemetry", "export"])
+    assert result.exit_code == 1
+
+
+def test_telemetry_export_writes_files(tmp_path, monkeypatch):
+    _seed_db(tmp_path)
+    export_dir = tmp_path / "exports"
+    monkeypatch.setattr("opencobalt.cli._TELEMETRY_DB_PATH", tmp_path / "telemetry.db")
+    result = runner.invoke(app, ["telemetry", "export", "--output", str(export_dir)])
+    assert result.exit_code == 0
+    md_files = list(export_dir.glob("*.md"))
+    assert len(md_files) == 1

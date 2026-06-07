@@ -139,6 +139,11 @@ class TelemetryStore:
             row = conn.execute(
                 "SELECT * FROM telemetry_runs WHERE id = ?", (run_id,)
             ).fetchone()
+            if row is None and len(run_id) < 36:
+                rows = conn.execute(
+                    "SELECT * FROM telemetry_runs WHERE id LIKE ?", (run_id + "%",)
+                ).fetchall()
+                row = rows[0] if len(rows) == 1 else None
         return dict(row) if row else None
 
     def add_event(self, run_id: str, event_type: str, payload: dict) -> None:
