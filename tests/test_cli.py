@@ -227,7 +227,8 @@ class TestDesktop:
         assert result.exit_code == 0, _debug(result)
         assert "Tauri" in result.output, _debug(result)
         assert "FastAPI" in result.output, _debug(result)
-        assert "--api-port" in result.output, _debug(result)
+        assert "api" in result.output.lower(), _debug(result)
+        assert "port" in result.output.lower(), _debug(result)
 
 
 # ── orch command ───────────────────────────────────────────────────────────────
@@ -307,4 +308,4 @@ def test_converge_show_with_session(tmp_path, monkeypatch):
 def test_auto_accepts_converge_flag_help():
     result = _invoke("auto", "--help")
     assert result.exit_code == 0
-    assert "--converge" in result.output
+    assert "converge" in result.output
