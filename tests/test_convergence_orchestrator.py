@@ -1,6 +1,6 @@
 import subprocess
 from pathlib import Path
-import pytest
+
 from opencobalt.core.artifact_bus import ArtifactBus, ArtifactType
 from opencobalt.core.auto_committer import AutoCommitter, CommitResult
 from opencobalt.core.convergence_checker import (
@@ -135,7 +135,7 @@ def test_execute_subtask_receives_context_on_retry(tmp_path):
         committer=_make_committer(tmp_path),
         execute_subtask=capture_execute,
     )
-    session = orch.run("implement auth")
+    orch.run("implement auth")
     assert len(prompts_seen) >= 2
     if len(prompts_seen) >= 2:
         assert len(prompts_seen[-1]) >= len(prompts_seen[0])
@@ -189,3 +189,61 @@ def test_session_waves_counted(tmp_path):
     )
     session = orch.run("implement auth with tests")
     assert session.total_waves >= 1
+
+
+def test_commit_sha_persisted_after_convergence(tmp_path):
+    from opencobalt.core.ledger import Ledger
+
+    bus = ArtifactBus(tmp_path / "artifacts.db")
+    ledger = Ledger(tmp_path / "ledger.db")
+    orch = ConvergenceOrchestrator(
+        artifact_bus=bus,
+        checker=_make_checker(True),
+        committer=_make_committer(tmp_path),
+        ledger=ledger,
+        execute_subtask=lambda prompt, tool: "output",
+    )
+    session = orch.run("implement auth")
+    row = ledger.get_convergence_session(session.id)
+    assert row is not None
+    assert row["commit_sha"] == "abc12345"
+
+
+def test_resume_skips_previously_passed_waves(tmp_path):
+    from opencobalt.core.ledger import Ledger
+
+    ledger = Ledger(tmp_path / "ledger.db")
+    session_id = "resume-session"
+    ledger.upsert_convergence_session(
+        session_id=session_id,
+        seed_task="implement auth with tests",
+        status="interrupted",
+        started_at=1.0,
+        finished_at=None,
+        total_waves=2,
+        total_retries=0,
+        commit_sha=None,
+        log_path=None,
+    )
+    ledger.insert_wave_result(
+        session_id=session_id,
+        wave=0,
+        tests_ok=True,
+        verifier_score=0.9,
+        verifier_ok=True,
+        passed=True,
+        retry_count=0,
+        feedback="all gates passed",
+    )
+    executed: list[str] = []
+    bus = ArtifactBus(tmp_path / "artifacts.db")
+    orch = ConvergenceOrchestrator(
+        artifact_bus=bus,
+        checker=_make_checker(True),
+        committer=_make_committer(tmp_path),
+        ledger=ledger,
+        execute_subtask=lambda prompt, tool: executed.append(prompt) or "output",
+    )
+    orch.run("implement auth with tests", resume_session_id=session_id)
+    assert executed
+    assert all("Implement the following" not in prompt for prompt in executed)

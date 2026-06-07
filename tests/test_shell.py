@@ -36,6 +36,7 @@ def test_dispatch_plain_prompt_calls_router(shell: CobaltShell) -> None:
         patch.object(shell._learning_router, "route") as mock_route,
         patch.object(shell, "_open_tool") as mock_open,
         patch.object(shell, "_queue_background_council"),
+        patch("opencobalt.core.verify.verify_async") as mock_verify,
     ):
         mock_route.return_value = MagicMock(
             recommended_tool="claude-code",
@@ -49,6 +50,7 @@ def test_dispatch_plain_prompt_calls_router(shell: CobaltShell) -> None:
         shell.dispatch("design the auth module")
     mock_route.assert_called_once_with("design the auth module")
     mock_open.assert_called_once()
+    mock_verify.assert_called_once()
 
 
 def test_dispatch_slash_palette(shell: CobaltShell, capsys) -> None:

@@ -40,6 +40,7 @@ class ConvergenceSession:
 
 def _default_execute_subtask(prompt: str, tool: str) -> str:
     import shutil
+
     from .council import consult_subprocess
 
     model_map = {
@@ -75,22 +76,29 @@ class ConvergenceOrchestrator:
 
     def run(self, seed_task: str, resume_session_id: str | None = None) -> ConvergenceSession:
         session_id = resume_session_id or str(uuid.uuid4())
+        existing = self._get_existing_session(session_id) if resume_session_id else None
         session = ConvergenceSession(
             id=session_id,
             seed_task=seed_task,
             status="running",
-            started_at=time.time(),
+            started_at=existing["started_at"] if existing else time.time(),
+            total_retries=existing["total_retries"] if existing else 0,
+            commit_sha=existing["commit_sha"] if existing else None,
+            log_path=Path(existing["log_path"]) if existing and existing.get("log_path") else None,
         )
         self._persist_session(session)
 
         subtasks = self._decomposer.decompose_dag(seed_task)
         waves = self._decomposer.to_waves(subtasks)
         session.total_waves = len(waves)
+        completed_waves = self._completed_waves(session.id) if resume_session_id else set()
 
         all_converged = True
         last_result: ConvergenceResult | None = None
 
         for wave_idx, wave in enumerate(waves):
+            if wave_idx in completed_waves:
+                continue
             result = self._run_wave(session, wave, wave_idx)
             last_result = result
             if not result.passed:
@@ -103,9 +111,27 @@ class ConvergenceOrchestrator:
         if all_converged:
             commit = self._do_commit(session, subtasks, last_result)
             session.commit_sha = commit.sha
+            self._persist_session(session)
 
         self._print_summary(session)
         return session
+
+    def _get_existing_session(self, session_id: str) -> dict | None:
+        if self._ledger is None:
+            return None
+        try:
+            return self._ledger.get_convergence_session(session_id)
+        except Exception:
+            return None
+
+    def _completed_waves(self, session_id: str) -> set[int]:
+        if self._ledger is None:
+            return set()
+        try:
+            rows = self._ledger.get_wave_results(session_id)
+        except Exception:
+            return set()
+        return {int(row["wave"]) for row in rows if row.get("passed")}
 
     def _run_wave(
         self,

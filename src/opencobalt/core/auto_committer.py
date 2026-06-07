@@ -45,11 +45,21 @@ class AutoCommitter:
         self._push_on_converge = push_on_converge
 
     def _fallback_files(self) -> list[str]:
-        result = self._run_git(["git", "diff", "--name-only", "HEAD"], self._repo_path)
-        return [
-            line for line in result.stdout.strip().splitlines()
-            if line and not _should_skip_path(line)
-        ]
+        changed = self._run_git(["git", "diff", "--name-only", "HEAD"], self._repo_path)
+        untracked = self._run_git(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            self._repo_path,
+        )
+        candidates = changed.stdout.strip().splitlines()
+        candidates.extend(untracked.stdout.strip().splitlines())
+        seen: set[str] = set()
+        stageable: list[str] = []
+        for line in candidates:
+            if not line or line in seen or _should_skip_path(line):
+                continue
+            seen.add(line)
+            stageable.append(line)
+        return stageable
 
     def _build_message(
         self,
@@ -95,7 +105,9 @@ class AutoCommitter:
             return CommitResult(sha="", files_staged=[])
 
         for path in stageable:
-            self._run_git(["git", "add", path], self._repo_path)
+            add_result = self._run_git(["git", "add", path], self._repo_path)
+            if add_result.returncode != 0:
+                return CommitResult(sha="", files_staged=stageable)
 
         message = self._build_message(
             session_id=session_id,
@@ -106,9 +118,18 @@ class AutoCommitter:
             tests_info=tests_info,
             verifier_info=verifier_info,
         )
-        self._run_git(["git", "commit", "-m", message], self._repo_path)
+        commit_result = self._run_git(["git", "commit", "-m", message], self._repo_path)
+        if commit_result.returncode != 0:
+            return CommitResult(sha="", files_staged=stageable, message=message)
 
         sha_result = self._run_git(["git", "rev-parse", "HEAD"], self._repo_path)
+        if sha_result.returncode != 0:
+            return CommitResult(sha="", files_staged=stageable, message=message)
         sha = sha_result.stdout.strip()[:8]
 
-        return CommitResult(sha=sha, files_staged=stageable, message=message)
+        pushed = False
+        if self._push_on_converge:
+            push_result = self._run_git(["git", "push"], self._repo_path)
+            pushed = push_result.returncode == 0
+
+        return CommitResult(sha=sha, files_staged=stageable, message=message, pushed=pushed)

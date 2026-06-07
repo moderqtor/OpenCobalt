@@ -1,6 +1,5 @@
 import subprocess
-from pathlib import Path
-import pytest
+
 from opencobalt.core.auto_committer import AutoCommitter, CommitResult
 
 
@@ -124,6 +123,89 @@ def test_commit_fallback_when_artifact_paths_empty(tmp_path):
         tests_info="n/a", verifier_info="n/a",
     )
     assert "changed.py" in result.files_staged
+
+
+def test_commit_fallback_includes_untracked_files(tmp_path):
+    (tmp_path / "new.py").write_text("new code")
+
+    def run_git(args, cwd):
+        if args == ["git", "diff", "--name-only", "HEAD"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        if args == ["git", "ls-files", "--others", "--exclude-standard"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="new.py\n", stderr="")
+        if args == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="abc12345", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    committer = AutoCommitter(repo_path=tmp_path, run_git=run_git)
+    result = committer.commit(
+        session_id="s", seed_task="task", artifact_paths=[],
+        artifact_lines=[], waves=1, retries=0, agents=[],
+        tests_info="n/a", verifier_info="n/a",
+    )
+    assert "new.py" in result.files_staged
+
+
+def test_commit_returns_empty_when_git_commit_fails(tmp_path):
+    (tmp_path / "f.py").write_text("x")
+
+    def run_git(args, cwd):
+        if args[:2] == ["git", "commit"]:
+            return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="nothing to commit")
+        if args == ["git", "rev-parse", "HEAD"]:
+            raise AssertionError("rev-parse should not run after failed commit")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    committer = AutoCommitter(repo_path=tmp_path, run_git=run_git)
+    result = committer.commit(
+        session_id="s", seed_task="t", artifact_paths=["f.py"],
+        artifact_lines=[], waves=1, retries=0, agents=[],
+        tests_info="n/a", verifier_info="n/a",
+    )
+    assert result.sha == ""
+    assert result.files_staged == ["f.py"]
+
+
+def test_push_on_converge_calls_git_push(tmp_path):
+    (tmp_path / "f.py").write_text("x")
+    calls: list[list[str]] = []
+
+    def run_git(args, cwd):
+        calls.append(args)
+        if args == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="abc12345\n", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    committer = AutoCommitter(repo_path=tmp_path, run_git=run_git, push_on_converge=True)
+    result = committer.commit(
+        session_id="s", seed_task="t", artifact_paths=["f.py"],
+        artifact_lines=[], waves=1, retries=0, agents=[],
+        tests_info="n/a", verifier_info="n/a",
+    )
+    push_calls = [c for c in calls if c == ["git", "push"]]
+    assert len(push_calls) == 1
+    assert result.pushed is True
+
+
+def test_push_not_called_when_flag_false(tmp_path):
+    (tmp_path / "f.py").write_text("x")
+    calls: list[list[str]] = []
+
+    def run_git(args, cwd):
+        calls.append(args)
+        if args == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="abc12345\n", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    committer = AutoCommitter(repo_path=tmp_path, run_git=run_git, push_on_converge=False)
+    result = committer.commit(
+        session_id="s", seed_task="t", artifact_paths=["f.py"],
+        artifact_lines=[], waves=1, retries=0, agents=[],
+        tests_info="n/a", verifier_info="n/a",
+    )
+    push_calls = [c for c in calls if c == ["git", "push"]]
+    assert len(push_calls) == 0
+    assert result.pushed is False
 
 
 def test_commit_sha_truncated_to_8(tmp_path):

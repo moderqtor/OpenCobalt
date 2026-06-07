@@ -30,6 +30,8 @@ class ConvergenceResult:
 class TestsGate:
     """Run pytest and report pass/fail. Injectable for testing."""
 
+    __test__ = False
+
     def __init__(
         self,
         run_tests: Callable[[], tuple[bool, str]] | None = None,
@@ -63,7 +65,9 @@ class VerifierGate:
 
     def _default_consult(self, prompt: str) -> str:
         import shutil
+
         from .council import consult_subprocess
+
         model = "gemini" if shutil.which("gemini") else "claude"
         return consult_subprocess(prompt, model=model, intent="advise", timeout=60)
 

@@ -1,7 +1,7 @@
 import pytest
+
 from opencobalt.core.convergence_checker import (
     ConvergenceChecker,
-    ConvergenceResult,
     TestsGate,
     VerifierGate,
 )

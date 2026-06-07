@@ -1,7 +1,6 @@
 import time
 import uuid
-import pytest
-from pathlib import Path
+
 from opencobalt.core.artifact_bus import AgentArtifact, ArtifactBus, ArtifactType
 
 
@@ -119,7 +118,7 @@ def test_error_context_auto_inject(tmp_path):
 
 def test_artifact_bus_creates_db_file(tmp_path):
     db = tmp_path / "sub" / "artifacts.db"
-    bus = ArtifactBus(db)
+    ArtifactBus(db)
     assert db.exists()
 
 

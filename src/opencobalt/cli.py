@@ -903,6 +903,24 @@ def converge_show(
     console.print()
 
 
+@converge_app.command("run")
+def converge_run(
+    task: str = typer.Argument(..., help="Task to converge on"),
+    push_on_converge: bool = typer.Option(
+        False, "--push-on-converge", help="Push to remote after successful convergence"
+    ),
+) -> None:
+    """Run convergence protocol on a task."""
+    from .core.auto_committer import AutoCommitter
+    from .core.convergence_orchestrator import ConvergenceOrchestrator
+
+    orch_session = ConvergenceOrchestrator(
+        committer=AutoCommitter(push_on_converge=push_on_converge),
+        ledger=_ledger(),
+    )
+    orch_session.run(task)
+
+
 @app.command()
 def lint() -> None:
     """Run ruff on src/ and tests/ and report results."""
