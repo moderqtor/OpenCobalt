@@ -30,10 +30,15 @@ def test_score_produces_all_categories(tmp_path):
     engine = ScoringEngine(store, judge=judge)
     score = engine.score(run_id)
     assert score["run_id"] == run_id
+    all_categories = [
+        "output_quality", "prompt_adherence", "novel_ideation", "context_handling",
+        "tool_appropriateness", "token_efficiency", "latency_score",
+        "task_decomposition", "agent_selection", "convergence_quality",
+    ]
+    for cat in all_categories:
+        assert cat in score, f"missing category: {cat}"
+        assert 1 <= score[cat] <= 100, f"{cat} out of range: {score[cat]}"
     assert 1 <= score["overall"] <= 100
-    assert score["token_efficiency"] is not None
-    assert score["latency_score"] is not None
-    assert score["convergence_quality"] is not None
     result = store.get_score(run_id)
     assert result is not None
     assert result["overall"] == score["overall"]
