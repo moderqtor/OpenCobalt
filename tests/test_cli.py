@@ -16,6 +16,8 @@ Isolation strategy:
 
 from __future__ import annotations
 
+import re
+
 from typer.testing import CliRunner
 
 from opencobalt.cli import app
@@ -44,7 +46,13 @@ def test_no_args_entry_point_exists():
 def _invoke(*args: str, **kwargs) -> object:
     """Invoke a CLI command. Keyword args forwarded to runner.invoke()."""
     env = {**kwargs.pop("env", {}), "NO_COLOR": "1"}
+    kwargs.setdefault("color", False)
     return runner.invoke(app, list(args), env=env, **kwargs)
+
+
+def _plain(output: str) -> str:
+    """Return CLI output without ANSI escape sequences."""
+    return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", output)
 
 
 def _debug(result) -> str:
@@ -308,8 +316,9 @@ def test_converge_show_with_session(tmp_path, monkeypatch):
 def test_auto_accepts_converge_flag_help():
     result = _invoke("auto", "--help")
     assert result.exit_code == 0
-    assert "converge" in result.output
-    assert "use-limits" in result.output
+    output = _plain(result.output)
+    assert "converge" in output
+    assert "use-limits" in output
 
 
 def test_auto_creates_checkpointed_run(tmp_path, monkeypatch):
