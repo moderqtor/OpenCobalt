@@ -13,6 +13,7 @@ from opencobalt.core.ledger import Ledger
 from opencobalt.core.mission import MissionPlanner
 from opencobalt.core.telemetry import TelemetryStore
 from opencobalt.core.usage_optimizer import UsageOptimizer
+from opencobalt.integrations.registry import REGISTRY as INTEGRATION_REGISTRY
 
 
 def test_artifact_bus_records_artifact_event(tmp_path):
@@ -36,7 +37,7 @@ def test_artifact_bus_no_session_still_works(tmp_path):
         producer="claude-code", type=ArtifactType.IMPL_CODE,
         content="print('hi')", metadata={}, timestamp=time.time(),
     )
-    bus.publish(artifact)  # no telemetry_session — must not raise
+    bus.publish(artifact)  # no telemetry_session; must not raise
 
 
 def test_convergence_checker_records_gate_pass(tmp_path):
@@ -69,7 +70,7 @@ def test_convergence_checker_no_session_still_works():
     tests_gate = MagicMock()
     tests_gate.check.return_value = (True, "")
     checker = ConvergenceChecker(tests_gate=tests_gate)
-    result = checker.check(["tests"])  # no telemetry_session — must not raise
+    result = checker.check(["tests"])  # no telemetry_session; must not raise
     assert result.passed
 
 
@@ -124,9 +125,10 @@ def test_capability_index_accepts_session(tmp_path):
     assert isinstance(entries, list)
 
 
-def test_capability_index_records_skill_and_connector_events(tmp_path):
+def test_capability_index_records_skill_and_connector_events(tmp_path, monkeypatch):
     store = TelemetryStore(tmp_path / "t.db")
     session = store.start_run(run_type="discover", seed_prompt="x", agent_id="claude-code")
+    monkeypatch.setattr(INTEGRATION_REGISTRY["claude-code"], "install_check", lambda: True)
 
     CapabilityIndex().discover(telemetry_session=session)
 

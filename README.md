@@ -8,14 +8,6 @@ OpenCobalt is a local-first orchestration control plane for AI coding tools. It 
 
 It is not a chatbot, hosted service, or API proxy. The default configuration makes no API calls. Ollama and external CLI tools are optional and degrade gracefully when unavailable.
 
-## Screenshots
-
-![OpenCobalt command dashboard](docs/assets/dashboard-command.png)
-
-![OpenCobalt telemetry dashboard](docs/assets/dashboard-telemetry.png)
-
-<img src="docs/assets/dashboard-telemetry-mobile.png" width="280" alt="OpenCobalt telemetry dashboard on mobile">
-
 ## What It Does
 
 - Routes tasks deterministically with reproducible keyword scoring.
