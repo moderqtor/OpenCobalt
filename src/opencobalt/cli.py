@@ -12,6 +12,9 @@ Usage:
   opencobalt memory add TEXT
   opencobalt memory export
   opencobalt context
+  opencobalt run TASK [--runtime R] [--execute] [--yes]
+  opencobalt receipts list|inspect|verify
+  opencobalt artifacts attach|verify|list
   opencobalt verify
   opencobalt export
   opencobalt doctor
@@ -99,6 +102,12 @@ app.add_typer(policy_app, name="policy")
 
 limits_app = typer.Typer(help="Usage limit observation commands.")
 app.add_typer(limits_app, name="limits")
+
+receipts_app = typer.Typer(help="Work receipt commands (receipt-backed execution).")
+app.add_typer(receipts_app, name="receipts")
+
+artifacts_app = typer.Typer(help="Execution artifact commands (hash, attach, verify).")
+app.add_typer(artifacts_app, name="artifacts")
 
 console = Console()
 err = Console(stderr=True)
@@ -2761,3 +2770,301 @@ def telemetry_export(
         count += 1
 
     console.print(f"  Exported {count} run(s) to {export_dir}\n")
+
+
+# ── Receipt-Backed Execution v0 ───────────────────────────────────────────────
+
+_RISK_COLORS = {"green": _GREEN, "yellow": _YELLOW, "red": _RED, "black": "bold red"}
+
+
+def _execution_engine():
+    from .execution import ExecutionEngine, ExecutionStore
+
+    return ExecutionEngine(store=ExecutionStore(_DB_PATH))
+
+
+def _redact_execution_text(text: str) -> str:
+    from .execution.runner import redact_text
+
+    return redact_text(text)
+
+
+def _redact_execution_argv(argv: list[str]) -> list[str]:
+    from .execution.runner import redact_argv
+
+    return redact_argv(argv)
+
+
+def _risk_str(level: str) -> str:
+    color = _RISK_COLORS.get(level, "dim")
+    return f"[{color}]{level}[/{color}]"
+
+
+@app.command("run")
+def run_task(
+    task: str = typer.Argument(..., help="Task to plan and optionally execute"),
+    runtime: str | None = typer.Option(None, "--runtime", help="Runtime id (google-antigravity, ollama, noop). Routed if omitted."),
+    model: str | None = typer.Option(None, "--model", help="Model to request, if the runtime supports selection"),
+    execute: bool = typer.Option(False, "--execute", help="Actually run the command (default is dry-run)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Plan only; never start a subprocess (default behavior)"),
+    sandbox: bool = typer.Option(False, "--sandbox", help="Request runtime sandbox mode if supported"),
+    timeout: int | None = typer.Option(None, "--timeout", help="Timeout in seconds for execution"),
+    yes: bool = typer.Option(False, "--yes", help="Approve red-risk execution explicitly"),
+) -> None:
+    """Plan a task against an agent runtime and write a verifiable receipt.
+
+    Defaults to dry-run. Execution is policy-gated: green/yellow tasks need
+    --execute, red tasks need --execute --yes, black tasks are blocked.
+    """
+    engine = _execution_engine()
+    try:
+        outcome = engine.run_task(
+            task,
+            runtime=runtime,
+            model=model,
+            sandbox=sandbox,
+            execute=execute and not dry_run,
+            approved=yes,
+            timeout_seconds=timeout,
+        )
+    except KeyError as exc:
+        err.print(f"  [red]{exc.args[0]}[/red]")
+        raise typer.Exit(1) from None
+    except ValueError as exc:
+        err.print(f"  [red]Command construction failed: {exc}[/red]")
+        raise typer.Exit(1) from None
+
+    plan = outcome.plan
+    console.print(f'\n  [bold]Task:[/bold] [dim]"{_redact_execution_text(task)}"[/dim]')
+    console.print(
+        f"  [dim]Runtime:[/dim] {plan.runtime}"
+        f"  [dim]Risk:[/dim] {_risk_str(plan.risk_level)}"
+        f"  [dim]Approval:[/dim] {'required' if plan.approval_required else 'no'}"
+        f"  [dim]Mode:[/dim] {'dry-run' if plan.dry_run else 'execute'}"
+    )
+    for step in plan.steps:
+        console.print(f"  [dim]Command:[/dim] {' '.join(_redact_execution_argv(step.command_argv))}")
+    console.print(f"  [dim]Plan:[/dim] {plan.plan_id}")
+
+    if not outcome.policy.allowed:
+        console.print(f"  [{_YELLOW}]Blocked:[/{_YELLOW}] {outcome.policy.reason}")
+    elif outcome.result is not None:
+        r = outcome.result
+        status_color = _GREEN if r.status == "succeeded" else _RED
+        console.print(
+            f"  [dim]Status:[/dim] [{status_color}]{r.status}[/{status_color}]"
+            f"  [dim]Exit:[/dim] {r.return_code}"
+            f"  [dim]Duration:[/dim] {r.duration_ms}ms"
+        )
+        if r.stdout_preview:
+            console.print(f"  [dim]Output:[/dim] {_redact_execution_text(r.stdout_preview[:400])}")
+        if r.error:
+            console.print(f"  [{_RED}]Error:[/{_RED}] {r.error}")
+    else:
+        console.print("  [dim]Dry-run: no subprocess started. Plan and receipt stored.[/dim]")
+
+    receipt = outcome.receipt
+    console.print(
+        f"  [dim]Receipt:[/dim] {receipt.receipt_id}"
+        f"  [dim]Verification:[/dim] {receipt.verification_status}"
+    )
+    if receipt.artifact_ids:
+        console.print(f"  [dim]Artifacts:[/dim] {len(receipt.artifact_ids)} hashed")
+    console.print()
+    if not outcome.policy.allowed and not plan.dry_run:
+        raise typer.Exit(2)
+
+
+@receipts_app.command("list")
+def receipts_list(
+    runtime: str | None = typer.Option(None, "--runtime", help="Filter by runtime"),
+    status: str | None = typer.Option(None, "--status", help="Filter by verification status"),
+    limit: int = typer.Option(20, "--limit", help="Max receipts to show"),
+) -> None:
+    """List work receipts, newest first."""
+    from .execution import ExecutionStore
+
+    receipts = ExecutionStore(_DB_PATH).list_receipts(
+        runtime=runtime, verification_status=status, limit=limit
+    )
+    if not receipts:
+        console.print("\n  [dim]No receipts recorded yet. Try: opencobalt run \"hello\" --runtime noop[/dim]\n")
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Receipt", style="dim", max_width=14)
+    table.add_column("Runtime")
+    table.add_column("Risk")
+    table.add_column("Verification")
+    table.add_column("Task", style="dim", max_width=48)
+    for receipt in receipts:
+        table.add_row(
+            receipt.receipt_id[:12],
+            receipt.selected_runtime,
+            _risk_str(receipt.risk_level),
+            receipt.verification_status,
+            receipt.task[:60],
+        )
+    console.print()
+    console.print(table)
+    console.print(f"  [dim]{len(receipts)} receipt(s). Inspect: opencobalt receipts inspect <id>[/dim]\n")
+
+
+@receipts_app.command("inspect")
+def receipts_inspect(
+    receipt_id: str = typer.Argument(..., help="Receipt id (full or unique prefix)"),
+) -> None:
+    """Show the full evidence chain for one receipt."""
+    from .execution import ExecutionStore
+
+    store = ExecutionStore(_DB_PATH)
+    receipt = store.get_receipt(receipt_id)
+    if receipt is None:
+        matches = [r for r in store.list_receipts(limit=500) if r.receipt_id.startswith(receipt_id)]
+        if len(matches) == 1:
+            receipt = matches[0]
+        elif len(matches) > 1:
+            err.print(f"  [red]Ambiguous receipt prefix: {receipt_id}[/red]")
+            raise typer.Exit(1)
+    if receipt is None:
+        err.print(f"  [red]Receipt not found: {receipt_id}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n  [bold]Receipt[/bold] {receipt.receipt_id}")
+    console.print(f"  [dim]Task:[/dim] {_redact_execution_text(receipt.task)}")
+    console.print(f"  [dim]Runtime:[/dim] {receipt.selected_runtime}")
+    if receipt.route_reason:
+        console.print(f"  [dim]Route reason:[/dim] {receipt.route_reason}")
+    console.print(
+        f"  [dim]Risk:[/dim] {_risk_str(receipt.risk_level)}"
+        f"  [dim]Approval required:[/dim] {'yes' if receipt.approval_required else 'no'}"
+        f"  [dim]Verification:[/dim] {receipt.verification_status}"
+    )
+    if receipt.command_plan:
+        console.print(f"  [dim]Command plan:[/dim] {' '.join(_redact_execution_argv(receipt.command_plan))}")
+
+    plan = store.get_plan(receipt.plan_id)
+    if plan is not None:
+        console.print(f"  [dim]Plan:[/dim] {plan.plan_id}  [dim]dry-run:[/dim] {plan.dry_run}")
+    if receipt.execution_id:
+        result = store.get_result(receipt.execution_id)
+        if result is not None:
+            console.print(
+                f"  [dim]Execution:[/dim] {result.execution_id}"
+                f"  [dim]status:[/dim] {result.status}"
+                f"  [dim]exit:[/dim] {result.return_code}"
+                f"  [dim]duration:[/dim] {result.duration_ms}ms"
+            )
+    for artifact_id in receipt.artifact_ids:
+        artifact = store.get_artifact(artifact_id)
+        if artifact is not None:
+            console.print(
+                f"  [dim]Artifact:[/dim] {artifact.artifact_id[:12]}"
+                f" [{artifact.artifact_type}] {artifact.path}"
+                f"  [dim]sha256:[/dim] {artifact.sha256[:16]}..."
+            )
+    console.print()
+
+
+@receipts_app.command("verify")
+def receipts_verify(
+    receipt_id: str = typer.Argument(..., help="Receipt id to re-verify"),
+) -> None:
+    """Recompute artifact hashes for a receipt and update its status."""
+    engine = _execution_engine()
+    try:
+        status = engine.verify_receipt(receipt_id)
+    except KeyError:
+        err.print(f"  [red]Receipt not found: {receipt_id}[/red]")
+        raise typer.Exit(1) from None
+    color = _GREEN if status == "verified" else (_YELLOW if status in ("partial", "unverified") else _RED)
+    console.print(f"\n  Verification: [{color}]{status}[/{color}]\n")
+    if status in ("failed", "partial"):
+        raise typer.Exit(1)
+
+
+@artifacts_app.command("attach")
+def artifacts_attach(
+    path: str = typer.Argument(..., help="Path to a local file to hash and attach"),
+    source: str = typer.Option("manual", "--source", help="Source runtime"),
+    plan: str | None = typer.Option(None, "--plan", help="Plan id to link"),
+    execution: str | None = typer.Option(None, "--execution", help="Execution id to link"),
+    artifact_type: str = typer.Option("unknown", "--type", help="Artifact type (stdout, report, diff, ...)"),
+    summary: str | None = typer.Option(None, "--summary", help="One-line description"),
+) -> None:
+    """Hash a local file (SHA-256) and record it as an execution artifact."""
+    from .execution import ExecutionStore, attach_artifact
+
+    try:
+        artifact = attach_artifact(
+            path,
+            source_runtime=source,
+            artifact_type=artifact_type,
+            plan_id=plan,
+            execution_id=execution,
+            summary=summary,
+        )
+    except FileNotFoundError as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    ExecutionStore(_DB_PATH).save_artifact(artifact)
+    console.print(f"\n  [bold]Artifact attached:[/bold] {artifact.artifact_id}")
+    console.print(f"  [dim]Type:[/dim] {artifact.artifact_type}  [dim]Size:[/dim] {artifact.size_bytes} bytes")
+    console.print(f"  [dim]SHA-256:[/dim] {artifact.sha256}\n")
+
+
+@artifacts_app.command("verify")
+def artifacts_verify(
+    artifact_id: str = typer.Argument(..., help="Artifact id to verify"),
+) -> None:
+    """Recompute an artifact's hash and compare to the attached hash."""
+    from .execution import ExecutionStore, verify_artifact
+
+    artifact = ExecutionStore(_DB_PATH).get_artifact(artifact_id)
+    if artifact is None:
+        err.print(f"  [red]Artifact not found: {artifact_id}[/red]")
+        raise typer.Exit(1)
+    verification = verify_artifact(artifact)
+    if verification.verified:
+        console.print(f"\n  [{_GREEN}]verified[/{_GREEN}]  {verification.reason}\n")
+    else:
+        console.print(f"\n  [{_RED}]failed[/{_RED}]  {verification.reason}")
+        console.print(f"  [dim]Expected:[/dim] {verification.expected_sha256}")
+        if verification.actual_sha256:
+            console.print(f"  [dim]Actual:[/dim]   {verification.actual_sha256}")
+        console.print()
+        raise typer.Exit(1)
+
+
+@artifacts_app.command("list")
+def artifacts_list(
+    artifact_type: str | None = typer.Option(None, "--type", help="Filter by artifact type"),
+    plan: str | None = typer.Option(None, "--plan", help="Filter by plan id"),
+    limit: int = typer.Option(20, "--limit", help="Max artifacts to show"),
+) -> None:
+    """List execution artifacts, newest first."""
+    from .execution import ExecutionStore
+
+    artifacts = ExecutionStore(_DB_PATH).list_artifacts(
+        artifact_type=artifact_type, plan_id=plan, limit=limit
+    )
+    if not artifacts:
+        console.print("\n  [dim]No artifacts recorded yet.[/dim]\n")
+        return
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Artifact", style="dim", max_width=14)
+    table.add_column("Type")
+    table.add_column("Size", justify="right")
+    table.add_column("SHA-256", style="dim", max_width=20)
+    table.add_column("Path", style="dim", max_width=48)
+    for artifact in artifacts:
+        table.add_row(
+            artifact.artifact_id[:12],
+            artifact.artifact_type,
+            str(artifact.size_bytes),
+            artifact.sha256[:16] + "...",
+            artifact.path,
+        )
+    console.print()
+    console.print(table)
+    console.print(f"  [dim]{len(artifacts)} artifact(s).[/dim]\n")

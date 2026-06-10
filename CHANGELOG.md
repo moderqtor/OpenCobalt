@@ -9,6 +9,15 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Receipt-Backed Execution v0: `src/opencobalt/execution/` with execution plans, a deterministic policy gate (green/yellow/red/black), a safe argv-only process runner, runtime adapters (google-antigravity, ollama, noop), SHA-256 hashed output artifacts, work receipts, and hash re-verification
+- CLI commands: `opencobalt run` (dry-run by default, `--execute`, `--yes` for red risk, `--sandbox`, `--timeout`), `opencobalt receipts list/inspect/verify`, `opencobalt artifacts attach/verify/list`
+- Structured execution event stream written to `.opencobalt/events/execution.jsonl` (task.received through verification.passed/failed) as the TUI/UI foundation
+- New ledger tables: `execution_plans`, `execution_results`, `execution_artifacts`, `work_receipts` (created with IF NOT EXISTS, no migration required)
+- Docs: `docs/EXECUTION_LAYER.md`, `docs/ARTIFACT_RECEIPTS.md`
+- Work-artifact record foundation with local file hashing and unknown-type fallback
+
 ---
 
 ## [0.2.0] - 2026-05-29

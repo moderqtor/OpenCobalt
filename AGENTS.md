@@ -91,6 +91,13 @@ opencobalt cost reset        clear monthly cost records
 opencobalt config set/get/list key-value config
 opencobalt session start/show/end named work sessions
 opencobalt tui               live 4-panel terminal dashboard
+opencobalt run TASK          receipt-backed execution (dry-run by default)
+opencobalt receipts list     list work receipts
+opencobalt receipts inspect  show one receipt's evidence chain
+opencobalt receipts verify   recompute artifact hashes for a receipt
+opencobalt artifacts attach  hash and record a local file as an artifact
+opencobalt artifacts verify  recompute one artifact's hash
+opencobalt artifacts list    list execution artifacts
 opencobalt khoj status       check Khoj sidecar reachability
 opencobalt ui                open the React dashboard
 ```

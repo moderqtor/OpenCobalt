@@ -6,11 +6,12 @@
 
 OpenCobalt is a local-first orchestration control plane for AI coding tools. It routes tasks to Claude Code, Codex CLI, Gemini CLI, Cursor, and Ollama with deterministic scoring, records decisions in SQLite, and exposes shell, CLI, dashboard, telemetry, and export workflows.
 
-It is not a chatbot, hosted service, or API proxy. The default configuration makes no API calls. Ollama and external CLI tools are optional and degrade gracefully when unavailable.
+It is not a chatbot, hosted service, or API proxy. The default configuration makes no API calls. Ollama and external CLI tools are optional and degrade gracefully when unavailable. OpenCobalt supports routing, diagnostics, audit logging, integration discovery, and receipt-backed execution: policy-gated one-shot runs that capture output, hash artifacts, and write verifiable work receipts (see `docs/EXECUTION_LAYER.md`).
 
 ## What It Does
 
 - Routes tasks deterministically with reproducible keyword scoring.
+- Executes one-shot runtime tasks behind a policy gate and writes verifiable receipts with SHA-256 hashed output artifacts.
 - Stores route decisions, session events, verification results, memories, and telemetry in local SQLite databases.
 - Runs local shell workflows for routing, orchestration, convergence checks, autonomous task queues, mission planning, and context briefs.
 - Scores completed runs across output quality, adherence, latency, token efficiency, tool fit, decomposition, agent selection, and convergence quality.
@@ -34,6 +35,9 @@ Ollama is optional. If it is installed, OpenCobalt can use it for worker-tier su
 ## Core Commands
 
 ```bash
+opencobalt run "hello" --runtime noop --execute # receipt-backed execution (dry-run by default)
+opencobalt receipts list                        # verifiable work receipts
+opencobalt artifacts verify <id>                # recompute artifact hashes
 opencobalt route "design the auth module"       # deterministic tool routing
 opencobalt history --limit 20                   # recent route decisions
 opencobalt stats                                # ledger analytics
@@ -176,6 +180,7 @@ docs/
 - No 24/7 daemon for core workflows.
 - Public safety scan checks for `.env` files, secret patterns, private path references, and oversized artifacts.
 - API adapters require explicit configuration with `opencobalt config set api_enabled true`.
+- Agent runtimes with terminal, browser, and file access are powerful but risky. OpenCobalt adds visibility, receipts, policy metadata, and approval boundaries around them.
 
 ## License
 

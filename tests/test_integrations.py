@@ -1,10 +1,12 @@
+import pytest
+
 from opencobalt.integrations import REGISTRY, get_integration, list_integrations
 from opencobalt.integrations.aider_integration import AiderIntegration
 from opencobalt.integrations.ollama_integration import OllamaIntegration
 
 
-def test_registry_has_nine_integrations():
-    assert len(REGISTRY) == 9
+def test_registry_has_current_canonical_integrations():
+    assert len(REGISTRY) == 8
 
 
 def test_registry_contains_aider_and_ollama():
@@ -12,14 +14,19 @@ def test_registry_contains_aider_and_ollama():
     assert "ollama" in REGISTRY
 
 
-def test_registry_contains_all_integrations():
-    assert "claude-code" in REGISTRY
-    assert "gemini-cli" in REGISTRY
-    assert "antigravity-cli" in REGISTRY
-    assert "github-cli" in REGISTRY
-    assert "obsidian" in REGISTRY
-    assert "cursor" in REGISTRY
-    assert "context7" in REGISTRY
+def test_registry_contains_canonical_integrations_only():
+    assert set(REGISTRY) == {
+        "aider",
+        "claude-code",
+        "context7",
+        "cursor",
+        "github-cli",
+        "google-antigravity",
+        "obsidian",
+        "ollama",
+    }
+    assert "gemini-cli" not in REGISTRY
+    assert "antigravity-cli" not in REGISTRY
 
 
 def test_ollama_integration_name():
@@ -44,9 +51,13 @@ def test_ollama_install_check_returns_bool():
     assert isinstance(result, bool)
 
 
-def test_list_integrations_returns_nine_profiles():
+def test_list_integrations_returns_canonical_profiles():
     profiles = list_integrations()
-    assert len(profiles) == 9
+    assert len(profiles) == len(REGISTRY)
+    names = {profile.name for profile in profiles}
+    assert "google-antigravity" in names
+    assert "gemini-cli" not in names
+    assert "antigravity-cli" not in names
 
 
 def test_list_integrations_profiles_have_required_fields():
@@ -65,6 +76,20 @@ def test_get_integration_returns_correct_instance():
     integration = get_integration("aider")
     assert integration is not None
     assert integration.name == "aider"
+
+
+def test_antigravity_compatibility_alias_resolves_to_canonical():
+    integration = get_integration("antigravity-cli")
+    assert integration is not None
+    assert integration.name == "google-antigravity"
+
+
+@pytest.mark.parametrize("alias", ["gemini-cli", "gemini_cli", "google-gemini-cli"])
+def test_legacy_gemini_aliases_resolve_with_deprecation_warning(alias):
+    with pytest.warns(DeprecationWarning, match="Gemini CLI integration is legacy"):
+        integration = get_integration(alias)
+    assert integration is not None
+    assert integration.name == "google-antigravity"
 
 
 def test_aider_invoke_returns_string():
