@@ -91,7 +91,10 @@ opencobalt cost reset        clear monthly cost records
 opencobalt config set/get/list key-value config
 opencobalt session start/show/end named work sessions
 opencobalt tui               live 4-panel terminal dashboard
-opencobalt run TASK          receipt-backed execution (dry-run by default)
+opencobalt run TASK          receipt-backed execution (dry-run by default; --caffeinate keeps the Mac awake)
+opencobalt plans list        list stored execution plans
+opencobalt plans inspect     show one stored plan
+opencobalt plans execute     replay a stored plan through the policy gate
 opencobalt receipts list     list work receipts
 opencobalt receipts inspect  show one receipt's evidence chain
 opencobalt receipts verify   recompute artifact hashes for a receipt

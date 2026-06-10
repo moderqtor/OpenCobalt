@@ -34,6 +34,7 @@ _DEFAULT_EVENTS_PATH = Path(".opencobalt") / "events" / "execution.jsonl"
 EVENT_TASK_RECEIVED = "task.received"
 EVENT_ROUTE_SELECTED = "route.selected"
 EVENT_PLAN_CREATED = "plan.created"
+EVENT_PLAN_REPLAYED = "plan.replayed"
 EVENT_POLICY_CHECKED = "policy.checked"
 EVENT_EXECUTION_STARTED = "execution.started"
 EVENT_EXECUTION_OUTPUT = "execution.output_captured"
@@ -217,6 +218,109 @@ class ExecutionEngine:
             result = self._execute(plan, step, receipt)
         elif dry_run:
             step.status = "skipped"
+            self.store.save_plan(plan)
+
+        self.store.save_receipt(receipt)
+        self._emit(
+            EVENT_RECEIPT_CREATED, receipt.receipt_id,
+            f"receipt created ({'executed' if result else 'not executed'})",
+            verification_status=receipt.verification_status,
+        )
+
+        if receipt.artifact_ids:
+            self.verify_receipt(receipt.receipt_id)
+            refreshed = self.store.get_receipt(receipt.receipt_id)
+            if refreshed is not None:
+                receipt = refreshed
+
+        return ExecutionOutcome(
+            plan=plan,
+            policy=policy,
+            result=result,
+            receipt=receipt,
+            route_reason=route_reason,
+            events=list(self._events),
+        )
+
+    def replay_plan(
+        self,
+        plan_id: str,
+        *,
+        execute: bool = False,
+        approved: bool = False,
+        timeout_seconds: int | None = None,
+    ) -> ExecutionOutcome:
+        """Replay a stored plan's command through the policy gate.
+
+        Builds a fresh plan (new ids) from the stored command plan. The
+        command is never re-routed or rebuilt, only re-gated: dry-run by
+        default, red risk needs approval, black risk stays blocked.
+        """
+        self._events = []
+        original = self.store.get_plan(plan_id)
+        if original is None:
+            raise KeyError(f"unknown plan: {plan_id}")
+        if not original.steps:
+            raise ValueError(f"plan has no steps to replay: {plan_id}")
+
+        dry_run = not execute
+        risk = original.risk_level
+        needs_approval = risk in ("red", "black")
+        route_reason = f"replay of plan {plan_id}"
+
+        steps = [
+            ExecutionStep(
+                runtime=source.runtime,
+                command_argv=list(source.command_argv),
+                description=f"replay: {source.description}".rstrip(": "),
+                risk_level=source.risk_level,
+                approval_required=source.approval_required,
+                timeout_seconds=timeout_seconds or source.timeout_seconds,
+            )
+            for source in original.steps
+        ]
+        plan = ExecutionPlan(
+            task=original.task,
+            runtime=original.runtime,
+            model_policy=original.model_policy,
+            cwd=original.cwd,
+            risk_level=risk,
+            approval_required=needs_approval,
+            steps=steps,
+            dry_run=dry_run,
+        )
+        self.store.save_plan(plan)
+        self._emit(
+            EVENT_PLAN_REPLAYED, plan.plan_id,
+            f"replaying plan {plan_id} as {plan.plan_id} (risk {risk})",
+            source_plan_id=plan_id,
+            command_argv=redact_argv(steps[0].command_argv),
+            dry_run=dry_run,
+        )
+
+        policy = check_execution(risk, dry_run=dry_run, execute=execute, approved=approved)
+        self._emit(
+            EVENT_POLICY_CHECKED, plan.plan_id,
+            f"policy: {'allowed' if policy.allowed else 'blocked'} ({policy.reason})",
+            allowed=policy.allowed, risk_level=policy.risk_level,
+        )
+
+        receipt = WorkReceipt(
+            plan_id=plan.plan_id,
+            task=original.task,
+            selected_runtime=original.runtime,
+            route_reason=route_reason,
+            risk_level=risk,
+            approval_required=needs_approval,
+            command_plan=list(steps[0].command_argv),
+        )
+
+        result: ExecutionResult | None = None
+        if policy.allowed and not dry_run:
+            result = self._execute(plan, steps[0], receipt)
+        elif dry_run:
+            for step in steps:
+                step.status = "skipped"
             self.store.save_plan(plan)
 
         self.store.save_receipt(receipt)
