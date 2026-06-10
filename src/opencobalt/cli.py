@@ -109,6 +109,9 @@ app.add_typer(receipts_app, name="receipts")
 artifacts_app = typer.Typer(help="Execution artifact commands (hash, attach, verify).")
 app.add_typer(artifacts_app, name="artifacts")
 
+plans_app = typer.Typer(help="Stored execution plan commands (list, inspect, execute).")
+app.add_typer(plans_app, name="plans")
+
 console = Console()
 err = Console(stderr=True)
 
@@ -2810,23 +2813,31 @@ def run_task(
     sandbox: bool = typer.Option(False, "--sandbox", help="Request runtime sandbox mode if supported"),
     timeout: int | None = typer.Option(None, "--timeout", help="Timeout in seconds for execution"),
     yes: bool = typer.Option(False, "--yes", help="Approve red-risk execution explicitly"),
+    caffeinate: bool = typer.Option(
+        False,
+        "--caffeinate",
+        help="Keep the Mac awake while this run is in progress (macOS only, off by default)",
+    ),
 ) -> None:
     """Plan a task against an agent runtime and write a verifiable receipt.
 
     Defaults to dry-run. Execution is policy-gated: green/yellow tasks need
     --execute, red tasks need --execute --yes, black tasks are blocked.
     """
+    from .execution.caffeinate import keep_awake
+
     engine = _execution_engine()
     try:
-        outcome = engine.run_task(
-            task,
-            runtime=runtime,
-            model=model,
-            sandbox=sandbox,
-            execute=execute and not dry_run,
-            approved=yes,
-            timeout_seconds=timeout,
-        )
+        with keep_awake(caffeinate and execute and not dry_run) as awake:
+            outcome = engine.run_task(
+                task,
+                runtime=runtime,
+                model=model,
+                sandbox=sandbox,
+                execute=execute and not dry_run,
+                approved=yes,
+                timeout_seconds=timeout,
+            )
     except KeyError as exc:
         err.print(f"  [red]{exc.args[0]}[/red]")
         raise typer.Exit(1) from None
@@ -2835,6 +2846,8 @@ def run_task(
         raise typer.Exit(1) from None
 
     plan = outcome.plan
+    if awake:
+        console.print("  [dim]Caffeinate:[/dim] active")
     console.print(f'\n  [bold]Task:[/bold] [dim]"{_redact_execution_text(task)}"[/dim]')
     console.print(
         f"  [dim]Runtime:[/dim] {plan.runtime}"
@@ -2870,6 +2883,154 @@ def run_task(
     )
     if receipt.artifact_ids:
         console.print(f"  [dim]Artifacts:[/dim] {len(receipt.artifact_ids)} hashed")
+    console.print()
+    if not outcome.policy.allowed and not plan.dry_run:
+        raise typer.Exit(2)
+
+
+def _resolve_plan(store, plan_id: str):
+    plan = store.get_plan(plan_id)
+    if plan is None:
+        matches = [p for p in store.list_plans(limit=500) if p.plan_id.startswith(plan_id)]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            err.print(f"  [red]Ambiguous plan prefix: {plan_id}[/red]")
+            raise typer.Exit(1)
+    return plan
+
+
+@plans_app.command("list")
+def plans_list(
+    limit: int = typer.Option(20, "--limit", help="Max plans to show"),
+) -> None:
+    """List stored execution plans, newest first."""
+    from .execution import ExecutionStore
+
+    plans = ExecutionStore(_DB_PATH).list_plans(limit=limit)
+    if not plans:
+        console.print("\n  [dim]No plans stored yet. Try: opencobalt run \"hello\" --runtime noop[/dim]\n")
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Plan", style="dim", max_width=14)
+    table.add_column("Runtime")
+    table.add_column("Risk")
+    table.add_column("Mode")
+    table.add_column("Task", style="dim", max_width=48)
+    for plan in plans:
+        table.add_row(
+            plan.plan_id[:12],
+            plan.runtime,
+            _risk_str(plan.risk_level),
+            "dry-run" if plan.dry_run else "execute",
+            plan.task[:60],
+        )
+    console.print()
+    console.print(table)
+    console.print(f"  [dim]{len(plans)} plan(s). Inspect: opencobalt plans inspect <id>[/dim]\n")
+
+
+@plans_app.command("inspect")
+def plans_inspect(
+    plan_id: str = typer.Argument(..., help="Plan id (full or unique prefix)"),
+) -> None:
+    """Show one stored plan: steps, command, risk, and approval needs."""
+    from .execution import ExecutionStore
+
+    store = ExecutionStore(_DB_PATH)
+    plan = _resolve_plan(store, plan_id)
+    if plan is None:
+        err.print(f"  [red]Plan not found: {plan_id}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n  [bold]Plan[/bold] {plan.plan_id}")
+    console.print(f"  [dim]Task:[/dim] {_redact_execution_text(plan.task)}")
+    console.print(
+        f"  [dim]Runtime:[/dim] {plan.runtime}"
+        f"  [dim]Risk:[/dim] {_risk_str(plan.risk_level)}"
+        f"  [dim]Approval required:[/dim] {'yes' if plan.approval_required else 'no'}"
+        f"  [dim]Mode:[/dim] {'dry-run' if plan.dry_run else 'execute'}"
+    )
+    for step in plan.steps:
+        console.print(
+            f"  [dim]Step:[/dim] {' '.join(_redact_execution_argv(step.command_argv))}"
+            f"  [dim]status:[/dim] {step.status}"
+            f"  [dim]timeout:[/dim] {step.timeout_seconds}s"
+        )
+    console.print(f"  [dim]Replay:[/dim] opencobalt plans execute {plan.plan_id[:12]}\n")
+
+
+@plans_app.command("execute")
+def plans_execute(
+    plan_id: str = typer.Argument(..., help="Plan id (full or unique prefix) to replay"),
+    execute: bool = typer.Option(False, "--execute", help="Actually run the stored command (default is dry-run)"),
+    yes: bool = typer.Option(False, "--yes", help="Approve red-risk replay explicitly"),
+    timeout: int | None = typer.Option(None, "--timeout", help="Timeout in seconds for execution"),
+    caffeinate: bool = typer.Option(
+        False,
+        "--caffeinate",
+        help="Keep the Mac awake while this replay is in progress (macOS only, off by default)",
+    ),
+) -> None:
+    """Replay a stored plan through the policy gate and write a new receipt.
+
+    The stored command plan is reused as-is; risk is re-gated the same way
+    as opencobalt run: dry-run by default, red needs --execute --yes, black
+    stays blocked.
+    """
+    from .execution.caffeinate import keep_awake
+
+    engine = _execution_engine()
+    resolved = _resolve_plan(engine.store, plan_id)
+    if resolved is None:
+        err.print(f"  [red]Plan not found: {plan_id}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        with keep_awake(caffeinate and execute) as awake:
+            outcome = engine.replay_plan(
+                resolved.plan_id,
+                execute=execute,
+                approved=yes,
+                timeout_seconds=timeout,
+            )
+    except ValueError as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from None
+
+    plan = outcome.plan
+    if awake:
+        console.print("  [dim]Caffeinate:[/dim] active")
+    console.print(f"\n  [bold]Replay of[/bold] {resolved.plan_id[:12]} [dim]as[/dim] {plan.plan_id}")
+    console.print(
+        f"  [dim]Runtime:[/dim] {plan.runtime}"
+        f"  [dim]Risk:[/dim] {_risk_str(plan.risk_level)}"
+        f"  [dim]Mode:[/dim] {'dry-run' if plan.dry_run else 'execute'}"
+    )
+    for step in plan.steps:
+        console.print(f"  [dim]Command:[/dim] {' '.join(_redact_execution_argv(step.command_argv))}")
+
+    if not outcome.policy.allowed:
+        console.print(f"  [{_YELLOW}]Blocked:[/{_YELLOW}] {outcome.policy.reason}")
+    elif outcome.result is not None:
+        r = outcome.result
+        status_color = _GREEN if r.status == "succeeded" else _RED
+        console.print(
+            f"  [dim]Status:[/dim] [{status_color}]{r.status}[/{status_color}]"
+            f"  [dim]Exit:[/dim] {r.return_code}"
+            f"  [dim]Duration:[/dim] {r.duration_ms}ms"
+        )
+        if r.error:
+            console.print(f"  [{_RED}]Error:[/{_RED}] {r.error}")
+    else:
+        console.print("  [dim]Dry-run: no subprocess started. Plan and receipt stored.[/dim]")
+
+    receipt = outcome.receipt
+    console.print(
+        f"  [dim]Receipt:[/dim] {receipt.receipt_id}"
+        f"  [dim]Verification:[/dim] {receipt.verification_status}"
+    )
     console.print()
     if not outcome.policy.allowed and not plan.dry_run:
         raise typer.Exit(2)

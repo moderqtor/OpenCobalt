@@ -14,6 +14,7 @@ from .adapters import (
     get_adapter,
 )
 from .artifacts import attach_artifact, hash_file, verify_artifact
+from .caffeinate import caffeinate_available, keep_awake
 from .engine import ExecutionEngine, ExecutionOutcome
 from .models import (
     ARTIFACT_TYPES,
@@ -46,10 +47,12 @@ __all__ = [
     "WorkReceipt",
     "attach_artifact",
     "available_runtimes",
+    "caffeinate_available",
     "check_execution",
     "classify_risk",
     "get_adapter",
     "hash_file",
+    "keep_awake",
     "max_risk",
     "verify_artifact",
 ]

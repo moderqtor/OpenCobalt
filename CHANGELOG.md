@@ -11,6 +11,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Plan replay: `opencobalt plans list/inspect/execute` replays a stored command plan through the same policy gate as `opencobalt run` and writes a new receipt with re-verified artifact hashes
+- `--caffeinate` flag on `opencobalt run` and `opencobalt plans execute`: optionally keeps the Mac awake during long executions via a scoped `caffeinate -w <pid>` child; off by default, no policy effect
 - Receipt-Backed Execution v0: `src/opencobalt/execution/` with execution plans, a deterministic policy gate (green/yellow/red/black), a safe argv-only process runner, runtime adapters (google-antigravity, ollama, noop), SHA-256 hashed output artifacts, work receipts, and hash re-verification
 - CLI commands: `opencobalt run` (dry-run by default, `--execute`, `--yes` for red risk, `--sandbox`, `--timeout`), `opencobalt receipts list/inspect/verify`, `opencobalt artifacts attach/verify/list`
 - Structured execution event stream written to `.opencobalt/events/execution.jsonl` (task.received through verification.passed/failed) as the TUI/UI foundation

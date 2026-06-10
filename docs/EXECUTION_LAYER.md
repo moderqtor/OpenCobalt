@@ -102,7 +102,7 @@ The engine emits structured events to `.opencobalt/events/execution.jsonl`
 and to an optional in-process sink, so a future TUI/UI can render live state:
 
 ```
-task.received  route.selected  plan.created  policy.checked
+task.received  route.selected  plan.created  plan.replayed  policy.checked
 execution.started  execution.output_captured
 execution.succeeded  execution.failed
 artifact.created  receipt.created
@@ -121,12 +121,45 @@ Four tables in `.opencobalt/ledger.db`, created with
 `work_receipts`. JSON columns hold steps, argv, capability snapshots, and
 artifact ID lists.
 
+## Plan replay
+
+Stored plans can be inspected and replayed:
+
+```
+opencobalt plans list                      stored plans, newest first
+opencobalt plans inspect <plan_id>         steps, command, risk, approval needs
+opencobalt plans execute <plan_id>         replay (dry-run by default)
+opencobalt plans execute <plan_id> --execute --yes
+```
+
+Replay reuses the stored command plan exactly; it never re-routes or rebuilds
+the command. Every replay creates a new plan (linked to the source by a
+`plan.replayed` event) and a new receipt, and is re-gated by the same policy
+as `opencobalt run`: dry-run always allowed, red risk needs `--execute --yes`,
+black risk stays blocked with no override. Artifact hashes are re-verified
+after an executed replay.
+
+## Caffeinate (keep-awake)
+
+Long runs can optionally hold the Mac awake:
+
+```
+opencobalt run "..." --execute --caffeinate
+opencobalt plans execute <plan_id> --execute --caffeinate
+```
+
+On macOS this starts a scoped `caffeinate -dims -w <pid>` child for the
+duration of the run; it is terminated when the run ends (including timeout or
+failure) and the `-w <pid>` tie means it can never outlive OpenCobalt. It is
+never enabled by default, does nothing on other platforms, only prevents
+sleep during long runs, and has no effect on policy gates, approvals, or
+model behavior.
+
 ## Known limitations (v0)
 
 - One step per plan. Multi-step plans are modeled but not yet generated.
 - Antigravity execution is limited to discovered `--print` mode. Browser
   automation, screenshots, subagent discovery, and Antigravity's private
   SQLite internals remain unknown and are not assumed.
-- No resume of stored plans (`opencobalt execute --plan <id>` is future work).
 - Verification is hash-only. Semantic verification (did the output answer
   the task) belongs to a later milestone.
