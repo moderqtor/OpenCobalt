@@ -134,7 +134,28 @@ that does not change the local-first default.
 - Subagent benchmarking: track performance per subagent type, not just per top-level tool
 - Prompt style benchmarking: track which prompt forms produce the best results per model
 
+### Phase 16: Receipt-Backed Execution v0
+
+- Execution layer in `src/opencobalt/execution/`: plan, policy gate, safe
+  process runner, runtime adapters (google-antigravity, ollama, noop)
+- Every run writes a work receipt with command plan, capability snapshot,
+  and SHA-256 hashed output artifacts
+- Policy gate: dry-run always allowed, green/yellow need `--execute`,
+  red needs `--execute --yes`, black blocked
+- CLI: `opencobalt run`, `receipts list/inspect/verify`,
+  `artifacts attach/verify/list`
+- Structured execution event stream (JSONL) as the TUI/UI foundation
+- Docs: `docs/EXECUTION_LAYER.md`, `docs/ARTIFACT_RECEIPTS.md`
+
 ## In Progress / Next
+
+### Phase 17: Execution Layer v1
+
+- `opencobalt execute --plan <plan_id>` to resume stored plans
+- Multi-step plans with per-step policy checks
+- Adapters for claude-code, codex-cli, aider
+- Semantic verification of receipts (did the output answer the task)
+- TUI panel reading the execution event stream
 
 ### Phase 12: Connector Expansion
 

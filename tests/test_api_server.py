@@ -13,6 +13,7 @@ pytest.importorskip("fastapi", reason="fastapi not installed; pip install 'openc
 from fastapi.testclient import TestClient  # noqa: E402
 
 from opencobalt.api_server import app  # noqa: E402
+from opencobalt.integrations import REGISTRY as INTEGRATION_REGISTRY  # noqa: E402
 
 client = TestClient(app, raise_server_exceptions=True)
 
@@ -160,9 +161,13 @@ class TestIntegrations:
         data = _get("/api/integrations", tmp_path, monkeypatch)
         assert isinstance(data, list)
 
-    def test_has_nine_integrations(self, tmp_path, monkeypatch):
+    def test_lists_canonical_integrations(self, tmp_path, monkeypatch):
         data = _get("/api/integrations", tmp_path, monkeypatch)
-        assert len(data) == 9
+        assert len(data) == len(INTEGRATION_REGISTRY)
+        names = {entry["name"] for entry in data}
+        assert "google-antigravity" in names
+        assert "gemini-cli" not in names
+        assert "antigravity-cli" not in names
 
     def test_entry_shape(self, tmp_path, monkeypatch):
         data = _get("/api/integrations", tmp_path, monkeypatch)
