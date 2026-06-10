@@ -1,172 +1,128 @@
-# OpenCobalt Stitch Design Brief
+# OpenCobalt Design Reference
 
-## Product
+UI reference for the CLI, TUI, and future dashboard. The canonical mockup
+images live in `docs/design/assets/`. This document describes the visual
+language and status model they encode; treat the images as direction, not
+pixel-perfect specs.
 
-OpenCobalt is a local-first AI orchestration control and provenance layer for developers. It routes tasks across Google Antigravity CLI, Claude Code, Codex CLI, Cursor, and Ollama, records decisions in SQLite, and scores completed runs with local telemetry.
+## Reference assets
 
-The primary product surface is the CLI shell. The desktop and web dashboard should feel like a control room for the same system, not a marketing page.
+| File | What it shows |
+|------|---------------|
+| `docs/design/assets/chatgpt-cli-mockup.png` | CLI shell concept: startup header, highlighted input, slash palette |
+| `docs/design/assets/chatgpt-tui-mockup.png` | 4-panel TUI dashboard concept |
+| `docs/design/assets/chatgpt-gen-cli-working-demo-1.png` | CLI working session: routing and status rows |
+| `docs/design/assets/chatgpt-gen-cli-working-demo-2.png` | CLI working session: execution and receipt output |
+| `docs/design/assets/chatgpt-gen-cli-working-demo-3.png` | CLI working session: verification and summary |
 
-## Design Goal
+## Product direction
 
-Create a professional, minimal, high-polish product interface that feels closer to a serious developer tool from a top platform team than a hobby dashboard. It should be calm, precise, and beautiful without decorative clutter.
+OpenCobalt is a local-first AI orchestration control plane with receipt-backed
+execution. The CLI is the primary surface. Every other surface (TUI, desktop,
+web dashboard) is a control room over the same SQLite ledger, not a separate
+product. The interface should feel calm, precise, and verifiable: the user can
+always see what ran, why it was routed there, what it produced, and whether
+the evidence still checks out.
 
-Dominant accent: cobalt blue.
+## CLI/TUI visual language
 
-## Visual Direction
+- Dark neutral base, more graphite than pure black. Cobalt blue is the only
+  dominant accent.
+- Background `#080B10`, surface `#0E141D`, raised surface `#131C29`.
+- Primary text `#F6F8FC`, secondary `#9AA7B8`, muted `#546070`.
+- Cobalt `#2F6BFF`, cobalt bright `#7EA4FF`, success `#3DFFA0`,
+  warning `#FFD166`, error `#FF5577`.
+- Mono font for commands, ids, hashes, and terminal text. Compact headings,
+  small uppercase labels.
+- Dense rows over cards. Rails, tables, and open sections over nested boxes.
+- Restrained glow only for active states and live telemetry. No decorative
+  orbs, gradients, or marketing hero art.
+- Status dots plus short lowercase words ("verified", "dry-run") rather than
+  badges with long phrases.
 
-- Dark neutral base with cobalt blue as the primary accent.
-- More graphite than pure black.
-- Avoid purple-heavy gradients, beige, brown, orange, or one-note blue palettes.
-- Use restrained glow only for active states, focus rings, and live telemetry.
-- Prefer crisp lines, measured spacing, and strong type hierarchy.
-- No decorative orbs, blobs, bokeh, marketing hero art, or generic SaaS cards.
+## Status model
 
-## Palette
+Canonical status vocabulary. CLI output, events, the TUI, and any future
+dashboard must use these exact words.
 
-- Background: `#080B10`
-- Surface: `#0E141D`
-- Raised surface: `#131C29`
-- Input surface: `#EAF1FF`
-- Primary text: `#F6F8FC`
-- Secondary text: `#9AA7B8`
-- Muted text: `#546070`
-- Border: `rgba(255,255,255,0.08)`
-- Cobalt: `#2F6BFF`
-- Cobalt bright: `#7EA4FF`
-- Success: `#3DFFA0`
-- Warning: `#FFD166`
-- Error: `#FF5577`
+| Dimension | States |
+|-----------|--------|
+| Router | healthy / degraded |
+| Ledger | synced / pending / failed |
+| Runtime | google-antigravity / claude-code / codex / ollama / noop |
+| Task | planning / running / verifying / done / failed |
+| Receipt | created / verified / failed |
+| Risk | green / yellow / red / blocked |
+| Mode | dry-run / supervised / autonomous |
+| Context | compact / normal / saturated |
+| Caffeinate | off / active |
 
-## Typography
+Color mapping: green states use success, yellow/pending use warning, red and
+failed use error, blocked uses error with a lock glyph, neutral/dim for
+dry-run and off.
 
-- UI font: Inter or SF Pro.
-- Mono font: SF Mono or JetBrains Mono.
-- Headings should be compact and confident.
-- Labels should be small, uppercase, and spaced.
-- Command text and terminal text should use mono.
-- Do not use oversized hero typography inside dashboard panels.
+## Core panels
 
-## Layout
+- Routing panel: task text, winning runtime highlighted in cobalt, runner-up
+  routes dimmed, score chips, deterministic reasoning line.
+- Execution panel: command argv (redacted), risk level, policy decision,
+  live task status, exit code, duration.
+- Receipt panel: receipt id, plan id, artifact count, verification status,
+  SHA-256 prefixes in mono.
+- Ledger strip: event count, last write, synced/pending/failed.
 
-Design a desktop app first.
+## Risk states
 
-Canvas size: 1440 x 960.
+Risk is always visible before and during execution:
 
-Core layout:
+- green: read-only planning, summarization, analysis
+- yellow: local edits, test runs, generated artifacts
+- red: shell execution, credentials, deployment (requires explicit approval)
+- blocked: black-risk tasks; never executable, shown with lock glyph
 
-- Left rail: icon-only navigation, 56 to 64 px wide.
-- Main content: centered but wider than the current layout, around 920 to 1080 px.
-- Top strip: product identity, active workspace, health status, and quick action.
-- Primary panel: the command input or selected view.
-- Secondary region: recent decisions, telemetry, route graph, and verification receipts.
+## Worker and runtime display
 
-Avoid nested cards. Use rails, rows, tables, panels, and open sections.
+Each runtime gets a status slot in the header strip and TUI:
 
-## Required Views
+- google-antigravity: active / not on PATH
+- claude-code: active / not on PATH
+- codex: active / not on PATH
+- ollama: running / stopped (worker tier only, on demand)
+- noop: always available (dry-run target)
 
-### 1. Command Center
+Slots show a status dot, runtime name, and tier. Inactive runtimes are dim,
+never red; absence is normal, not an error.
 
-Design the default first screen.
+## Use-limit display
 
-Elements:
+Subscription tools (Claude Code, Codex, Gemini CLI) run via subprocess, so
+spend is usage-window based, not per-token. Display remaining headroom as a
+compact bar per tool when known, with the routing mode (economy / balanced /
+performance) next to it. Never block on unknown limits; show "unknown" dim.
 
-- Cobalt logo mark in the left rail.
-- Command input block with light-blue text area, not a dark input.
-- Prompt prefix: `opencobalt >`
-- Placeholder: `route a task, launch a workflow, or type / for commands`
-- Recent route decisions as dense rows.
-- Each row shows task, winning tool, score, tier, and time.
-- Right side can include a compact "system health" strip.
+## Caffeinate indicator
 
-The command block should feel like the highlighted typing area in modern CLI tools.
+When a long run holds the Mac awake (`--caffeinate`), show "caffeinate:
+active" in the status strip and in `opencobalt run` output. Off is the
+default and is shown dim or omitted.
 
-### 2. Telemetry
+## Future dashboard notes
 
-Design a scored run intelligence view.
+- The desktop/web dashboard reads the same ledger; no separate state.
+- Command Center view: command input with light cobalt block, recent route
+  decisions as dense rows, system health strip.
+- Telemetry view: average score, scored runs, top agent, category bars
+  (quality, adherence, efficiency, tool fit, convergence).
+- Routing graph view: input node, deterministic router node, candidate tools,
+  winner in cobalt.
+- Receipts view: evidence chain plan -> execution -> artifacts -> receipt,
+  with re-verify action.
+- Delegation view (future): parent/child subagent tree with per-node risk
+  ceilings and result receipts.
 
-Elements:
+## Copy rules
 
-- Average score.
-- Scored runs count.
-- Top agent.
-- Recent scored runs.
-- Category bars for quality, adherence, efficiency, tool fit, and convergence.
-- Judge label: heuristic or Ollama model.
-
-Use cobalt for primary score, green only for high-confidence pass states.
-
-### 3. Routing Graph
-
-Design a clearer routing visualization.
-
-Elements:
-
-- Input prompt node.
-- Deterministic router node.
-- Candidate tools.
-- Winning route highlighted in cobalt.
-- Runner-up routes dimmed.
-- Score chips or bars.
-
-The graph should look like a developer operations diagram, not a decorative node toy.
-
-### 4. CLI Shell Reference
-
-Create a companion mockup for the terminal shell.
-
-Elements:
-
-- Startup header with logo, version, branch, local DB status, telemetry status.
-- Highlighted input area using a subtle light cobalt block or inverse bar.
-- Slash command palette with grouped commands.
-- Bottom toolbar with memory count, watcher status, current mode, and active tool.
-- Example prompt:
-
-```text
-opencobalt >
-```
-
-The CLI should feel comparable in polish to Claude Code, Codex CLI, and Google Antigravity CLI while keeping OpenCobalt's local-first identity.
-
-## Interaction States
-
-Include visible states for:
-
-- Active nav item.
-- Focused command input.
-- Running route.
-- Successful route decision.
-- Empty telemetry.
-- Scored telemetry row.
-- Offline API warning.
-
-## Components
-
-- Icon rail button.
-- Command input.
-- Slash command palette.
-- Dense route row.
-- Telemetry score row.
-- Category bar.
-- Status dot.
-- Compact metric strip.
-- Route graph node.
-- Verification receipt row.
-
-## Copy Rules
-
-- Keep copy concise.
-- Do not add marketing slogans.
-- Do not claim cloud service, autonomous hosted agent, or API automation by default.
-- Use "local-first", "deterministic routing", "SQLite ledger", and "telemetry scoring".
-
-## Output Requested From Stitch
-
-Generate:
-
-1. Desktop dashboard concept for Command Center.
-2. Desktop dashboard concept for Telemetry.
-3. Terminal shell concept.
-4. Small component style sheet with tokens and component examples.
-
-Do not generate a landing page.
+- Concise, lowercase status words. No marketing slogans, no hype.
+- Use "local-first", "deterministic routing", "SQLite ledger",
+  "work receipts", "telemetry scoring".
+- Never claim cloud service, hosted agents, or API automation by default.
