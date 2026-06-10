@@ -22,7 +22,7 @@ def test_available_tools_returns_list(tmp_path):
     assert isinstance(tools, list)
     # Each tool is a known key
     for t in tools:
-        assert t in ("claude-code", "codex-cli", "gemini-cli", "ollama")
+        assert t in ("claude-code", "codex-cli", "google-antigravity", "ollama")
 
 
 def test_classify_task_impl():

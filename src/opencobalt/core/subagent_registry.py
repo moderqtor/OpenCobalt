@@ -81,9 +81,9 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
     ),
     SubagentSpec(
         agent_id="analyst-agent",
-        specialization="long-context analysis, audit, cross-file search",
+        specialization="agent-runtime analysis, audit, cross-file search",
         tier="executive",
-        tool="gemini-cli",
+        tool="google-antigravity",
         task_types=["analyze"],
         prompt_template="Analyze the following thoroughly across all relevant files: {task}",
         capabilities=["analysis"],

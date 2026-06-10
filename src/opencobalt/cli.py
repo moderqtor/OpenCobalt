@@ -1036,8 +1036,17 @@ def lint() -> None:
 
 
 @app.command()
-def doctor() -> None:
-    """Run a full system health check: status, models, lint, CI config."""
+def doctor(
+    integration: str | None = typer.Argument(None, help="Optional integration diagnostic target"),
+) -> None:
+    """Run a full system health check, or inspect one integration."""
+    if integration in {"antigravity", "google-antigravity", "agy"}:
+        _doctor_antigravity()
+        return
+    if integration is not None:
+        console.print(f"\n  [{_YELLOW}]Unknown doctor target:[/{_YELLOW}] {integration}\n")
+        raise typer.Exit(1)
+
     status()
     console.print()
     models()
@@ -1081,6 +1090,42 @@ def doctor() -> None:
         f"  {_dot(changelog_ok)}  [dim]CHANGELOG.md  [/dim]  "
         f"{'present' if changelog_ok else f'[{_YELLOW}]missing[/{_YELLOW}]'}"
     )
+    console.print()
+
+
+def _doctor_antigravity() -> None:
+    from .integrations.antigravity_integration import discover_antigravity_runtime
+
+    result = discover_antigravity_runtime(ledger=_ledger())
+    console.print(f"\n  [bold {_COBALT}]Google Antigravity CLI[/bold {_COBALT}]  [dim]agy[/dim]\n")
+    console.print(
+        f"  {_dot(result['installed'])}  [dim]on PATH       [/dim]  "
+        f"{result['path'] if result['path'] else f'[{_YELLOW}]agy not on PATH[/{_YELLOW}]'}"
+    )
+    version = result["version"]
+    version_text = version["value"] if version["ok"] else f"[{_YELLOW}]{version['error']}[/{_YELLOW}]"
+    console.print(
+        f"  {_dot(version['ok'])}  [dim]agy --version [/dim]  "
+        f"{version_text}"
+    )
+    help_result = result["help"]
+    help_text = "available" if help_result["ok"] else f"[{_YELLOW}]{help_result['error']}[/{_YELLOW}]"
+    console.print(
+        f"  {_dot(help_result['ok'])}  [dim]agy --help    [/dim]  "
+        f"{help_text}"
+    )
+    console.print("\n  [bold]Capabilities[/bold]")
+    for name, capability in result["capabilities"].items():
+        supported = capability["supported"]
+        source = capability["source"]
+        evidence = capability.get("evidence") or ""
+        if supported is True:
+            state = f"[{_GREEN}]yes[/{_GREEN}]"
+        elif supported is False:
+            state = f"[{_RED}]no[/{_RED}]"
+        else:
+            state = f"[{_YELLOW}]unknown[/{_YELLOW}]"
+        console.print(f"  {name:<24} {state:<18} [dim]{source} {evidence}[/dim]")
     console.print()
 
 

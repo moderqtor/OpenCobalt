@@ -28,7 +28,7 @@ def test_lookup_by_task_type_analyze():
     r = SubagentRegistry()
     spec = r.get_for_task_type("analyze")
     assert spec is not None
-    assert spec.tool == "gemini-cli"
+    assert spec.tool == "google-antigravity"
 
 
 def test_lookup_unknown_type_returns_none():

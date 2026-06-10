@@ -30,7 +30,7 @@ _RED = "#FF5577"
 _DIM = "#555555"
 
 # Tool rotation: keeps usage spread across providers
-_TOOL_ROTATION = ["claude-code", "codex-cli", "gemini-cli", "ollama"]
+_TOOL_ROTATION = ["claude-code", "codex-cli", "google-antigravity", "ollama"]
 
 
 @dataclass
@@ -106,7 +106,7 @@ class AutonomousRunner:
 
         available_tools = self._available_tools()
         if not available_tools:
-            _console.print(f"  [{_AMBER}]No CLI tools available. Install claude, codex, gemini, or ollama.[/{_AMBER}]")
+            _console.print(f"  [{_AMBER}]No CLI tools available. Install claude, codex, agy, or ollama.[/{_AMBER}]")
             return session
 
         _console.print()
@@ -202,7 +202,7 @@ class AutonomousRunner:
         model_map = {
             "claude-code": "claude",
             "codex-cli": "codex",
-            "gemini-cli": "gemini",
+            "google-antigravity": "antigravity",
             "ollama": "ollama",
         }
         model = model_map.get(task.tool, "claude")
@@ -302,7 +302,7 @@ class AutonomousRunner:
         tool_to_binary = {
             "claude-code": "claude",
             "codex-cli": "codex",
-            "gemini-cli": "gemini",
+            "google-antigravity": "agy",
             "ollama": "ollama",
         }
         return [tool for tool, binary in tool_to_binary.items() if shutil.which(binary)]

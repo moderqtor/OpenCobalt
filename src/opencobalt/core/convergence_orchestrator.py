@@ -46,7 +46,7 @@ def _default_execute_subtask(prompt: str, tool: str) -> str:
     model_map = {
         "claude-code": "claude",
         "codex-cli": "codex",
-        "gemini-cli": "gemini",
+        "google-antigravity": "antigravity",
         "ollama": "ollama",
     }
     model = model_map.get(tool, "claude")
