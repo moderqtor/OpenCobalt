@@ -2,17 +2,23 @@
 
 ## Doctrine
 
-OpenCobalt routes tasks to tools based on task type, risk level, context, and verification needs. The router is deterministic -- it uses keyword scoring, not LLM inference.
+OpenCobalt routes tasks to runtimes based on task type, risk level, context, and verification needs. The router is deterministic -- it uses keyword scoring, not LLM inference.
 
 The router never makes autonomous decisions about what to build or how to build it. It recommends. The human decides.
+
+Routing separates runtime from model policy. A runtime is the local tool that does work, such as `google-antigravity`, `claude-code`, `codex-cli`, `aider`, or `ollama`. A model policy describes the kind of model or reasoning budget that runtime should use, such as `gemini-pro`, `gemini-flash`, `claude-sonnet`, `claude-opus`, `gpt-oss`, or `local`.
 
 ## Routing Tiers
 
 ### Executive tier
 
-**Tools:** Claude Code, Gemini CLI (long-context audit), GPT-4o via API (optional)
+**Tools:** Google Antigravity CLI, Claude Code
 
 **Use for:**
+- Multi-agent runtime workflows
+- Artifact-producing validation workflows when local runtime support is discovered
+- Workspace-level coding tasks where terminal, browser, and editor context matter together
+- Google ecosystem tasks
 - Architecture decisions
 - Final code generation intended for production or public visibility
 - Security review
@@ -23,6 +29,8 @@ The router never makes autonomous decisions about what to build or how to build 
 - Complex debugging with unclear root cause
 
 **Do not use local Ollama for any of the above.**
+
+Antigravity should not be preferred for tiny deterministic edits, cheap summaries, credential handling, destructive operations, or deployment and package publishing without explicit approval.
 
 ### Manager tier
 
@@ -58,24 +66,26 @@ The router never makes autonomous decisions about what to build or how to build 
 
 ## Autonomy Zones
 
-### Green lane (proceed without confirmation)
+### Green lane (read-only or local bookkeeping)
 - Read repo files
 - Create local artifacts (.opencobalt/*)
-- Run tests
-- Write docs inside the repo
 - Create local SQLite log entries
 - Build context packs
 - Inspect public documentation
 
-### Yellow lane (proceed with care, document the action)
+### Yellow lane (local changes and generated artifacts)
 - Copy selected code from another repo after manual audit
 - Install dependencies
 - Run longer-running commands
 - Create git worktrees
-- Launch local CLI tools (Ollama, Codex, Gemini)
+- Launch local CLI tools without credentials or external account automation
+- Run tests
+- Write docs inside the repo
+- Generate screenshots, diffs, logs, reports, and other work artifacts
 - Write to configured Obsidian mirror path (disabled by default)
 
 ### Red lane (requires explicit human instruction)
+- Shell execution with broad filesystem access
 - Push to GitHub
 - Publish packages to PyPI or npm
 - Deploy to any hosted environment
@@ -85,6 +95,31 @@ The router never makes autonomous decisions about what to build or how to build 
 - Automate logged-in web accounts
 - Access billing or account settings
 - Execute browser automation on sensitive sessions
+
+### Black lane (blocked without explicit recovery plan)
+- Destructive filesystem operations
+- Credential export
+- External network automation without explicit approval
+- Any task that attempts to bypass policy or hide provenance
+
+Agent runtimes with terminal, browser, and file access are powerful but risky. OpenCobalt's role is to add visibility, receipts, policy, and approval boundaries around those runtimes.
+
+## Route Output
+
+Route decisions include:
+
+```json
+{
+  "runtime": "google-antigravity",
+  "runtime_command": "agy",
+  "model_policy": "high_reasoning_or_browser_capable",
+  "reason": "Task requires artifact-producing validation workflow.",
+  "risk_level": "yellow",
+  "approval_required": true
+}
+```
+
+Gemini CLI integration is deprecated. Legacy Gemini CLI aliases resolve to `google-antigravity` temporarily. Gemini remains a model-family name where appropriate.
 
 ## Cost Control (Planned)
 

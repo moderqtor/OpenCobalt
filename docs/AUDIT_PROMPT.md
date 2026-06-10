@@ -1,4 +1,4 @@
-# Audit Prompt for Codex CLI or Gemini CLI
+# Audit Prompt for Codex CLI or Google Antigravity CLI
 
 Use this prompt to have an external AI agent review OpenCobalt before treating the repo as fully public-ready.
 
@@ -66,10 +66,14 @@ No em dashes. No emojis. No inflated language."
 
 ---
 
-## For Gemini CLI (long-context read)
+## For Google Antigravity CLI
+
+Use this form only when `opencobalt doctor antigravity` reports
+`non_interactive_mode` as `runtime_discovered`. Otherwise paste the prompt into an
+interactive `agy` session.
 
 ```
-gemini "You are performing a public readiness audit of a Python repository called OpenCobalt.
+agy --print "You are performing a public readiness audit of a Python repository called OpenCobalt.
 
 The repo is at ~/dev/OpenCobalt. It is intended as a public portfolio project for a
 USC undergraduate with an Applied Analytics minor who builds AI-native tooling.
@@ -138,8 +142,8 @@ codex < docs/AUDIT_PROMPT.md
 # Or paste the prompt section directly:
 codex "You are auditing..."
 
-# Using Gemini CLI
-gemini "You are performing a public readiness audit..."
+# Using Google Antigravity CLI
+agy --print "You are performing a public readiness audit..."
 ```
 
 The audit output will be written to:

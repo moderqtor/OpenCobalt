@@ -49,9 +49,10 @@ These projects are not vendored into OpenCobalt. They informed the architecture 
 - [SWE-agent](https://github.com/princeton-nlp/SWE-agent) -- automated software engineering
 
 **Developer tools that OpenCobalt routes to:**
+- [Google Antigravity CLI](https://antigravity.google/product/antigravity-cli) -- Google's local agent runtime, invoked with `agy`
 - [Claude Code](https://claude.ai/claude-code) -- Anthropic's CLI for Claude
 - [Codex CLI](https://github.com/openai/codex) -- OpenAI's CLI coding agent
-- [Gemini CLI](https://github.com/google-gemini/gemini-cli) -- Google's CLI for Gemini
+- [Gemini CLI](https://github.com/google-gemini/gemini-cli) -- legacy Google CLI integration, kept for migration context
 - [Cursor](https://cursor.sh/) -- AI-native code editor
 
 **Knowledge tools:**

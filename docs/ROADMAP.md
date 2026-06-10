@@ -2,8 +2,9 @@
 
 ## Product Vision
 
-OpenCobalt is a local-first AI orchestration control plane that unifies routing, memory, context
-compilation, agent management, benchmarking, and integration across AI coding tools.
+OpenCobalt is a local-first AI orchestration control and provenance layer that unifies
+routing, memory, context compilation, agent management, benchmarking, artifact receipts,
+and integration across AI agent runtimes.
 
 Core thesis: autonomous task routing with verifiable results across tiered agents. Not a chatbot
 wrapper. Not an API aggregator for personal use. Not a terminal emulator.
@@ -29,7 +30,7 @@ that does not change the local-first default.
 - Memory store with markdown export
 - Verification runner (pytest + public-check)
 - Typer CLI with all primary commands
-- 58 passing tests
+- Pytest coverage for the first core workflows
 - Architecture, routing, memory, and safety docs
 
 ### Phase 2: Modular Systems
@@ -69,21 +70,22 @@ that does not change the local-first default.
 
 - `code-reviewer` agent uses `file-reader` skill for real file metrics
 - Session tagging in route decisions
-- 174 passing tests
+- Expanded pytest coverage
 
 ### Phase 7: Benchmarking, Integration Library, and Skill Registry
 
 - Agent benchmarking store (BenchmarkRecord + BenchmarkStore, SQLite-backed)
 - Leaderboard with composite score: win_rate * 0.6 + speed_score * 0.4
 - `benchmark status` and `benchmark record` subcommands
-- 6 integrations: aider, ollama, claude-code, gemini-cli, cursor, context7
+- Canonical integrations include aider, ollama, claude-code, google-antigravity,
+  cursor, context7, GitHub CLI, and Obsidian
 - Each integration declares tier, capabilities, and integration_status
 - `integrations check` command: runs install_check() on all, reports active/inactive
 - 3 skills: file-reader, diff-writer, context-injector
 - Each skill declares `compatible_agents`; each agent declares `compatible_skills`
 - `skills list [--agent NAME]` command
 - `cost reset` command: clears current month cost records
-- 191 passing tests
+- Expanded integration and skill coverage
 
 ---
 
@@ -92,7 +94,7 @@ that does not change the local-first default.
 - UI backend bridge: React dashboard wired to FastAPI via REST API
 - FastAPI server on port 8000, Vite dev server on port 5173; both start via `opencobalt ui`
 - `context-diff` command (shows what changed since the last context build)
-- 244 passing tests
+- UI and API coverage added
 
 ---
 
@@ -101,7 +103,7 @@ that does not change the local-first default.
 - Fix Receipts panel: replace hardcoded mock data with real `/api/receipts` endpoint backed by ledger
 - Fix Command Center: real `<input>` that POSTs to `/api/route`, shows routing result inline
 - Fix CORS to allow POST for the route endpoint
-- CLI startup splash: animated ASCII hexagonal logo (Rich-based, like Claude Code / Gemini CLI)
+- CLI startup splash: animated ASCII hexagonal logo (Rich-based, comparable to modern agent CLIs)
 - Optional prompt refinement via Ollama before routing (graceful no-op if Ollama absent)
 - Session-scoped git branch (`oc/YYYY-MM-DD-session`) created on shell start if tree is clean
 
@@ -119,7 +121,7 @@ that does not change the local-first default.
 
 - Orchestration DSL: `/orch "task"` and `/orch "task" -> [claude:impl, codex:tests] -> merge`
 - `TaskDecomposer`: keyword-based split into typed subtasks (impl, tests, docs, review, analyze, summarize)
-- `SubagentRegistry`: 6 specialized agents (impl-agent, test-gen, doc-writer, security-reviewer, analyst-agent/gemini, summarizer/ollama)
+- `SubagentRegistry`: 6 specialized agents (impl-agent, test-gen, doc-writer, security-reviewer, analyst-agent/google-antigravity, summarizer/ollama)
 - `OrchestrationExecutor`: parallel fan-out via dedicated `BackgroundRunner(max_workers=6)`
 - `MultiRouteDecision` model and ledger table for full fan-out audit trail
 - `BenchmarkRecord` extended with `subagent_id` and `prompt_style` columns
@@ -161,7 +163,7 @@ that does not change the local-first default.
 
 - Obsidian (read/write vault notes via vault path config)
 - GitHub (PR creation, issue linking, auto-commit on route completion)
-- Antigravity CLI (Google's successor to Gemini CLI, replacing the current gemini integration)
+- Google Antigravity CLI (`agy`) runtime discovery, legacy Gemini CLI alias migration, and artifact ingestion foundation
 - Supabase (project-level logging of route decisions to a remote table, optional)
 - Additional connectors: Cursor Composer, Continue.dev, Windsurf
 
