@@ -74,3 +74,16 @@ assets/screenshots/*.png
 assets/screenshots/*.gif
 assets/readme/*.png
 .superpowers/
+
+# Local prompt and deepresearch dumps -- reference material that stays local.
+# Polished docs (README, ROADMAP, ARCHITECTURE, EXECUTION_LAYER, DESIGN, etc.)
+# are tracked normally; raw transcripts and prompt exports are not.
+/docs/deepresearch/
+/docs/prompts/
+/prompts/
+/*.prompt.md
+/*PROMPT*.md
+/*Prompt*.md
+ChatGPT-*.md
+Claude-*.md
+*.deepresearch.md
