@@ -1,9 +1,11 @@
-from opencobalt.core.subagent_registry import SubagentRegistry
+import pytest
+
+from opencobalt.core.subagent_registry import SubagentRegistry, SubagentSpec
 
 
-def test_registry_has_six_agents():
+def test_registry_has_default_library():
     r = SubagentRegistry()
-    assert len(r.list_all()) == 6
+    assert len(r.list_all()) == 17
 
 
 def test_lookup_by_task_type_impl():
@@ -49,3 +51,72 @@ def test_spec_has_required_fields():
         assert spec.tier in ("executive", "manager", "worker")
         assert spec.tool
         assert spec.task_types
+        assert spec.risk_ceiling in ("green", "yellow", "red", "black")
+        assert spec.permission_scope in ("read", "write", "execute")
+        assert spec.output_contract in ("report", "artifact", "receipt", "prose")
+
+
+def test_register_custom_subagent():
+    r = SubagentRegistry()
+    r.register(
+        SubagentSpec(
+            agent_id="custom-checker",
+            specialization="custom checks",
+            tier="worker",
+            tool="ollama",
+            task_types=["custom"],
+        )
+    )
+    assert r.get("custom-checker") is not None
+    resolved = r.get_for_task_type("custom")
+    assert resolved is not None
+    assert resolved.agent_id == "custom-checker"
+
+
+def test_register_duplicate_id_rejected():
+    r = SubagentRegistry()
+    with pytest.raises(ValueError):
+        r.register(
+            SubagentSpec(
+                agent_id="impl-agent",
+                specialization="dup",
+                tier="worker",
+                tool="ollama",
+                task_types=["dup"],
+            )
+        )
+
+
+def test_register_invalid_ceiling_rejected():
+    r = SubagentRegistry()
+    with pytest.raises(ValueError):
+        r.register(
+            SubagentSpec(
+                agent_id="bad-risk",
+                specialization="bad",
+                tier="worker",
+                tool="ollama",
+                task_types=["bad"],
+                risk_ceiling="purple",
+            )
+        )
+
+
+def test_registry_instances_are_isolated():
+    a = SubagentRegistry()
+    b = SubagentRegistry()
+    a.register(
+        SubagentSpec(
+            agent_id="only-in-a",
+            specialization="isolation check",
+            tier="worker",
+            tool="ollama",
+            task_types=["isolated"],
+        )
+    )
+    assert b.get("only-in-a") is None
+
+
+def test_empty_registry_without_defaults():
+    r = SubagentRegistry(include_defaults=False)
+    assert r.list_all() == []
