@@ -45,7 +45,7 @@ const POSITIONS = {
   ],
 };
 
-const DEFAULT_TOOLS = ["claude-code", "gemini-cli", "codex-cli", "cursor", "ollama"];
+const DEFAULT_TOOLS = ["google-antigravity", "claude-code", "codex-cli", "cursor", "ollama"];
 
 function routeTime(event) {
   const stamp = event?.timestamp ? new Date(event.timestamp).getTime() : 0;
