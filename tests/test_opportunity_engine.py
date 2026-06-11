@@ -56,6 +56,8 @@ class TestGoalClassification:
             ("research prior art and compare options", "research"),
             ("grow community adoption and stars", "growth"),
             ("find useful opportunities for this product", "product"),
+            ("find the highest leverage way to improve OpenCobalt this week", "strategy"),
+            ("decide the roadmap priority for the next step", "strategy"),
             ("zzz qqq", "unknown"),
         ],
     )

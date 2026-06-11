@@ -41,6 +41,7 @@ GOAL_CLASSES = (
     "automation",
     "cost_saving",
     "design",
+    "strategy",
     "unknown",
 )
 
@@ -125,6 +126,11 @@ _GOAL_KEYWORDS: dict[str, tuple[str, ...]] = {
     "design": (
         "design", "ui", "ux", "tui", "visual", "layout", "dashboard",
         "interface",
+    ),
+    "strategy": (
+        "highest leverage", "leverage", "improve", "this week", "roadmap",
+        "next step", "priority", "prioritize", "milestone", "strategy",
+        "strategic",
     ),
 }
 
@@ -418,6 +424,23 @@ _CLASS_TRACKS: dict[str, list[TrackTemplate]] = {
             description="Tighten the TUI and dashboard against DESIGN.md.",
             priors={"expected_impact": 0.6, "feasibility": 0.7, "risk": 0.2,
                     "novelty": 0.45, "time_cost": 0.45},
+        ),
+    ],
+    "strategy": [
+        TrackTemplate(
+            name="roadmap next step",
+            track_type="strategy",
+            description="Pick and sequence the highest-leverage next milestone.",
+            priors={"expected_impact": 0.75, "feasibility": 0.75, "risk": 0.15,
+                    "reversibility": 0.9, "time_cost": 0.3,
+                    "verification_quality": 0.6},
+        ),
+        TrackTemplate(
+            name="loop-closing improvement",
+            track_type="strategy",
+            description="Connect existing subsystems into one verifiable workflow.",
+            priors={"expected_impact": 0.7, "feasibility": 0.65, "risk": 0.2,
+                    "novelty": 0.55, "time_cost": 0.45},
         ),
     ],
 }
@@ -742,6 +765,7 @@ _TRACK_SPECIALISTS: dict[str, list[str]] = {
     "integration": ["implementer", "test-writer"],
     "refactor": ["refactorer", "test-writer"],
     "research": ["researcher"],
+    "strategy": ["researcher", "docs-editor"],
 }
 
 
@@ -791,6 +815,11 @@ _TRACK_STEPS: dict[str, list[str]] = {
     "integration": ["survey installed local tools", "propose adapter plan"],
     "refactor": ["identify largest modules", "propose behavior-safe refactor"],
     "research": ["summarize local prior art", "write findings note"],
+    "strategy": [
+        "rank candidate milestones by leverage",
+        "draft next-step decision note",
+        "patch roadmap doc with the decision",
+    ],
 }
 
 
@@ -1004,11 +1033,21 @@ class OpportunityEngine:
             run.tracks, key=lambda t: totals.get(t.track_id, 0.0), reverse=True
         )
 
-    def plan_track(self, run: OpportunityRun, track_id: str) -> OpportunityPlan:
-        """Build (and persist) the non-executing plan for one track."""
+    def plan_track(
+        self, run: OpportunityRun, track_id: str, *, new: bool = False
+    ) -> OpportunityPlan:
+        """Build (and persist) the non-executing plan for one track.
+
+        Idempotent by default: if the track already has a plan in this run,
+        it is reused. Pass new=True to build a replacement plan.
+        """
         track = run.get_track(track_id)
         if track is None:
             raise KeyError(f"unknown track: {track_id}")
+        if not new and track.plan_id:
+            for existing in run.plans:
+                if existing.plan_id == track.plan_id:
+                    return existing
         plan = build_opportunity_plan(
             track, run.goal, registry=self.registry, max_depth=self.max_depth
         )

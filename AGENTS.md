@@ -105,9 +105,17 @@ opencobalt khoj status       check Khoj sidecar reachability
 opencobalt opportunities brainstorm  full supervised opportunity pipeline (no execution)
 opencobalt opportunities score       rescore tracks with explainable totals
 opencobalt opportunities report      ranked opportunity table
-opencobalt opportunities plan        delegation plan for one track (never executes)
+opencobalt opportunities plan        delegation plan for one track (never executes, idempotent)
+opencobalt opportunities approve     promote a track/plan into an approval request
 opencobalt opportunities list        stored opportunity runs
 opencobalt opportunities outcome     record useful/neutral/wasted/abandoned feedback
+opencobalt approvals list            list approval requests
+opencobalt approvals show            one request with steps and next action
+opencobalt approvals approve         approve steps (black risk cannot be approved)
+opencobalt approvals reject          reject steps with a reason
+opencobalt approvals run             hand approved steps to the policy-gated engine
+opencobalt approvals outcome         record a receipt-evidenced outcome for the track
+opencobalt why ID                    lineage trace for any known id
 opencobalt ui                open the React dashboard
 ```
 
@@ -115,7 +123,7 @@ opencobalt ui                open the React dashboard
 
 ## What NOT to do
 
-- Do not break existing passing tests. The baseline is 214 tests (as of Phase 8).
+- Do not break existing passing tests. The baseline is 863 tests (as of Phase 19 part 1).
 - Do not push to GitHub without explicit instruction.
 - Do not change the SQLite schema without adding migration logic.
 - Do not add Postgres, Redis, Qdrant, or any server-side store as a required dependency.

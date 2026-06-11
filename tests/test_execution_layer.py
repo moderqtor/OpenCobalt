@@ -206,6 +206,9 @@ class TestAdapters:
     def test_noop_adapter_builds_echo(self):
         assert NoopAdapter().build_command("hello") == ["echo", "hello"]
 
+    def test_noop_adapter_normalizes_leading_echo(self):
+        assert NoopAdapter().build_command("echo hello") == ["echo", "hello"]
+
     def test_ollama_adapter_builds_run_argv(self):
         argv = OllamaAdapter().build_command("hello", CommandOptions(model="qwen3"))
         assert argv == ["ollama", "run", "qwen3", "hello"]
