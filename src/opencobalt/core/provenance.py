@@ -530,6 +530,13 @@ def render_trace_lines(trace: ProvenanceTrace) -> list[str]:
         prefix = "  " * depth
         arrow = f"{relation} -> " if relation else ""
         lines.append(f"{prefix}{arrow}{describe(node)}")
+        # Support edges point evidence -> track; render them nested under
+        # the supported node so evidence reads in context.
+        for edge in trace.edges:
+            if edge.target_id == node.node_id and edge.relation == "supports":
+                source = trace.get_node(edge.source_id)
+                if source is not None:
+                    walk(source, depth + 1, "supported_by")
         for child_relation, child in trace.children(node.node_id):
             walk(child, depth + 1, child_relation)
 
