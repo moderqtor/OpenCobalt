@@ -149,7 +149,34 @@ that does not change the local-first default.
 - Structured execution event stream (JSONL) as the TUI/UI foundation
 - Docs: `docs/EXECUTION_LAYER.md`, `docs/ARTIFACT_RECEIPTS.md`
 
+### Phase 18: Autonomous Opportunity Engine v0
+
+- Supervised, local-first opportunity discovery in
+  `src/opencobalt/core/opportunity_engine.py` (see `docs/OPPORTUNITY_ENGINE.md`)
+- Deterministic goal classification into nine goal classes, extensible track
+  library, pluggable local evidence collectors (repo scan, receipts, route history)
+- Transparent nine-dimension scoring: risk lowers the total, evidence raises it,
+  every contribution is explainable
+- Nested delegation trees per track (strategist -> researcher -> specialists ->
+  receipt-verifier) with enforced depth, risk ceilings, and permission scopes
+- Plans never auto-execute; risky steps stay pending behind the existing policy gate
+- Outcome tracking table (`useful` / `neutral` / `wasted` / `abandoned`) as the
+  training signal for future learned routing
+- Bounded evaluator loop primitive (`core/evaluator_loop.py`): propose, evaluate,
+  mutate, keep best -- max iterations, timeout, local evaluators only, receipts
+- CLI: `opencobalt opportunities brainstorm/score/report/plan/list/outcome`
+
 ## In Progress / Next
+
+### Phase 19: Opportunity Engine v1
+
+- Web research evidence collector behind the existing `EvidenceCollector` protocol
+- Approval workflow: promote an approved opportunity plan into stored execution
+  plans (`opencobalt plans execute`) step by step
+- Outcome-weighted scoring: feed `opportunity_outcomes` back into track priors
+- UI panels for opportunity tracks, subagent trees, evidence, and approval state
+- Evaluator-driven discovery on bounded local domains (routing keywords,
+  benchmark heuristics) with full receipts
 
 ### Phase 17: Execution Layer v1
 
