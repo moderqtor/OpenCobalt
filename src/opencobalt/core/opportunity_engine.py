@@ -906,7 +906,7 @@ class OpportunityEngine:
 
         if plan:
             for track in self.rank_tracks(run)[:top_n]:
-                run.plans.append(self.plan_track(run, track.track_id))
+                self.plan_track(run, track.track_id)  # appends to run.plans
 
         run.report = self.build_report(run)
         self._persist(run)
@@ -1014,8 +1014,7 @@ class OpportunityEngine:
         )
         track.plan_id = plan.plan_id
         track.status = "planned"
-        if plan not in run.plans:
-            run.plans.append(plan)
+        run.plans.append(plan)
         self._emit(
             EVENT_PLAN_CREATED, plan.plan_id,
             f"plan created for {track.name} (risk {plan.risk_level}, "
@@ -1023,6 +1022,7 @@ class OpportunityEngine:
             run_id=run.run_id, track_id=track.track_id,
             risk_level=plan.risk_level, approval_state=plan.approval_state,
         )
+        self._persist(run)
         return plan
 
     def build_report(self, run: OpportunityRun) -> OpportunityReport:

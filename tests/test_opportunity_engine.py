@@ -191,8 +191,8 @@ class TestEngine:
         monkeypatch.setattr(subprocess, "run", explode)
         monkeypatch.setattr(subprocess, "Popen", explode)
         engine = make_engine(tmp_path)
-        run = engine.brainstorm("find useful opportunities for this product")
-        assert run.plans
+        run = engine.brainstorm("find useful opportunities for this product", top_n=3)
+        assert len(run.plans) == 3  # exactly one plan per top track, no duplicates
         for plan in run.plans:
             assert plan.executed is False
             assert plan.approval_state in ("not_required", "pending")

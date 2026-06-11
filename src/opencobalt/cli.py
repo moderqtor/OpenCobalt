@@ -112,6 +112,11 @@ app.add_typer(artifacts_app, name="artifacts")
 plans_app = typer.Typer(help="Stored execution plan commands (list, inspect, execute).")
 app.add_typer(plans_app, name="plans")
 
+opportunities_app = typer.Typer(
+    help="Autonomous opportunity engine (brainstorm, score, report, plan)."
+)
+app.add_typer(opportunities_app, name="opportunities")
+
 console = Console()
 err = Console(stderr=True)
 
@@ -3274,3 +3279,223 @@ def artifacts_list(
     console.print()
     console.print(table)
     console.print(f"  [dim]{len(artifacts)} artifact(s).[/dim]\n")
+
+
+# --- Opportunity engine commands ---
+
+
+def _opportunity_store():
+    from .core.opportunity_store import OpportunityStore
+
+    return OpportunityStore(_DB_PATH)
+
+
+def _opportunity_engine():
+    from .core.opportunity_engine import OpportunityEngine
+
+    return OpportunityEngine(db_path=_DB_PATH)
+
+
+def _resolve_opportunity_run(store, run_id: str | None):
+    return store.latest_run() if run_id is None else store.get_run(run_id)
+
+
+def _print_opportunity_table(run) -> None:
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Track", style="dim", max_width=18)
+    table.add_column("Name")
+    table.add_column("Type", style="dim")
+    table.add_column("Score", justify="right")
+    table.add_column("Evidence", justify="right")
+    table.add_column("Status")
+    table.add_column("Plan", style="dim", max_width=16)
+    for entry in (run.report.ranked if run.report else []):
+        table.add_row(
+            entry["track_id"][:16],
+            entry["name"],
+            entry["track_type"],
+            f"{entry['total']:.3f}",
+            str(entry["evidence_count"]),
+            entry["status"],
+            entry["plan_id"][:14] if entry["plan_id"] else "-",
+        )
+    console.print()
+    console.print(table)
+
+
+@opportunities_app.command("brainstorm")
+def opportunities_brainstorm(
+    goal: str = typer.Argument(..., help="Broad goal text to decompose"),
+    top: int = typer.Option(3, "--top", help="How many top tracks get delegation plans"),
+    no_plans: bool = typer.Option(False, "--no-plans", help="Skip automatic plan creation"),
+) -> None:
+    """Run the full supervised pipeline for a goal: classify, decompose,
+    gather local evidence, score, plan the top tracks, and report.
+
+    Everything is automatic but nothing executes: plans are proposals
+    gated behind the existing execution policy.
+    """
+    engine = _opportunity_engine()
+    run = engine.brainstorm(goal, top_n=top, plan=not no_plans)
+
+    console.print(f"\n  [bold]Run[/bold] {run.run_id}  [dim]class:[/dim] {run.goal.goal_class}")
+    console.print(f"  [dim]Goal:[/dim] {run.goal.text[:100]}")
+    _print_opportunity_table(run)
+    if run.plans:
+        console.print(f"  [dim]{len(run.plans)} non-executing plan(s) created:[/dim]")
+        for plan in run.plans:
+            nodes = len(plan.delegation.get("nodes", []))
+            console.print(
+                f"    {plan.plan_id[:14]}  risk {_risk_str(plan.risk_level)}"
+                f"  approval {plan.approval_state}  [dim]{nodes} subagent node(s)[/dim]"
+            )
+    if run.report:
+        console.print("  [dim]Next actions:[/dim]")
+        for action in run.report.next_actions:
+            console.print(f"    - {action}")
+    console.print(
+        f"  [dim]{len(engine.events)} event(s) emitted. Report: "
+        f"opencobalt opportunities report[/dim]\n"
+    )
+
+
+@opportunities_app.command("score")
+def opportunities_score(
+    run_id: str | None = typer.Option(None, "--run", help="Run id (default: latest)"),
+    explain: str | None = typer.Option(None, "--explain", help="Track id to explain in full"),
+) -> None:
+    """Rescore the run's tracks from current evidence and rank them."""
+    store = _opportunity_store()
+    run = _resolve_opportunity_run(store, run_id)
+    if run is None:
+        err.print("  [red]No opportunity runs found. Try: opencobalt opportunities brainstorm \"goal\"[/red]")
+        raise typer.Exit(1)
+
+    engine = _opportunity_engine()
+    engine.rescore(run)
+    console.print(f"\n  [bold]Rescored[/bold] {run.run_id}  [dim]class:[/dim] {run.goal.goal_class}")
+    _print_opportunity_table(run)
+
+    if explain:
+        track = run.get_track(explain)
+        score = run.score_for(track.track_id) if track else None
+        if score is None:
+            err.print(f"  [red]Track not found: {explain}[/red]")
+            raise typer.Exit(1)
+        console.print(f"  [bold]Explanation for {track.name}:[/bold]")
+        for line in score.explanation:
+            console.print(f"    [dim]{line}[/dim]")
+    console.print()
+
+
+@opportunities_app.command("report")
+def opportunities_report(
+    run_id: str | None = typer.Option(None, "--run", help="Run id (default: latest)"),
+) -> None:
+    """Print the ranked opportunity report for a run."""
+    store = _opportunity_store()
+    run = _resolve_opportunity_run(store, run_id)
+    if run is None:
+        err.print("  [red]No opportunity runs found. Try: opencobalt opportunities brainstorm \"goal\"[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n  [bold]Opportunity report[/bold] {run.run_id}")
+    console.print(f"  [dim]Goal:[/dim] {run.goal.text[:100]}  [dim]class:[/dim] {run.goal.goal_class}")
+    _print_opportunity_table(run)
+    if run.report:
+        console.print("  [dim]Next actions:[/dim]")
+        for action in run.report.next_actions:
+            console.print(f"    - {action}")
+    console.print()
+
+
+@opportunities_app.command("plan")
+def opportunities_plan(
+    track_id: str = typer.Argument(..., help="Track id (full or unique prefix)"),
+    run_id: str | None = typer.Option(None, "--run", help="Run id (default: resolve by track)"),
+) -> None:
+    """Create a policy-aware delegation plan for one track. Never executes:
+    risky steps stay pending until approved through the execution gate."""
+    store = _opportunity_store()
+    run = store.get_run(run_id) if run_id else store.find_run_for_track(track_id)
+    if run is None:
+        err.print(f"  [red]No run found containing track: {track_id}[/red]")
+        raise typer.Exit(1)
+    track = run.get_track(track_id)
+    if track is None:
+        err.print(f"  [red]Track not found: {track_id}[/red]")
+        raise typer.Exit(1)
+
+    engine = _opportunity_engine()
+    plan = engine.plan_track(run, track.track_id)
+
+    console.print(f"\n  [bold]Plan[/bold] {plan.plan_id}  [dim]track:[/dim] {track.name}")
+    console.print(
+        f"  [dim]Risk:[/dim] {_risk_str(plan.risk_level)}"
+        f"  [dim]Approval:[/dim] {plan.approval_state}"
+        f"  [dim]Executed:[/dim] no (plans never auto-execute)"
+    )
+    console.print("  [dim]Steps:[/dim]")
+    for step in plan.steps:
+        marker = "needs approval" if step["approval_required"] else "local"
+        console.print(
+            f"    - {step['description']}  [{_risk_str(step['risk_level'])}]  [dim]{marker}[/dim]"
+        )
+    nodes = {n["node_id"]: n for n in plan.delegation.get("nodes", [])}
+    console.print(f"  [dim]Delegation tree ({len(nodes)} node(s)):[/dim]")
+    stack = [plan.delegation["root_id"]] if plan.delegation.get("root_id") else []
+    while stack:
+        node = nodes[stack.pop()]
+        indent = "    " + "  " * node["depth"]
+        console.print(
+            f"{indent}{node['agent_id']}  [dim]depth {node['depth']}"
+            f" risk {node['risk_level']} scope {node['permission_scope']}"
+            f" -> {node['output_contract']}[/dim]"
+        )
+        stack.extend(reversed(node["child_ids"]))
+    console.print(
+        "  [dim]Execution stays behind the policy gate: opencobalt run / plans execute.[/dim]\n"
+    )
+
+
+@opportunities_app.command("list")
+def opportunities_list(
+    limit: int = typer.Option(10, "--limit", help="Max runs to show"),
+) -> None:
+    """List stored opportunity runs, newest first."""
+    runs = _opportunity_store().list_runs(limit=limit)
+    if not runs:
+        console.print("\n  [dim]No opportunity runs yet. Try: opencobalt opportunities brainstorm \"goal\"[/dim]\n")
+        return
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Run", style="dim", max_width=18)
+    table.add_column("Class")
+    table.add_column("Goal", style="dim", max_width=56)
+    table.add_column("Created", style="dim")
+    for row in runs:
+        table.add_row(
+            row["run_id"][:16], row["goal_class"], row["goal_text"][:64],
+            row["created_at"][:19],
+        )
+    console.print()
+    console.print(table)
+    console.print(f"  [dim]{len(runs)} run(s).[/dim]\n")
+
+
+@opportunities_app.command("outcome")
+def opportunities_outcome(
+    track_id: str = typer.Argument(..., help="Track id the outcome belongs to"),
+    outcome: str = typer.Argument(..., help="useful / neutral / wasted / abandoned"),
+    receipt: str | None = typer.Option(None, "--receipt", help="Receipt id evidencing the outcome"),
+    notes: str | None = typer.Option(None, "--notes", help="Free-form outcome notes"),
+) -> None:
+    """Record what actually happened with a track. Outcome history is the
+    training signal for future learned routing."""
+    try:
+        outcome_id = _opportunity_store().record_outcome(
+            track_id, outcome=outcome, receipt_id=receipt, notes=notes
+        )
+    except ValueError as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"\n  [bold]Outcome recorded:[/bold] {outcome_id} ({outcome})\n")
