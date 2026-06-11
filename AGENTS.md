@@ -102,6 +102,12 @@ opencobalt artifacts attach  hash and record a local file as an artifact
 opencobalt artifacts verify  recompute one artifact's hash
 opencobalt artifacts list    list execution artifacts
 opencobalt khoj status       check Khoj sidecar reachability
+opencobalt opportunities brainstorm  full supervised opportunity pipeline (no execution)
+opencobalt opportunities score       rescore tracks with explainable totals
+opencobalt opportunities report      ranked opportunity table
+opencobalt opportunities plan        delegation plan for one track (never executes)
+opencobalt opportunities list        stored opportunity runs
+opencobalt opportunities outcome     record useful/neutral/wasted/abandoned feedback
 opencobalt ui                open the React dashboard
 ```
 
