@@ -3851,3 +3851,40 @@ def opportunities_approve(
     if action:
         console.print(f"    {action}")
     console.print(f"    opencobalt why {rid}\n")
+
+
+# --- Provenance ---
+
+
+@app.command("why")
+def why(
+    any_id: str = typer.Argument(
+        ..., help="Any known id: run, goal, track, evidence, opportunity plan, "
+        "approval request, step, execution plan, receipt, artifact, or outcome"
+    ),
+) -> None:
+    """Trace the lineage of any object: what caused it, what evidence and
+    score supported it, what approval applied, what execution and receipt
+    came out of it, and what outcome was recorded."""
+    from .core.provenance import ProvenanceBuilder, render_trace_lines
+
+    trace = ProvenanceBuilder(_DB_PATH).trace(any_id)
+    if trace is None:
+        err.print(
+            f"  [red]No lineage found for: {any_id}[/red]\n"
+            "  [dim]Accepted: orun-/goal-/otrk-/ev-/oplan-/areq-/astp-/oout- ids, "
+            "or execution plan / receipt / artifact ids.[/dim]"
+        )
+        raise typer.Exit(1)
+
+    console.print(f"\n  [bold]Why[/bold] {trace.focus_id}  [dim]kind:[/dim] {trace.focus_kind}")
+    console.print(f"  [dim]{'─' * 60}[/dim]")
+    for line in render_trace_lines(trace):
+        # markup=False: trace lines carry [key=value] blocks rich would
+        # otherwise try to parse as style tags.
+        style = "bold" if "<-- you asked about this" in line else None
+        console.print(f"  {line}", markup=False, highlight=False, style=style)
+    console.print(
+        f"\n  [dim]{len(trace.nodes)} node(s), {len(trace.edges)} edge(s). "
+        "Inspect details: opencobalt approvals show / receipts inspect.[/dim]\n"
+    )
