@@ -166,14 +166,34 @@ that does not change the local-first default.
   mutate, keep best -- max iterations, timeout, local evaluators only, receipts
 - CLI: `opencobalt opportunities brainstorm/score/report/plan/list/outcome`
 
+### Phase 19 (part 1): Approval Bridge + Provenance Loop v1
+
+- Approval bridge (`core/approval_bridge.py`): promote opportunity tracks/plans
+  into persisted approval requests with per-step risk and approval state
+  (pending / approved / rejected / executed / failed / superseded)
+- Green steps auto-approve only when policy allows; yellow/red require explicit
+  approval; black is blocked with no override
+- Execution handoff goes through the existing policy-gated execution engine
+  unchanged (dry-run default, `--execute`, `--execute --yes` for red); every
+  step links its execution plan and receipt back to the approval
+- Provenance layer (`core/provenance.py`) and `opencobalt why <ANY_ID>`: lineage
+  from goal to evidence, score, plan, approval, execution, receipt, artifact,
+  and outcome, for any id, read-only
+- Outcome feedback: `approvals outcome` records receipt-evidenced outcomes on
+  the underlying track
+- CLI: `approvals list/show/approve/reject/run/outcome`,
+  `opportunities approve`, `why`; status shows pending approvals and latest
+  receipt verification
+- Polish: `strategy` goal class, idempotent `opportunities plan` (`--new` to
+  force), noop adapter normalizes echo-prefixed tasks
+
 ## In Progress / Next
 
-### Phase 19: Opportunity Engine v1
+### Phase 19 (part 2): Opportunity Engine v1 remainder
 
 - Web research evidence collector behind the existing `EvidenceCollector` protocol
-- Approval workflow: promote an approved opportunity plan into stored execution
-  plans (`opencobalt plans execute`) step by step
-- Outcome-weighted scoring: feed `opportunity_outcomes` back into track priors
+- Outcome-weighted scoring: feed `opportunity_outcomes` (now receipt-linked,
+  with risk/approval/verification context) back into track priors
 - UI panels for opportunity tracks, subagent trees, evidence, and approval state
 - Evaluator-driven discovery on bounded local domains (routing keywords,
   benchmark heuristics) with full receipts

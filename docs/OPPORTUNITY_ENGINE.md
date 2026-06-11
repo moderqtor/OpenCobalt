@@ -31,7 +31,8 @@ opencobalt opportunities brainstorm "improve code quality and test coverage"
 1. `opportunity.goal_received` -- the goal is classified deterministically
    (keyword scoring, no LLM) into one of: product, code_quality,
    security_authorized, growth, research, automation, cost_saving, design,
-   unknown.
+   strategy, unknown. Strategy catches planning-shaped goals ("highest
+   leverage", "roadmap", "next step", "this week", "priority").
 2. `opportunity.track_created` -- base tracks (docs improvement, test gaps,
    bug-risk scan) plus goal-class-specific tracks are generated from an
    extensible track library.
@@ -54,9 +55,15 @@ opencobalt opportunities brainstorm "goal text"   # full pipeline, auto
 opencobalt opportunities score [--explain TRACK]  # rescore + explanation
 opencobalt opportunities report                   # ranked table
 opencobalt opportunities plan TRACK_ID            # delegation plan (no execution)
+opencobalt opportunities approve TRACK_ID         # promote into an approval request
 opencobalt opportunities list                     # stored runs
 opencobalt opportunities outcome TRACK_ID useful  # record what happened
 ```
+
+`plan` is idempotent: it reuses the track's existing plan unless `--new` is
+passed. `approve` hands the track to the approval bridge (see
+`docs/APPROVAL_BRIDGE.md`), which is where execution is authorized and
+`opencobalt why <id>` lineage begins to span into receipts.
 
 ## Scoring
 

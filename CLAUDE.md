@@ -20,7 +20,7 @@ tiered model policy, working commands, and what not to do).
 
 **Testing:**
 - Always run `python3 -m pytest -q` after any code change.
-- Baseline: 214 passing tests (after Phase 8). All must stay green.
+- Baseline: 863 passing tests (after Phase 19 part 1). All must stay green.
 - New code requires new tests. Use `tmp_path` from pytest fixtures for SQLite isolation.
 
 **Commits:**

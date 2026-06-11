@@ -142,6 +142,10 @@ class NoopAdapter(RuntimeAdapter):
         return 10
 
     def build_command(self, task: str, options: CommandOptions | None = None) -> list[str]:
+        # Normalize tasks that already start with "echo " so the captured
+        # output is the message itself, not "echo echo ...".
+        if task.startswith("echo "):
+            return ["echo", task[len("echo "):]]
         return ["echo", task]
 
 

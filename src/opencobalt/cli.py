@@ -232,6 +232,47 @@ def status() -> None:
     checks_total += 2
     console.print()
 
+    # ── Autonomy ──────────────────────────────────────────
+    from .core.approval_bridge import ApprovalStore
+    from .execution import ExecutionStore
+
+    approval_store = ApprovalStore(_DB_PATH)
+    pending_approvals = approval_store.count_pending()
+    latest_receipts = ExecutionStore(_DB_PATH).list_receipts(limit=1)
+
+    console.print("  [bold]Autonomy[/bold]")
+    console.print(f"  [dim]{'─' * 42}[/dim]")
+    if pending_approvals:
+        console.print(
+            f"  {_dot(False, warn=True)}  [dim]approvals [/dim]  "
+            f"[{_YELLOW}]{pending_approvals} pending[/{_YELLOW}]"
+            "  [dim]-- opencobalt approvals list[/dim]"
+        )
+    else:
+        console.print(f"  {_dot(True)}  [dim]approvals [/dim]  none pending")
+        checks_ok += 1
+    checks_total += 1
+    if latest_receipts:
+        verification = latest_receipts[0].verification_status
+        receipt_ok = verification != "failed"
+        console.print(
+            f"  {_dot(receipt_ok)}  [dim]receipt   [/dim]  "
+            f"latest {verification}  [dim]·  {latest_receipts[0].receipt_id[:12]}[/dim]"
+        )
+        checks_ok += 1 if receipt_ok else 0
+    else:
+        console.print(
+            f"  {_dot(True)}  [dim]receipt   [/dim]  [dim]none yet -- opencobalt run \"hello\" --runtime noop[/dim]"
+        )
+        checks_ok += 1
+    checks_total += 1
+    blocking = None
+    for request in approval_store.list_requests(state="pending", limit=1):
+        blocking = _next_blocking_action(request)
+    if blocking:
+        console.print(f"     [dim]next      [/dim]  {blocking}")
+    console.print()
+
     # ── Docs ──────────────────────────────────────────────
     readme_ok = Path("README.md").exists()
     docs_ok = Path("docs").is_dir()
