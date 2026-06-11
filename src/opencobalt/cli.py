@@ -117,6 +117,11 @@ opportunities_app = typer.Typer(
 )
 app.add_typer(opportunities_app, name="opportunities")
 
+approvals_app = typer.Typer(
+    help="Approval bridge: authorize opportunity plans for policy-gated execution."
+)
+app.add_typer(approvals_app, name="approvals")
+
 console = Console()
 err = Console(stderr=True)
 
@@ -3413,9 +3418,11 @@ def opportunities_report(
 def opportunities_plan(
     track_id: str = typer.Argument(..., help="Track id (full or unique prefix)"),
     run_id: str | None = typer.Option(None, "--run", help="Run id (default: resolve by track)"),
+    new: bool = typer.Option(False, "--new", help="Build a fresh plan even if one exists"),
 ) -> None:
     """Create a policy-aware delegation plan for one track. Never executes:
-    risky steps stay pending until approved through the execution gate."""
+    risky steps stay pending until approved through the execution gate.
+    Idempotent: an existing plan is reused unless --new is passed."""
     store = _opportunity_store()
     run = store.get_run(run_id) if run_id else store.find_run_for_track(track_id)
     if run is None:
@@ -3427,7 +3434,7 @@ def opportunities_plan(
         raise typer.Exit(1)
 
     engine = _opportunity_engine()
-    plan = engine.plan_track(run, track.track_id)
+    plan = engine.plan_track(run, track.track_id, new=new)
 
     console.print(f"\n  [bold]Plan[/bold] {plan.plan_id}  [dim]track:[/dim] {track.name}")
     console.print(
@@ -3499,3 +3506,348 @@ def opportunities_outcome(
         err.print(f"  [red]{exc}[/red]")
         raise typer.Exit(1) from None
     console.print(f"\n  [bold]Outcome recorded:[/bold] {outcome_id} ({outcome})\n")
+
+
+# --- Approval bridge commands ---
+
+
+def _approval_bridge():
+    from .core.approval_bridge import ApprovalBridge
+
+    return ApprovalBridge(db_path=_DB_PATH)
+
+
+_APPROVAL_STATE_COLORS = {
+    "pending": _YELLOW,
+    "approved": _GREEN,
+    "rejected": _RED,
+    "executed": _GREEN,
+    "failed": _RED,
+    "superseded": "dim",
+}
+
+
+def _approval_state_str(state: str) -> str:
+    color = _APPROVAL_STATE_COLORS.get(state, "dim")
+    return f"[{color}]{state}[/{color}]"
+
+
+def _print_request_steps(request) -> None:
+    console.print("  [dim]Steps:[/dim]")
+    for step in request.steps:
+        line = (
+            f"    {step.step_id[:13]}  [{_risk_str(step.risk_level)}]"
+            f"  {_approval_state_str(step.approval_state)}  {step.task[:56]}"
+        )
+        if step.blocked:
+            line += f"  [{_RED}]blocked[/{_RED}]"
+        console.print(line)
+        if step.execution_plan_id:
+            console.print(f"        [dim]exec plan:[/dim] {step.execution_plan_id[:14]}")
+        if step.receipt_id:
+            console.print(f"        [dim]receipt:[/dim]   {step.receipt_id[:14]}")
+
+
+def _next_blocking_action(request) -> str | None:
+    """One-line hint for the next command that unblocks this request."""
+    rid = request.request_id[:13]
+    for step in request.steps:
+        if step.approval_state == "pending" and not step.blocked:
+            return f"opencobalt approvals approve {rid} --step {step.step_id[:13]}"
+    for step in request.steps:
+        if step.approval_state == "approved":
+            return f"opencobalt approvals run {rid} --execute"
+    if any(s.approval_state == "executed" for s in request.steps):
+        return f"opencobalt approvals outcome {rid} useful"
+    return None
+
+
+@approvals_app.command("list")
+def approvals_list(
+    state: str | None = typer.Option(None, "--state", help="Filter by request state"),
+    limit: int = typer.Option(20, "--limit", help="Max requests to show"),
+) -> None:
+    """List approval requests, newest first."""
+    requests = _approval_bridge().store.list_requests(state=state, limit=limit)
+    if not requests:
+        console.print(
+            "\n  [dim]No approval requests yet. "
+            "Try: opencobalt opportunities approve <TRACK_ID>[/dim]\n"
+        )
+        return
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Request", style="dim", max_width=16)
+    table.add_column("Track")
+    table.add_column("Risk")
+    table.add_column("State")
+    table.add_column("Steps", justify="right")
+    table.add_column("Goal", style="dim", max_width=40)
+    for request in requests:
+        done = sum(1 for s in request.steps if s.approval_state == "executed")
+        approved = sum(1 for s in request.steps if s.approval_state == "approved")
+        table.add_row(
+            request.request_id[:14],
+            request.track_name,
+            _risk_str(request.risk_level),
+            _approval_state_str(request.state),
+            f"{done} run / {approved} ok / {len(request.steps)}",
+            request.goal_text[:48],
+        )
+    console.print()
+    console.print(table)
+    console.print(f"  [dim]{len(requests)} request(s). Inspect: opencobalt approvals show <id>[/dim]\n")
+
+
+@approvals_app.command("show")
+def approvals_show(
+    request_id: str = typer.Argument(..., help="Approval request id (full or prefix)"),
+) -> None:
+    """Show one approval request: steps, states, and linked execution."""
+    bridge = _approval_bridge()
+    request = bridge.store.get_request(request_id)
+    if request is None:
+        err.print(f"  [red]Approval request not found: {request_id}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n  [bold]Approval request[/bold] {request.request_id}")
+    console.print(f"  [dim]Goal:[/dim] {request.goal_text[:90]}")
+    console.print(
+        f"  [dim]Track:[/dim] {request.track_name} ({request.track_id[:14]})"
+        f"  [dim]Plan:[/dim] {request.opportunity_plan_id[:14]}"
+    )
+    score = f"{request.score_total:.3f}" if request.score_total is not None else "-"
+    console.print(
+        f"  [dim]Risk:[/dim] {_risk_str(request.risk_level)}"
+        f"  [dim]State:[/dim] {_approval_state_str(request.state)}"
+        f"  [dim]Score:[/dim] {score}"
+        f"  [dim]Evidence:[/dim] {len(request.evidence_ids)}"
+    )
+    _print_request_steps(request)
+    decisions = bridge.store.list_decisions(request.request_id)
+    if decisions:
+        console.print("  [dim]Decisions:[/dim]")
+        for decision in decisions:
+            reason = f" ({decision.reason})" if decision.reason else ""
+            console.print(
+                f"    {decision.decision} by {decision.decided_by}"
+                f" on {decision.step_id[:13] if decision.step_id else 'request'}{reason}"
+            )
+    action = _next_blocking_action(request)
+    if action:
+        console.print(f"  [dim]Next:[/dim] {action}")
+    console.print(f"  [dim]Lineage:[/dim] opencobalt why {request.request_id[:13]}\n")
+
+
+@approvals_app.command("approve")
+def approvals_approve(
+    request_id: str = typer.Argument(..., help="Approval request id"),
+    step: str | None = typer.Option(None, "--step", help="Approve only this step id"),
+    reason: str = typer.Option("", "--reason", help="Why this was approved"),
+) -> None:
+    """Approve a request's steps (or one step). Black risk cannot be approved."""
+    from .core.approval_bridge import ApprovalError
+
+    bridge = _approval_bridge()
+    try:
+        approved = bridge.approve(request_id, step_id=step, reason=reason)
+    except KeyError as exc:
+        err.print(f"  [red]{exc.args[0]}[/red]")
+        raise typer.Exit(1) from None
+    except ApprovalError as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from None
+
+    request = bridge.store.get_request(request_id)
+    if not approved:
+        console.print("\n  [dim]Nothing newly approved (already decided or blocked).[/dim]")
+    else:
+        console.print(f"\n  [bold]Approved {len(approved)} step(s):[/bold]")
+        for s in approved:
+            console.print(f"    {s.step_id[:13]}  [{_risk_str(s.risk_level)}]  {s.task[:60]}")
+    if request is not None:
+        console.print(f"  [dim]Request state:[/dim] {_approval_state_str(request.state)}")
+        action = _next_blocking_action(request)
+        if action:
+            console.print(f"  [dim]Next:[/dim] {action}")
+    console.print()
+
+
+@approvals_app.command("reject")
+def approvals_reject(
+    request_id: str = typer.Argument(..., help="Approval request id"),
+    step: str | None = typer.Option(None, "--step", help="Reject only this step id"),
+    reason: str = typer.Option("", "--reason", help="Why this was rejected"),
+) -> None:
+    """Reject a request's steps (or one step)."""
+    bridge = _approval_bridge()
+    try:
+        rejected = bridge.reject(request_id, step_id=step, reason=reason)
+    except KeyError as exc:
+        err.print(f"  [red]{exc.args[0]}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"\n  [bold]Rejected {len(rejected)} step(s).[/bold]")
+    request = bridge.store.get_request(request_id)
+    if request is not None:
+        console.print(f"  [dim]Request state:[/dim] {_approval_state_str(request.state)}")
+    console.print()
+
+
+@approvals_app.command("run")
+def approvals_run(
+    request_id: str = typer.Argument(..., help="Approval request id"),
+    step: str | None = typer.Option(None, "--step", help="Run only this step id"),
+    runtime: str | None = typer.Option(
+        None, "--runtime", help="Runtime id (google-antigravity, ollama, noop). Routed if omitted."
+    ),
+    execute: bool = typer.Option(False, "--execute", help="Actually run (default is dry-run)"),
+    yes: bool = typer.Option(False, "--yes", help="Approve red-risk execution explicitly"),
+    rerun: bool = typer.Option(False, "--rerun", help="Run a step again even if already executed"),
+) -> None:
+    """Hand approved steps to the execution engine, one receipt per step.
+
+    The existing policy gate stays in charge: dry-run by default, --execute
+    for green/yellow, --execute --yes for red, black blocked. Unapproved
+    steps are refused with the command that would approve them.
+    """
+    bridge = _approval_bridge()
+    engine = _execution_engine()
+    try:
+        reports = bridge.run_steps(
+            request_id,
+            engine=engine,
+            step_id=step,
+            runtime=runtime,
+            execute=execute,
+            approved=yes,
+            rerun=rerun,
+        )
+    except KeyError as exc:
+        err.print(f"  [red]{exc.args[0]}[/red]")
+        raise typer.Exit(1) from None
+
+    request = bridge.store.get_request(request_id)
+    console.print(f"\n  [bold]Approval run[/bold] {request.request_id if request else request_id}")
+    refused = 0
+    for report in reports:
+        s = report.step
+        if report.action == "executed":
+            result = report.outcome.result
+            status_color = _GREEN if result and result.status == "succeeded" else _RED
+            console.print(
+                f"    {s.step_id[:13]}  [{status_color}]{report.action}[/{status_color}]"
+                f"  {s.task[:48]}"
+            )
+            console.print(
+                f"        [dim]receipt:[/dim] {s.receipt_id}"
+                f"  [dim]verification:[/dim] {report.outcome.receipt.verification_status}"
+            )
+        elif report.action == "dry_run":
+            console.print(f"    {s.step_id[:13]}  [dim]dry-run[/dim]  {s.task[:48]}")
+            console.print(
+                f"        [dim]plan:[/dim] {s.execution_plan_id[:14]}"
+                f"  [dim]receipt:[/dim] {s.receipt_id[:14]}"
+                "  [dim](no subprocess started)[/dim]"
+            )
+        elif report.action in ("refused", "blocked"):
+            refused += 1
+            console.print(
+                f"    {s.step_id[:13]}  [{_RED}]{report.action}[/{_RED}]  {s.task[:48]}"
+            )
+            console.print(f"        [dim]{report.reason}[/dim]")
+        else:  # skipped
+            console.print(f"    {s.step_id[:13]}  [dim]skipped[/dim]  {report.reason}")
+    if not execute and any(r.action == "dry_run" for r in reports):
+        console.print("  [dim]Dry-run only. Add --execute to run for real.[/dim]")
+    if request is not None:
+        console.print(f"  [dim]Request state:[/dim] {_approval_state_str(request.state)}")
+        action = _next_blocking_action(request)
+        if action:
+            console.print(f"  [dim]Next:[/dim] {action}")
+    console.print()
+    if refused and execute:
+        raise typer.Exit(2)
+
+
+@approvals_app.command("outcome")
+def approvals_outcome(
+    request_id: str = typer.Argument(..., help="Approval request id"),
+    outcome: str = typer.Argument(..., help="useful / neutral / wasted / abandoned"),
+    notes: str | None = typer.Option(None, "--notes", help="Free-form outcome notes"),
+) -> None:
+    """Record an outcome for the opportunity track behind an approval request.
+
+    Links the latest executed step's receipt as evidence, closing the loop
+    from approval back into opportunity outcome history.
+    """
+    bridge = _approval_bridge()
+    request = bridge.store.get_request(request_id)
+    if request is None:
+        err.print(f"  [red]Approval request not found: {request_id}[/red]")
+        raise typer.Exit(1)
+    receipt_id = None
+    for s in request.steps:
+        if s.receipt_id and s.approval_state in ("executed", "failed"):
+            receipt_id = s.receipt_id
+    try:
+        outcome_id = _opportunity_store().record_outcome(
+            request.track_id,
+            outcome=outcome,
+            plan_id=request.opportunity_plan_id,
+            receipt_id=receipt_id,
+            notes=notes,
+        )
+    except ValueError as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from None
+    console.print(f"\n  [bold]Outcome recorded:[/bold] {outcome_id} ({outcome})")
+    console.print(f"  [dim]Track:[/dim] {request.track_id[:14]}")
+    if receipt_id:
+        console.print(f"  [dim]Receipt evidence:[/dim] {receipt_id[:14]}")
+    console.print()
+
+
+@opportunities_app.command("approve")
+def opportunities_approve(
+    source_id: str = typer.Argument(..., help="Track or opportunity plan id (full or prefix)"),
+    run_id: str | None = typer.Option(None, "--run", help="Run id (default: resolve by source)"),
+    new: bool = typer.Option(False, "--new", help="Supersede any existing request for this source"),
+) -> None:
+    """Promote an opportunity track or plan into an approval request.
+
+    Builds the plan first if the track has none (planning only). Green
+    steps are auto-approved by policy; yellow/red wait for explicit
+    approval; black stays blocked. Nothing executes here.
+    """
+    store = _opportunity_store()
+    if run_id:
+        run = store.get_run(run_id)
+    else:
+        run = store.find_run_for_track(source_id) or store.find_run_for_plan(source_id)
+    if run is None:
+        err.print(f"  [red]No run found containing track or plan: {source_id}[/red]")
+        raise typer.Exit(1)
+
+    bridge = _approval_bridge()
+    try:
+        request, created = bridge.promote(
+            run, source_id, new=new, opportunity_store=store
+        )
+    except KeyError as exc:
+        err.print(f"  [red]{exc.args[0]}[/red]")
+        raise typer.Exit(1) from None
+
+    verb = "created" if created else "reused (pass --new to supersede)"
+    console.print(f"\n  [bold]Approval request {verb}:[/bold] {request.request_id}")
+    console.print(
+        f"  [dim]Track:[/dim] {request.track_name} ({request.track_id[:14]})"
+        f"  [dim]Risk:[/dim] {_risk_str(request.risk_level)}"
+        f"  [dim]State:[/dim] {_approval_state_str(request.state)}"
+    )
+    _print_request_steps(request)
+    rid = request.request_id[:13]
+    console.print("  [dim]Next commands:[/dim]")
+    console.print(f"    opencobalt approvals show {rid}")
+    action = _next_blocking_action(request)
+    if action:
+        console.print(f"    {action}")
+    console.print(f"    opencobalt why {rid}\n")

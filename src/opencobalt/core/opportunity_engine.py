@@ -1004,11 +1004,21 @@ class OpportunityEngine:
             run.tracks, key=lambda t: totals.get(t.track_id, 0.0), reverse=True
         )
 
-    def plan_track(self, run: OpportunityRun, track_id: str) -> OpportunityPlan:
-        """Build (and persist) the non-executing plan for one track."""
+    def plan_track(
+        self, run: OpportunityRun, track_id: str, *, new: bool = False
+    ) -> OpportunityPlan:
+        """Build (and persist) the non-executing plan for one track.
+
+        Idempotent by default: if the track already has a plan in this run,
+        it is reused. Pass new=True to build a replacement plan.
+        """
         track = run.get_track(track_id)
         if track is None:
             raise KeyError(f"unknown track: {track_id}")
+        if not new and track.plan_id:
+            for existing in run.plans:
+                if existing.plan_id == track.plan_id:
+                    return existing
         plan = build_opportunity_plan(
             track, run.goal, registry=self.registry, max_depth=self.max_depth
         )

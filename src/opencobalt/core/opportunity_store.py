@@ -129,6 +129,15 @@ class OpportunityStore:
             ).fetchone()
         return self.get_run(row["run_id"]) if row else None
 
+    def find_run_for_plan(self, plan_id: str) -> OpportunityRun | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT run_id FROM opportunity_tracks "
+                "WHERE plan_id = ? OR plan_id LIKE ?",
+                (plan_id, f"{plan_id}%"),
+            ).fetchone()
+        return self.get_run(row["run_id"]) if row else None
+
     # --- Outcomes (feedback for future learned routing) ---
 
     def record_outcome(
