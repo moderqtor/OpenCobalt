@@ -53,7 +53,7 @@ class TestsGate:
 
 
 class VerifierGate:
-    """Send diff to critic agent (Gemini or Claude). Injectable for testing."""
+    """Send diff to a critic agent runtime. Injectable for testing."""
 
     def __init__(
         self,
@@ -68,7 +68,7 @@ class VerifierGate:
 
         from .council import consult_subprocess
 
-        model = "gemini" if shutil.which("gemini") else "claude"
+        model = "antigravity" if shutil.which("agy") else "claude"
         return consult_subprocess(prompt, model=model, intent="advise", timeout=60)
 
     def check(self, task: str, diff: str) -> tuple[bool, float, str]:

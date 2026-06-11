@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 
 _DEFAULT_DB = Path(".opencobalt") / "artifacts.db"
@@ -49,6 +52,19 @@ class ArtifactType:
     RANKED_PLAN = "ranked_plan"
 
 
+WORK_ARTIFACT_TYPES = {
+    "plan",
+    "task_list",
+    "screenshot",
+    "browser_recording",
+    "diff",
+    "test_output",
+    "log",
+    "report",
+    "unknown",
+}
+
+
 @dataclass
 class AgentArtifact:
     id: str
@@ -60,6 +76,42 @@ class AgentArtifact:
     content: str
     metadata: dict
     timestamp: float
+
+
+@dataclass
+class WorkArtifact:
+    artifact_id: str
+    session_id: str
+    source_runtime: str
+    artifact_type: str
+    path: str
+    sha256: str
+    created_at: str
+    summary: str = ""
+
+
+def build_work_artifact(
+    path: Path,
+    *,
+    session_id: str,
+    source_runtime: str,
+    artifact_type: str,
+    summary: str = "",
+) -> WorkArtifact:
+    """Create a hashable work artifact record for a local file path."""
+    resolved = path.expanduser().resolve()
+    digest = sha256(resolved.read_bytes()).hexdigest()
+    normalized_type = artifact_type if artifact_type in WORK_ARTIFACT_TYPES else "unknown"
+    return WorkArtifact(
+        artifact_id=str(uuid.uuid4()),
+        session_id=session_id,
+        source_runtime=source_runtime,
+        artifact_type=normalized_type,
+        path=str(path),
+        sha256=digest,
+        created_at=datetime.now(tz=timezone.utc).isoformat(),
+        summary=summary,
+    )
 
 
 class ArtifactBus:

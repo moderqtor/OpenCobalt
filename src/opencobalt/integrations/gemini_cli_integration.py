@@ -1,21 +1,18 @@
-"""Integration for Gemini CLI -- Google's long-context AI tool."""
+"""Legacy compatibility shim for deprecated Gemini CLI integration naming."""
 
 from __future__ import annotations
 
-import shutil
+import warnings
 
-from .base_integration import BaseIntegration
+from .antigravity_integration import AntigravityIntegration
 
 
-class GeminiCLIIntegration(BaseIntegration):
-    name = "gemini-cli"
-    description = "Long-context AI CLI by Google (codebase-wide analysis)"
-    source_url = "https://github.com/google-gemini/gemini-cli"
-    tier = "executive"
-    capabilities = ["long-context", "search", "analyze", "audit"]
+class GeminiCLIIntegration(AntigravityIntegration):
+    """Deprecated alias for Google Antigravity CLI."""
 
-    def install_check(self) -> bool:
-        return shutil.which("gemini") is not None
-
-    def invoke(self, task: str) -> str:
-        return f"gemini '{task[:60]}' (stub -- run manually if gemini-cli is installed)"
+    def __init__(self) -> None:
+        warnings.warn(
+            "Gemini CLI integration is legacy; use google-antigravity with the agy command.",
+            DeprecationWarning,
+            stacklevel=2,
+        )

@@ -20,7 +20,7 @@ def test_route_returns_decision(router: LearningRouter) -> None:
     assert decision.recommended_tool in (
         "claude-code",
         "codex-cli",
-        "gemini-cli",
+        "google-antigravity",
         "cursor",
         "ollama",
     )

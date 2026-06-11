@@ -2,18 +2,18 @@
 
 ## Resume Bullets
 
-- Built OpenCobalt, a local-first AI orchestration CLI in Python that routes tasks across Claude Code, Codex CLI, Gemini CLI, Cursor, and Ollama using a deterministic scoring router with tiered model classification and a SQLite session ledger
-- Implemented persistent agent memory with SQLite-backed MemoryBridge, session observability tracking, agent benchmarking with composite scoring, and repo-hygiene public-check tooling; 244 tests, ruff lint clean, GitHub Actions CI
+- Built OpenCobalt, a local-first AI orchestration CLI in Python that routes tasks across Google Antigravity CLI, Claude Code, Codex CLI, Cursor, and Ollama using a deterministic scoring router with runtime policy metadata and a SQLite session ledger
+- Implemented persistent agent memory with SQLite-backed MemoryBridge, session observability tracking, agent benchmarking with composite scoring, and repo-hygiene public-check tooling; pytest coverage, ruff linting, and GitHub Actions CI
 
 ## LinkedIn Bullets
 
-- Designed OpenCobalt's routing tier system, which separates worker-tier local LLMs (Ollama) from executive-tier AI tools (Claude, Codex, Gemini) based on task risk and reversibility
+- Designed OpenCobalt's routing tier system, which separates worker-tier local LLMs (Ollama) from executive and manager-tier agent runtimes based on task risk and reversibility
 - Built a clean public repo from private AI infrastructure work by writing a systematic extraction audit, identifying credential leakage risks in source material, and rewriting extracted code rather than copying it
 - Applied an applied analytics mindset to AI orchestration: route decisions are scored numerically, recorded to SQLite, tagged with session IDs, and surfaced via a stats command
 
 ## GitHub Pinned Description
 
-Local-first AI orchestration and memory control plane. Routes tasks across Claude Code, Gemini CLI, Cursor, Aider, Context7, and Ollama. SQLite ledger, deterministic router, agents and skills registries, session tracking, public safety scanner, live React dashboard. Python, Pydantic, Typer. 244 tests.
+Local-first AI orchestration and memory control plane. Routes tasks across Google Antigravity CLI, Claude Code, Codex CLI, Cursor, Aider, Context7, and Ollama. SQLite ledger, deterministic router, agents and skills registries, session tracking, public safety scanner, live React dashboard. Python, Pydantic, Typer.
 
 ## Recruiter Explanation (30 seconds)
 
@@ -27,7 +27,7 @@ The system includes an agents registry, a skills registry, and an integrations r
 
 The architectural constraint is tier separation: local Ollama models are worker-tier only (summarization, tagging, extraction) and are explicitly excluded from executive-tier tasks (architecture decisions, security review, public-facing content). This was a deliberate design choice, not a default.
 
-Ruff runs in CI. 244 tests cover units, ledger integration, router logic, and CLI commands.
+Ruff and pytest run in CI. Tests cover units, ledger integration, router logic, and CLI commands.
 
 ## What Not to Overclaim
 

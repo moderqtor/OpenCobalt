@@ -2,8 +2,9 @@
 
 ## Overview
 
-OpenCobalt is a local-first control plane. It does not replace the AI tools you use -- it
-coordinates them, logs their results, and routes future work based on what has worked before.
+OpenCobalt is a local-first control and provenance layer for AI work. It does not replace the
+agent runtimes you use -- it coordinates them, logs their results, preserves project memory,
+and routes future work based on deterministic policy and verification needs.
 
 The core is a Python package (`opencobalt`) with a Typer CLI. No persistent background daemons. The `opencobalt ui` command starts a local FastAPI server and Vite dev server on demand; both stop when the command exits. No external calls unless explicitly configured.
 
@@ -60,7 +61,8 @@ src/opencobalt/
     aider_integration.py       shutil.which("aider"); worker tier
     ollama_integration.py      subprocess check; worker tier
     claude_code_integration.py shutil.which("claude"); executive tier
-    gemini_cli_integration.py  shutil.which("gemini"); executive tier
+    antigravity_integration.py shutil.which("agy"); executive agent runtime
+    gemini_cli_integration.py  deprecated compatibility shim
     cursor_integration.py      GUI app stub; manager tier; status=available
     context7_integration.py    MCP server stub; manager tier; status=available
 ui/
@@ -107,7 +109,7 @@ opencobalt benchmark status
 
 | Tier | Tools | Task types |
 |------|-------|------------|
-| executive | Claude Code, Gemini CLI | Architecture, security, final code, public docs, strategy |
+| executive | Google Antigravity CLI, Claude Code | Agent-runtime workflows, architecture, security, final code, public docs, strategy |
 | manager | Codex CLI, Cursor, Context7 | Tests, lint, structured cleanup, UI work, editor tasks |
 | worker | Ollama (local only) | Summarization, tagging, extraction, rough drafts, local fallback |
 
@@ -257,9 +259,22 @@ declares:
 | aider | worker | shutil.which("aider") | stub if not installed |
 | ollama | worker | subprocess ollama list | stub if not installed |
 | claude-code | executive | shutil.which("claude") | stub if not installed |
-| gemini-cli | executive | shutil.which("gemini") | stub if not installed |
+| google-antigravity | executive | shutil.which("agy") | primary Google agent runtime |
 | cursor | manager | not checkable via PATH | always available |
 | context7 | manager | not checkable via PATH | always available |
+
+Legacy Gemini CLI aliases resolve to `google-antigravity` with a deprecation warning. Gemini is still valid as a model-family label in model policy and cost tracking.
+
+## Runtime Discovery
+
+`opencobalt doctor antigravity` inspects Google Antigravity CLI without relying on undocumented flags:
+
+1. `command -v agy` equivalent via PATH lookup
+2. `agy --version`
+3. `agy --help`
+4. Runtime-discovered evidence for non-interactive mode, model selection, plugins, sandboxing, and related capabilities
+
+Unknown capabilities are stored as `unknown`. OpenCobalt does not assume Antigravity browser verification, artifact paths, skills, hooks, subagents, or private storage locations until local runtime evidence exists.
 
 ## Cost Control
 

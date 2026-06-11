@@ -2,9 +2,10 @@
 
 ## What this does
 
-You use multiple AI tools (Claude Code, Codex, Gemini, Cursor, Ollama) and lose context
-between sessions. OpenCobalt routes your tasks to the right tool, logs everything to a
-local SQLite ledger, and lets you search your own history.
+You use multiple AI tools and agent runtimes (Google Antigravity CLI, Claude Code,
+Codex, Cursor, Ollama) and lose context between sessions. OpenCobalt routes your
+tasks to the right runtime, logs everything to a local SQLite ledger, and lets you
+search your own history.
 
 No API calls by default. No cloud services. Runs and exits like a normal CLI.
 
@@ -113,7 +114,7 @@ Route, work, log, search. That's it.
 
 ```bash
 opencobalt session start "auth-refactor"
-# ... work across Claude Code, Codex, Gemini ...
+# ... work across Google Antigravity, Claude Code, Codex ...
 opencobalt note "split auth into 3 modules, decided against JWT"
 opencobalt session end
 ```
@@ -185,6 +186,7 @@ opencobalt config list             List all config keys
 # System
 opencobalt status                  Full system health check
 opencobalt doctor                  Extended health check with CI and examples
+opencobalt doctor antigravity      Inspect local agy runtime discovery
 opencobalt tui                     Live 4-panel terminal dashboard
 opencobalt ui                      Start React dashboard + FastAPI server
 opencobalt export                  Export full ledger to markdown
@@ -212,4 +214,5 @@ The router and ledger work without Ollama.
 - Full architecture: `docs/ARCHITECTURE.md`
 - How routing works: `docs/TOOL_ROUTING.md`
 - Integration setup: `docs/INTEGRATIONS.md`
+- Google Antigravity migration: `docs/ANTIGRAVITY.md`
 - Khoj second brain: `docs/KHOJ_INTEGRATION.md`

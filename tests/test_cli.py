@@ -88,6 +88,58 @@ class TestStatus:
         assert "Ledger" in result.output, _debug(result)
 
 
+class TestDoctorAntigravity:
+    def test_antigravity_doctor_reports_missing_cleanly(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.integrations.antigravity_integration.discover_antigravity_runtime",
+            lambda ledger=None: {
+                "installed": False,
+                "path": None,
+                "version": {"ok": False, "value": None, "error": "agy not on PATH"},
+                "help": {"ok": False, "value": "", "error": "agy not on PATH"},
+                "capabilities": {
+                    "non_interactive_mode": {"supported": None, "source": "unknown", "evidence": ""},
+                    "model_selection": {"supported": None, "source": "unknown", "evidence": ""},
+                    "plugin_support": {"supported": None, "source": "unknown", "evidence": ""},
+                    "skills_hooks_subagents": {"supported": None, "source": "unknown", "evidence": ""},
+                    "artifact_locations": {"supported": None, "source": "unknown", "evidence": ""},
+                },
+            },
+        )
+        result = _invoke("doctor", "antigravity")
+        plain = _plain(result.output)
+        assert result.exit_code == 0, _debug(result)
+        assert "Google Antigravity CLI" in plain
+        assert "agy not on PATH" in plain
+
+    def test_antigravity_doctor_reports_discovered_capabilities(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.integrations.antigravity_integration.discover_antigravity_runtime",
+            lambda ledger=None: {
+                "installed": True,
+                "path": "/usr/local/bin/agy",
+                "version": {"ok": True, "value": "1.0.6", "error": ""},
+                "help": {"ok": True, "value": "--print --model plugin", "error": ""},
+                "capabilities": {
+                    "non_interactive_mode": {"supported": True, "source": "runtime_discovered", "evidence": "--print"},
+                    "model_selection": {"supported": True, "source": "runtime_discovered", "evidence": "--model"},
+                    "plugin_support": {"supported": True, "source": "runtime_discovered", "evidence": "plugin"},
+                    "skills_hooks_subagents": {"supported": None, "source": "unknown", "evidence": ""},
+                    "artifact_locations": {"supported": None, "source": "unknown", "evidence": ""},
+                },
+            },
+        )
+        result = _invoke("doctor", "antigravity")
+        plain = _plain(result.output)
+        assert result.exit_code == 0, _debug(result)
+        assert "/usr/local/bin/agy" in plain
+        assert "1.0.6" in plain
+        assert "non_interactive_mode" in plain
+        assert "runtime_discovered" in plain
+
+
 # ── route command ─────────────────────────────────────────────────────────────
 
 class TestRoute:

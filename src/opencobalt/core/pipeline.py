@@ -30,7 +30,9 @@ class PipelineResult:
 _BINARY_MAP = {
     "claude": "claude",
     "codex": "codex",
-    "gemini": "gemini",
+    "antigravity": "agy",
+    "agy": "agy",
+    "gemini": "agy",
 }
 
 

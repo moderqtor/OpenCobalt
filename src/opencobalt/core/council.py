@@ -52,7 +52,7 @@ class CouncilSession:
 _BINARY_CMDS: dict[str, list[str]] = {
     "claude": ["claude", "--print"],
     "codex": ["codex", "exec"],
-    "gemini": ["gemini", "--print"],
+    "antigravity": [],
     "ollama": [],  # filled dynamically
 }
 
@@ -60,14 +60,15 @@ _BINARY_CMDS: dict[str, list[str]] = {
 _AUTONOMOUS_FLAGS: dict[str, list[str]] = {
     "claude": ["--dangerously-skip-permissions"],
     "codex": ["--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access"],
-    "gemini": [],  # gemini --print already non-interactive
+    "antigravity": [],
     "ollama": [],
 }
 
 _INSTALL_HINTS: dict[str, str] = {
     "claude": "npm install -g @anthropic-ai/claude-code",
     "codex": "npm install -g @openai/codex",
-    "gemini": "npm install -g @google/gemini-cli",
+    "gemini": "Gemini CLI is legacy; use google-antigravity with agy",
+    "antigravity": "Install Google Antigravity CLI and run agy install",
     "ollama": "brew install ollama && ollama pull llama3",
 }
 
@@ -130,9 +131,22 @@ def _ollama_cmd() -> list[str]:
     return ["ollama", "run", _best_ollama_model()]
 
 
+def _antigravity_cmd() -> list[str]:
+    from opencobalt.integrations.antigravity_integration import discover_antigravity_runtime
+
+    result = discover_antigravity_runtime()
+    capability = result["capabilities"]["non_interactive_mode"]
+    evidence = capability.get("evidence")
+    if result["installed"] and capability["source"] == "runtime_discovered" and evidence in {"--print", "--prompt"}:
+        return ["agy", str(evidence)]
+    return []
+
+
 def _cmd_for(model: str, autonomous: bool = False) -> list[str]:
     if model == "ollama":
         return _ollama_cmd()
+    if model in {"antigravity", "google-antigravity", "gemini"}:
+        return _antigravity_cmd()
     base = list(_BINARY_CMDS.get(model, [model]))
     if autonomous:
         # Insert autonomy flags after the binary, before the subcommand

@@ -22,14 +22,14 @@ _console = Console()
 _BINARY_MAP: dict[str, str] = {
     "claude-code": "claude",
     "codex-cli": "codex",
-    "gemini-cli": "gemini",
+    "google-antigravity": "agy",
     "ollama": "ollama",
 }
 
 _TOOL_TO_MODEL: dict[str, str] = {
     "claude-code": "claude",
     "codex-cli": "codex",
-    "gemini-cli": "gemini",
+    "google-antigravity": "antigravity",
     "ollama": "ollama",
 }
 
@@ -390,10 +390,12 @@ class OrchestrationSession:
     def _build_explicit_subtasks(self, task: str, agents: list[str]) -> list[SubTask]:
         _AGENT_TO_TOOL = {
             "claude": "claude-code", "codex": "codex-cli",
-            "gemini": "gemini-cli", "ollama": "ollama",
+            "antigravity": "google-antigravity", "agy": "google-antigravity",
+            "gemini": "google-antigravity", "ollama": "ollama",
         }
         _AGENT_TO_TYPE = {
             "claude": "impl", "codex": "tests",
+            "antigravity": "analyze", "agy": "analyze",
             "gemini": "analyze", "ollama": "summarize",
         }
         return [

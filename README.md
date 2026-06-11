@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-OpenCobalt is a local-first orchestration control plane for AI coding tools. It routes tasks to Claude Code, Codex CLI, Gemini CLI, Cursor, and Ollama with deterministic scoring, records decisions in SQLite, and exposes shell, CLI, dashboard, telemetry, and export workflows.
+OpenCobalt is a local-first control and provenance layer for AI work. It routes across agent runtimes, records verifiable work receipts, preserves project memory, and enforces policy across tools such as Google Antigravity CLI, Claude Code, Codex, Aider, and Ollama.
 
 It is not a chatbot, hosted service, or API proxy. The default configuration makes no API calls. Ollama and external CLI tools are optional and degrade gracefully when unavailable. OpenCobalt supports routing, diagnostics, audit logging, integration discovery, and receipt-backed execution: policy-gated one-shot runs that capture output, hash artifacts, and write verifiable work receipts (see `docs/EXECUTION_LAYER.md`).
 
@@ -43,6 +43,7 @@ opencobalt history --limit 20                   # recent route decisions
 opencobalt stats                                # ledger analytics
 opencobalt verify                               # pytest plus public-check
 opencobalt public-check                         # pre-push safety scan
+opencobalt doctor antigravity                   # inspect local agy runtime
 opencobalt context                              # build a context pack
 opencobalt brief                                # session brief for handoff
 opencobalt ui                                   # dashboard at localhost:5173
@@ -113,11 +114,13 @@ No Postgres, Redis, vector database, or background daemon is required for core s
 
 | Tier | Tools | Typical work |
 |---|---|---|
-| executive | Claude Code, Gemini CLI, Antigravity CLI | Architecture, security review, final code, public docs |
+| executive | Google Antigravity CLI, Claude Code | Agent-runtime workflows, architecture, security review, final code, public docs |
 | manager | Codex CLI, Cursor, Context7, GitHub CLI | Tests, lint, cleanup, UI work, PR and issue workflows |
 | worker | Ollama, aider | Summaries, tags, extraction, local fallback |
 
 Ollama is worker-tier only and optional.
+
+Gemini CLI integration is deprecated. OpenCobalt now treats Google Antigravity CLI (`agy`) as the canonical Google agent runtime. Existing Gemini CLI config aliases remain supported temporarily and resolve to `google-antigravity` with a deprecation warning. Gemini remains a valid model-family name.
 
 ## Dashboard
 
@@ -130,7 +133,7 @@ The dashboard includes command routing, agents, telemetry scores, routing graph,
 
 ## Verification
 
-Current repository coverage includes 567 test functions across routing, ledger, memory, cost control, shell, telemetry, API, dashboard data, convergence, autonomy, and safety checks.
+The repository test suite covers routing, ledger, memory, cost control, shell, telemetry, API, dashboard data, convergence, autonomy, and safety checks.
 
 Common local checks:
 
@@ -165,6 +168,7 @@ src/opencobalt/
   agents/
   skills/
   integrations/
+    antigravity_integration.py Google Antigravity CLI discovery
 ui/
   src/App.jsx                React dashboard
   src/RoutingGraph.jsx       routing visualization

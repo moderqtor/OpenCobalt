@@ -1,6 +1,6 @@
 # Integrations
 
-OpenCobalt uses an integration system to register awareness of external tools without depending on them. Each integration is a slot -- it describes a tool, checks whether it is installed, and can return a description of what it would do with a given task. Integrations do not execute commands or make API calls on their own.
+OpenCobalt uses an integration system to register awareness of external tools without depending on them. Each integration is a slot -- it describes a tool or runtime, checks whether it is installed, and can return a description of what it would do with a given task. Integrations do not execute commands or make API calls on their own.
 
 ## What integrations are
 
@@ -18,12 +18,15 @@ Integrations are not dependencies. If the external tool is not installed, the in
 | aider | https://github.com/paul-gauthier/aider | worker | code editing | `shutil.which("aider")` | stub if not installed |
 | ollama | https://github.com/ollama/ollama | worker | local inference | `subprocess.run(["ollama", "list"])` returns 0 | stub if not installed |
 | claude-code | https://github.com/anthropics/claude-code | executive | architecture, code, review, debug, security | `shutil.which("claude")` | stub if not installed |
-| gemini-cli | https://github.com/google-gemini/gemini-cli | executive | long-context, search, analyze, audit | `shutil.which("gemini")` | stub if not installed |
-| antigravity-cli | https://antigravity.google/product/antigravity-cli | executive | long-context, search, analyze, multimodal | `shutil.which("antigravity")` | stub (successor to Gemini CLI) |
+| google-antigravity | https://antigravity.google/product/antigravity-cli | executive | agent-runtime, interactive-cli, runtime-discovered workflows | `shutil.which("agy")` plus `agy --version` and `agy --help` diagnostics | primary Google agent runtime |
 | cursor | https://www.cursor.com | manager | ui, editor, frontend, component, style | not checkable via PATH | always available |
 | context7 | https://github.com/upstash/context7 | manager | docs, search, mcp, library-context | not checkable via PATH | always available |
 | github-cli | https://github.com/cli/cli | manager | pr-create, issue-link, branch, review | `shutil.which("gh")` | stub if not installed |
 | obsidian | https://obsidian.md | manager | notes, knowledge-base, export, search | `/Applications/Obsidian.app` exists | available if installed |
+
+Legacy aliases `gemini-cli`, `gemini_cli`, `google-gemini-cli`, `legacy-gemini-cli`, and `antigravity-cli` resolve to `google-antigravity` with a deprecation warning. Gemini remains valid as a model-family name, for example `gemini-pro`, but Gemini CLI is no longer the canonical Google runtime.
+
+Use `opencobalt doctor antigravity` to inspect local `agy` behavior. OpenCobalt checks PATH, version, help output, and runtime-discovered evidence for non-interactive mode, model selection, plugins, sandboxing, and other capabilities. Unknown Antigravity features are reported as `unknown`, not guessed.
 
 ## Adding a new integration
 

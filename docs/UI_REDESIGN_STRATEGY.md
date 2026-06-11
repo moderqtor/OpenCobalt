@@ -22,7 +22,7 @@ Stitch is useful for taste and layout exploration. It should not be treated as p
 | Claude Design or Claude Code | Broad UI ideation and larger refactors | Strong for interaction copy and app structure. Verify carefully. |
 | Codex | Repo-integrated implementation, tests, CI, polish | Best for disciplined changes inside OpenCobalt. |
 | Cursor | Manual front-end iteration | Good when you want direct visual editing. |
-| Gemini CLI | Alternative design critique and docs review | Useful as a second opinion, not the sole implementer. |
+| Google Antigravity CLI | Browser-mediated UI validation, artifact capture, and design critique where locally supported | Use `opencobalt doctor antigravity` to confirm available runtime capabilities first. |
 | Google AI Studio | UI prototypes and prompt-driven variants | Useful for experiments, but keep production inside the repo. |
 
 ## CLI Redesign Scope

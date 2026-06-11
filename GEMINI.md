@@ -1,20 +1,21 @@
-# GEMINI.md -- Gemini CLI overlay
+# GEMINI.md -- legacy Gemini CLI overlay
 
 See AGENTS.md for the canonical policy (architecture constraints, safety rules,
 tiered model policy, and working commands).
 
-This file exists so Gemini CLI picks up the canonical policy via its hierarchical
-GEMINI.md discovery mechanism.
+This file exists so legacy Gemini CLI installs can pick up the canonical policy via
+their hierarchical GEMINI.md discovery mechanism. Google Antigravity CLI (`agy`) is
+the canonical Google agent runtime for OpenCobalt.
 
 ---
 
-## Gemini CLI notes
+## Legacy Gemini CLI notes
 
-- You are an executive-tier tool for this project. Handle architecture, security
-  analysis, large codebase questions, and final code review.
+- Gemini CLI integration is deprecated. Prefer `google-antigravity` / `agy` for
+  Google agent-runtime work.
 - Deterministic routing decisions are made without LLM calls. Do not override or
   second-guess the router output -- it is intentional.
 - All state is SQLite. Do not suggest adding Postgres, Redis, or vector databases
   as required dependencies.
 - Run `opencobalt public-check` before reporting any task as complete.
-- Baseline: 214 passing tests. All must stay green.
+- Keep the full test suite green.

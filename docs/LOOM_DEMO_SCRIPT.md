@@ -6,7 +6,7 @@ Target: 3 to 5 minutes. No slides. Just terminal and code.
 
 ## Opening (15 seconds)
 
-"I built OpenCobalt because I was using five different AI tools every day -- Claude Code, Codex, Gemini, Cursor, and local Ollama -- and I had no memory of what happened, no log of what each tool produced, and no consistent way to decide which tool to use for a given task. This is what I built to solve that."
+"I built OpenCobalt because I was using several AI tools and agent runtimes every day -- Google Antigravity, Claude Code, Codex, Cursor, and local Ollama -- and I had no memory of what happened, no log of what each tool produced, and no consistent way to decide which tool to use for a given task. This is what I built to solve that."
 
 ---
 
@@ -80,7 +80,7 @@ Show: `opencobalt stats`
 
 Show: `opencobalt verify`
 
-"214 tests. Units, ledger integration, router logic, CLI commands. The verify command runs the full suite and shows pass or fail."
+"The test suite covers units, ledger integration, router logic, and CLI commands. The verify command runs the full suite and shows pass or fail."
 
 ---
 

@@ -1,7 +1,15 @@
+import hashlib
 import time
 import uuid
+from pathlib import Path
 
-from opencobalt.core.artifact_bus import AgentArtifact, ArtifactBus, ArtifactType
+from opencobalt.core.artifact_bus import (
+    AgentArtifact,
+    ArtifactBus,
+    ArtifactType,
+    WorkArtifact,
+    build_work_artifact,
+)
 
 
 def _artifact(
@@ -131,3 +139,34 @@ def test_publish_replaces_on_same_id(tmp_path):
     results = bus.subscribe([ArtifactType.IMPL_CODE], "sess-1")
     assert len(results) == 1
     assert results[0].content == "updated"
+
+
+def test_work_artifact_has_required_fields(tmp_path):
+    artifact_path = tmp_path / "report.txt"
+    artifact_path.write_text("verification output", encoding="utf-8")
+    artifact = build_work_artifact(
+        artifact_path,
+        session_id="sess-1",
+        source_runtime="google-antigravity",
+        artifact_type="test_output",
+        summary="pytest output",
+    )
+    assert isinstance(artifact, WorkArtifact)
+    assert artifact.session_id == "sess-1"
+    assert artifact.source_runtime == "google-antigravity"
+    assert artifact.artifact_type == "test_output"
+    assert artifact.path == str(artifact_path)
+    assert artifact.sha256 == hashlib.sha256(b"verification output").hexdigest()
+    assert artifact.summary == "pytest output"
+
+
+def test_work_artifact_rejects_unknown_type_with_unknown_fallback(tmp_path):
+    artifact_path = tmp_path / "custom.bin"
+    artifact_path.write_bytes(b"data")
+    artifact = build_work_artifact(
+        Path(artifact_path),
+        session_id="sess-1",
+        source_runtime="google-antigravity",
+        artifact_type="private-antigravity-format",
+    )
+    assert artifact.artifact_type == "unknown"

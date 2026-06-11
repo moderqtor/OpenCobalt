@@ -40,7 +40,7 @@ _TYPE_TO_TOOL: dict[str, str] = {
     "tests": "codex-cli",
     "docs": "codex-cli",
     "review": "claude-code",
-    "analyze": "gemini-cli",
+    "analyze": "google-antigravity",
     "summarize": "ollama",
 }
 

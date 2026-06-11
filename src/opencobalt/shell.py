@@ -558,8 +558,7 @@ class CobaltShell:
         binaries = {
             "claude-code": "claude",
             "codex-cli": "codex",
-            "gemini-cli": "gemini",
-            "antigravity-cli": "antigravity",
+            "google-antigravity": "agy",
             "github-cli": "gh",
             "cursor": "cursor",
             "ollama": None,
@@ -573,7 +572,7 @@ class CobaltShell:
             console.print(f"  [{_AMBER}]{binary} not on PATH[/{_AMBER}]  [dim]check install[/dim]")
             return
         console.print(f"  [dim]opening {binary}...[/dim]\n")
-        cmd = [binary, task] if task else [binary]
+        cmd = [binary] if tool == "google-antigravity" else ([binary, task] if task else [binary])
         subprocess.Popen(cmd)
 
     def _queue_background_council(self, task: str, task_id: str) -> None:
@@ -581,8 +580,8 @@ class CobaltShell:
 
         from .core.council import consult_subprocess
 
-        for model in ("codex", "gemini"):
-            binary = {"codex": "codex", "gemini": "gemini"}[model]
+        for model in ("codex", "antigravity"):
+            binary = {"codex": "codex", "antigravity": "agy"}[model]
             if shutil.which(binary):
                 self._runner.submit(
                     f"{task_id}:{model}",
