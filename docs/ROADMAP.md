@@ -187,16 +187,41 @@ that does not change the local-first default.
 - Polish: `strategy` goal class, idempotent `opportunities plan` (`--new` to
   force), noop adapter normalizes echo-prefixed tasks
 
+### Phase 19 (part 2): Outcome-weighted scoring + collector interface
+
+- Outcome-weighted scoring: recorded useful/wasted/abandoned outcomes nudge
+  track scores by a bounded, explained amount (`outcome_adjustment`, capped
+  at +/-0.1, one explanation line per adjustment)
+- `OpportunityStore.outcome_stats_by_track_type()` joins outcomes to track
+  types as the structured signal for future learned routing
+- Web research evidence collector behind the `EvidenceCollector` protocol:
+  disabled by default, performs no I/O without an explicitly injected
+  fetcher; tests use fakes only
+
+### Phase 20: Evolve Mode v0 (supervised self-improvement)
+
+- `src/opencobalt/core/evolve.py` (see `docs/EVOLVE_MODE.md`): missions,
+  candidates, explainable self-improvement scoring with wrapperware escape
+  value, roadmap proposals, analysis-only subagent fanout
+- Candidates are opportunity tracks: approval, policy-gated execution,
+  receipts, provenance, and outcomes reuse the existing systems unchanged
+- CLI: `opencobalt evolve start/report/candidates/approve/run/roadmap/list`;
+  `/evolve` in the shell; `why` covers missions and candidates
+- Roadmap writes gated behind explicit `--write`; append-only and idempotent
+- Hard boundaries: no self-replication, no auto-merge/push, no network,
+  no spend/credential paths, no policy-gate bypass
+
 ## In Progress / Next
 
-### Phase 19 (part 2): Opportunity Engine v1 remainder
+### Phase 21: Loop depth and surfaces
 
-- Web research evidence collector behind the existing `EvidenceCollector` protocol
-- Outcome-weighted scoring: feed `opportunity_outcomes` (now receipt-linked,
-  with risk/approval/verification context) back into track priors
 - UI panels for opportunity tracks, subagent trees, evidence, and approval state
 - Evaluator-driven discovery on bounded local domains (routing keywords,
   benchmark heuristics) with full receipts
+- Bounded code-editing execution adapters behind the same approval gates
+- Explicitly configured live web research fetcher for the collector interface
+- Outcome-weighted routing: extend outcome weighting from scoring into
+  runtime selection
 
 ### Phase 17: Execution Layer v1
 
