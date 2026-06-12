@@ -124,6 +124,7 @@ class ProvenanceBuilder:
         if not any_id:
             return None
         resolvers = (
+            self._trace_evolve,
             self._trace_opportunity_side,
             self._trace_approval_side,
             self._trace_outcome,
@@ -175,6 +176,67 @@ class ProvenanceBuilder:
                     trace.focus_id = item.evidence_id
         self._add_run_lineage(trace, run, only_tracks=track_ids)
         return trace
+
+    def _trace_evolve(self, any_id: str) -> ProvenanceTrace | None:
+        if not any_id.startswith(("emis", "ecand")):
+            return None
+        from .evolve import EvolveStore
+
+        store = EvolveStore(self.db_path)
+        if any_id.startswith("emis"):
+            mission = store.get_mission(any_id)
+            if mission is None:
+                return None
+            trace = ProvenanceTrace(focus_id=mission.mission_id, focus_kind="mission")
+            if mission.run_id:
+                run = self._opportunity_store().get_run(mission.run_id)
+                if run is not None:
+                    self._add_run_lineage(trace, run, only_tracks=None)
+            self._attach_mission_node(trace, mission, store)
+            return trace
+        candidate = store.get_candidate(any_id)
+        if candidate is None:
+            return None
+        trace = ProvenanceTrace(focus_id=candidate.candidate_id, focus_kind="candidate")
+        if candidate.track_id:
+            run = self._opportunity_store().find_run_for_track(candidate.track_id)
+            if run is not None:
+                self._add_run_lineage(trace, run, only_tracks=[candidate.track_id])
+        mission = store.get_mission(candidate.mission_id)
+        if mission is not None:
+            self._attach_mission_node(trace, mission, store)
+        return trace
+
+    def _attach_mission_node(self, trace, mission, store) -> None:
+        """Add the mission node plus mission -> candidate -> track edges."""
+        trace.add_node(
+            ProvenanceNode(
+                node_id=mission.mission_id,
+                kind="mission",
+                label=mission.goal[:80],
+                data={"status": mission.status, "run_id": mission.run_id},
+            )
+        )
+        for candidate in store.list_candidates(mission.mission_id):
+            in_trace = candidate.track_id and trace.get_node(candidate.track_id)
+            if not in_trace and trace.focus_id != candidate.candidate_id:
+                continue
+            trace.add_node(
+                ProvenanceNode(
+                    node_id=candidate.candidate_id,
+                    kind="candidate",
+                    label=candidate.title[:70],
+                    data={
+                        "candidate_type": candidate.candidate_type,
+                        "status": candidate.status,
+                        "score_total": candidate.score.total if candidate.score else None,
+                        "risk_level": candidate.risk_level,
+                    },
+                )
+            )
+            trace.add_edge(mission.mission_id, candidate.candidate_id, "proposed")
+            if candidate.track_id and trace.get_node(candidate.track_id):
+                trace.add_edge(candidate.candidate_id, candidate.track_id, "realized_as")
 
     def _trace_approval_side(self, any_id: str) -> ProvenanceTrace | None:
         if not any_id.startswith(("areq", "astp")):
@@ -348,6 +410,7 @@ class ProvenanceBuilder:
                 )
             )
             trace.add_edge(goal.goal_id, track.track_id, "decomposed_into")
+            self._attach_candidate_for_track(trace, track.track_id)
             for item in run.evidence:
                 if item.track_id != track.track_id:
                     continue
@@ -379,6 +442,21 @@ class ProvenanceBuilder:
                 if request is not None and request.opportunity_plan_id == plan.plan_id:
                     self._add_request_lineage(trace, request, parent_id=plan.plan_id)
             self._add_outcomes(trace, track.track_id)
+
+    def _attach_candidate_for_track(self, trace, track_id: str) -> None:
+        """If an evolve candidate backs this track, attach it and its mission."""
+        try:
+            from .evolve import EvolveStore
+
+            store = EvolveStore(self.db_path)
+            candidate = store.find_candidate_for_track(track_id)
+            if candidate is None:
+                return
+            mission = store.get_mission(candidate.mission_id)
+            if mission is not None:
+                self._attach_mission_node(trace, mission, store)
+        except Exception:
+            return  # evolve lineage is additive; never break a base trace
 
     def _add_request_lineage(self, trace, request, *, parent_id: str | None) -> None:
         trace.add_node(
@@ -507,9 +585,9 @@ def render_trace_lines(trace: ProvenanceTrace) -> list[str]:
             bits.append(f'"{node.label}"')
         detail = []
         for key in (
-            "goal_class", "track_type", "status", "score_total", "risk_level",
-            "approval_state", "state", "dry_run", "verification_status",
-            "source_type", "strength",
+            "goal_class", "track_type", "candidate_type", "status", "score_total",
+            "risk_level", "approval_state", "state", "dry_run",
+            "verification_status", "source_type", "strength",
         ):
             value = node.data.get(key)
             if value is None:

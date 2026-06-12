@@ -115,7 +115,13 @@ opencobalt approvals approve         approve steps (black risk cannot be approve
 opencobalt approvals reject          reject steps with a reason
 opencobalt approvals run             hand approved steps to the policy-gated engine
 opencobalt approvals outcome         record a receipt-evidenced outcome for the track
-opencobalt why ID                    lineage trace for any known id
+opencobalt why ID                    lineage trace for any known id (incl. evolve missions)
+opencobalt evolve start "goal"       supervised self-improvement mission (propose + score only)
+opencobalt evolve report             ranked evolve candidates and next commands
+opencobalt evolve candidates         candidate details with score explanations
+opencobalt evolve approve ID         promote a candidate through the approval bridge
+opencobalt evolve run ID             run approved steps via the policy gate (dry-run default)
+opencobalt evolve roadmap [--write]  roadmap proposals; --write appends a marked section
 opencobalt ui                open the React dashboard
 ```
 
@@ -123,7 +129,7 @@ opencobalt ui                open the React dashboard
 
 ## What NOT to do
 
-- Do not break existing passing tests. The baseline is 863 tests (as of Phase 19 part 1).
+- Do not break existing passing tests. The baseline is 918 tests (as of Phase 20 Evolve Mode v0).
 - Do not push to GitHub without explicit instruction.
 - Do not change the SQLite schema without adding migration logic.
 - Do not add Postgres, Redis, Qdrant, or any server-side store as a required dependency.

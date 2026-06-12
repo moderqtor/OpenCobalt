@@ -167,6 +167,21 @@ class OpportunityStore:
             )
         return outcome_id
 
+    def outcome_stats_by_track_type(self) -> dict[str, dict[str, int]]:
+        """Outcome counts grouped by track type, for outcome-weighted scoring."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT t.track_type AS track_type, o.outcome AS outcome, "
+                "COUNT(*) AS n "
+                "FROM opportunity_outcomes o "
+                "JOIN opportunity_tracks t ON t.track_id = o.track_id "
+                "GROUP BY t.track_type, o.outcome"
+            ).fetchall()
+        stats: dict[str, dict[str, int]] = {}
+        for row in rows:
+            stats.setdefault(row["track_type"], {})[row["outcome"]] = int(row["n"])
+        return stats
+
     def list_outcomes(self, *, track_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         sql = "SELECT * FROM opportunity_outcomes"
         params: list[Any] = []

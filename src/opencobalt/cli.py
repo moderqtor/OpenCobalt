@@ -122,6 +122,25 @@ approvals_app = typer.Typer(
 )
 app.add_typer(approvals_app, name="approvals")
 
+
+class _EvolveGroup(typer.core.TyperGroup):
+    """Let `opencobalt evolve "goal text"` behave like `evolve start`."""
+
+    def resolve_command(self, ctx, args):
+        if args and args[0] not in self.commands and not args[0].startswith("-"):
+            args = ["start", " ".join(args)]
+        return super().resolve_command(ctx, args)
+
+
+# invoke_without_command lets `opencobalt evolve "goal"` start a mission directly
+evolve_app = typer.Typer(
+    help="Evolve Mode: supervised self-improvement missions (propose, score, "
+    "approve, execute, verify, learn).",
+    cls=_EvolveGroup,
+    invoke_without_command=True,
+)
+app.add_typer(evolve_app, name="evolve")
+
 console = Console()
 err = Console(stderr=True)
 
@@ -1193,123 +1212,245 @@ def public_check() -> None:
         raise typer.Exit(1)
 
 
+# ── TUI helpers (pure-ish, tested in test_cli.py) ────────────────────────────
+
+_EVENT_STREAMS = (
+    ("execution", "execution.jsonl", _GREEN),
+    ("approval", "approval.jsonl", _YELLOW),
+    ("evolve", "evolve.jsonl", _COBALT),
+    ("opportunity", "opportunity.jsonl", "#c084fc"),
+)
+
+
+def _tool_chips() -> list[tuple[str, str, bool]]:
+    """(label, detail, available) for the runtimes the header shows."""
+    import shutil
+
+    chips: list[tuple[str, str, bool]] = []
+    for label, binary in (
+        ("antigravity", "agy"),
+        ("claude", "claude"),
+        ("codex", "codex"),
+    ):
+        chips.append((label, "ready" if shutil.which(binary) else "not found",
+                      shutil.which(binary) is not None))
+    ollama_ok = shutil.which("ollama") is not None
+    detail = "not found"
+    if ollama_ok:
+        try:
+            models = discover_models()
+            detail = models[0].name if models else "no models"
+        except Exception:
+            detail = "ready"
+    chips.append(("ollama", detail, ollama_ok))
+    return chips
+
+
+def _merged_event_stream(limit: int = 18) -> list[tuple[str, str, str, str]]:
+    """Recent (time, source, message, color) rows merged across the JSONL
+    event spines, newest last. Local files only; missing spines are fine."""
+    from .core.events import read_events
+
+    rows: list[tuple[str, str, str, str]] = []
+    base = Path(".opencobalt") / "events"
+    for source, filename, color in _EVENT_STREAMS:
+        for event in read_events(path=base / filename, limit=limit):
+            stamp = str(event.get("timestamp", ""))[11:19]
+            message = str(event.get("message", ""))[:72]
+            rows.append((stamp, source, message, color))
+    rows.sort(key=lambda r: r[0])
+    return rows[-limit:]
+
+
+def _git_branch() -> str:
+    try:
+        head = (Path(".git") / "HEAD").read_text(encoding="utf-8").strip()
+        return head.rsplit("/", 1)[-1] if "/" in head else head[:12]
+    except OSError:
+        return "-"
+
+
 @app.command()
 def tui() -> None:
-    """Launch a live terminal dashboard. Press Ctrl+C to exit."""
+    """Launch the live control-plane dashboard. Press Ctrl+C to exit."""
     _REFRESH = 2
+    from importlib.metadata import version as _pkg_version
+
+    try:
+        _version = _pkg_version("opencobalt")
+    except Exception:
+        _version = "0.1.0"
 
     def _make_header() -> Panel:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        chips = Text()
+        chips.append("  ⬡ ", style=f"bold {_COBALT}")
+        chips.append("OpenCobalt CLI ", style=f"bold {_COBALT}")
+        chips.append(f"v{_version}", style="dim")
+        for label, detail, available in _tool_chips():
+            chips.append("   ")
+            chips.append("● " if available else "○ ", style=_GREEN if available else "dim")
+            chips.append(f"{label} ", style="bold" if available else "dim")
+            chips.append(detail, style=_GREEN if available else "dim")
+        return Panel(chips, box=box.ROUNDED, border_style="dim", expand=True)
+
+    def _make_infobar() -> Panel:
+        from .core.approval_bridge import ApprovalStore
+        from .execution import ExecutionStore
+
+        line = Text()
+        line.append("  cwd: ", style="dim")
+        line.append(str(Path(".").resolve()), style=_COBALT)
+        try:
+            pending = ApprovalStore(_DB_PATH).count_pending()
+        except Exception:
+            pending = 0
+        line.append("   approvals: ", style="dim")
+        line.append(
+            f"{pending} pending" if pending else "none pending",
+            style=_YELLOW if pending else _GREEN,
+        )
+        try:
+            receipts = ExecutionStore(_DB_PATH).list_receipts(limit=1)
+            latest = receipts[0].verification_status if receipts else "none yet"
+        except Exception:
+            latest = "none yet"
+        line.append("   receipt: ", style="dim")
+        line.append(latest, style=_GREEN if latest == "verified" else "dim")
+        line.append("   git: ", style="dim")
+        line.append(_git_branch(), style=_COBALT)
+        return Panel(line, box=box.SIMPLE, expand=True)
+
+    def _make_stream_panel() -> Panel:
+        rows = _merged_event_stream(limit=16)
+        if not rows:
+            body: str | Text = (
+                "[dim]No activity yet. Try: opencobalt opportunities "
+                "brainstorm \"goal\" or opencobalt evolve start \"goal\"[/dim]"
+            )
+        else:
+            text = Text()
+            for stamp, source, message, color in rows:
+                text.append(f" {stamp}  ", style="dim")
+                text.append(f"[{source}]", style=f"bold {color}")
+                text.append(f"{' ' * max(1, 13 - len(source))}{message}\n")
+            body = text
         return Panel(
-            Text(f"OPENCOBALT  control plane · {now}", style=f"bold {_COBALT}"),
-            box=box.SIMPLE,
-            expand=True,
+            body, title="[dim]Activity[/dim]", border_style="dim", expand=True
         )
 
-    def _make_status_panel() -> Panel:
+    def _make_autonomy_panel() -> Panel:
+        from .core.approval_bridge import ApprovalStore
+        from .execution import ExecutionStore
+
         lines: list[str] = []
-        ollama_ok = is_ollama_available()
-        lines.append(f"{_dot(True)}  python   {sys.version.split()[0]}")
-        lines.append(f"{_dot(ollama_ok, warn=True)}  ollama   {'available' if ollama_ok else 'not found'}")
-        ledger = _ledger()
-        lines.append(f"{_dot(True)}  events   {ledger.count_events()}")
-        lines.append(f"{_dot(True)}  memory   {ledger.count_memory_records()} records")
-        readme_ok = Path("README.md").exists()
-        lines.append(f"{_dot(readme_ok)}  README   {'present' if readme_ok else 'missing'}")
+        try:
+            store = ApprovalStore(_DB_PATH)
+            pending = store.list_requests(state="pending", limit=3)
+            if pending:
+                for request in pending:
+                    lines.append(
+                        f"[{_YELLOW}]●[/{_YELLOW}] {request.request_id[:13]}  "
+                        f"{request.track_name[:18]}  [{_risk_str(request.risk_level)}]"
+                    )
+                    action = _next_blocking_action(request)
+                    if action:
+                        lines.append(f"   [dim]{action.removeprefix('opencobalt ')}[/dim]")
+            else:
+                lines.append(f"[{_GREEN}]●[/{_GREEN}] no approvals pending")
+        except Exception:
+            lines.append("[dim]approvals unavailable[/dim]")
+        lines.append("")
+        try:
+            receipts = ExecutionStore(_DB_PATH).list_receipts(limit=4)
+            if receipts:
+                for receipt in receipts:
+                    color = _GREEN if receipt.verification_status == "verified" else "dim"
+                    lines.append(
+                        f"[{color}]●[/{color}] {receipt.receipt_id[:10]}  "
+                        f"{receipt.verification_status:<10}  [dim]{receipt.task[:16]}[/dim]"
+                    )
+            else:
+                lines.append("[dim]no receipts yet[/dim]")
+        except Exception:
+            lines.append("[dim]receipts unavailable[/dim]")
         return Panel(
             "\n".join(lines),
-            title="[dim]Status[/dim]",
+            title="[dim]Approvals + Receipts[/dim]",
             border_style="dim",
             expand=True,
         )
 
-    def _make_events_panel() -> Panel:
-        try:
-            ledger = _ledger()
-            events = ledger.list_events(limit=6)
-        except Exception:
-            events = []
-
-        if not events:
-            body = "[dim]No events recorded.[/dim]"
-        else:
-            rows = []
-            for e in reversed(events):
-                ts = e.timestamp.strftime("%H:%M") if hasattr(e.timestamp, "strftime") else str(e.timestamp)[:5]
-                rows.append(f"[dim]{ts}[/dim]  {e.event_type:<18}  {e.summary[:38]}")
-            body = "\n".join(rows)
-
-        return Panel(body, title="[dim]Recent Events[/dim]", border_style="dim", expand=True)
-
     def _make_routes_panel() -> Panel:
         try:
-            ledger = _ledger()
-            decisions = ledger.list_route_decisions(limit=6)
+            decisions = _ledger().list_route_decisions(limit=5)
         except Exception:
             decisions = []
-
         if not decisions:
-            body = "[dim]No route decisions yet.[/dim]\n[dim]Run: opencobalt route \"your task\"[/dim]"
+            body = "[dim]No route decisions yet.[/dim]"
         else:
             rows = []
             for d in decisions:
                 ts = d.timestamp.strftime("%H:%M") if hasattr(d.timestamp, "strftime") else str(d.timestamp)[:5]
                 tc = _tier_color(d.tier)
                 tool = f"[{tc}]{d.recommended_tool:<13}[/{tc}]" if tc != "dim" else f"[dim]{d.recommended_tool:<13}[/dim]"
-                rows.append(f"[dim]{ts}[/dim]  {tool}  {d.task[:28]}")
+                rows.append(f"[dim]{ts}[/dim]  {tool}  {d.task[:22]}")
             body = "\n".join(rows)
+        return Panel(body, title="[dim]Routes[/dim]", border_style="dim", expand=True)
 
-        return Panel(body, title="[dim]Route Decisions[/dim]", border_style="dim", expand=True)
+    def _make_footer() -> Panel:
+        from .execution import ExecutionStore
 
-    def _make_cost_panel() -> Panel:
+        line = Text()
+        line.append("  ● ", style=_GREEN)
+        line.append("DB ", style="dim")
+        line.append("synced", style=_GREEN)
+        line.append("   router: ", style="dim")
+        line.append("deterministic", style=_GREEN)
         try:
-            tracker = CostTracker(_DB_PATH)
-            spend = tracker.monthly_spend()
-            cap = tracker.monthly_cap()
-            mode = tracker.get_routing_mode()
-            over = tracker.is_over_budget()
-            spend_color = _RED if over else _GREEN
-            body = (
-                f"{_dot(not over)}  spend    [{spend_color}]${spend:.4f}[/{spend_color}] / ${cap:.2f}\n"
-                f"{_dot(True)}   mode     {mode}\n"
-                f"{_dot(True)}   api      [dim]disabled (default)[/dim]"
+            verified = len(
+                ExecutionStore(_DB_PATH).list_receipts(
+                    verification_status="verified", limit=500
+                )
             )
+            line.append("   receipts verified: ", style="dim")
+            line.append(str(verified), style=_GREEN if verified else "dim")
         except Exception:
-            body = "[dim]Cost tracker unavailable.[/dim]"
-
-        return Panel(body, title="[dim]Cost Control[/dim]", border_style="dim", expand=True)
+            pass
+        line.append(f"   v{_version}", style="dim")
+        line.append("   git: ", style="dim")
+        line.append(_git_branch(), style=_COBALT)
+        return Panel(line, box=box.SIMPLE, expand=True)
 
     def _make_layout() -> Layout:
         layout = Layout()
         layout.split_column(
             Layout(name="header", size=3),
+            Layout(name="infobar", size=3),
             Layout(name="body"),
+            Layout(name="footer", size=3),
         )
-        layout["body"].split_column(
-            Layout(name="top"),
-            Layout(name="bottom"),
+        layout["body"].split_row(
+            Layout(name="stream", ratio=2),
+            Layout(name="side", ratio=1),
         )
-        layout["body"]["top"].split_row(
-            Layout(name="status"),
+        layout["body"]["side"].split_column(
+            Layout(name="autonomy"),
             Layout(name="routes"),
-        )
-        layout["body"]["bottom"].split_row(
-            Layout(name="events"),
-            Layout(name="cost"),
         )
         return layout
 
     layout = _make_layout()
-    console.print("  [dim]OpenCobalt TUI -- Ctrl+C to exit[/dim]\n")
+    console.print("  [dim]OpenCobalt control plane -- Ctrl+C to exit[/dim]\n")
 
     try:
         with Live(layout, refresh_per_second=1, screen=True):
             while True:
                 layout["header"].update(_make_header())
-                layout["body"]["top"]["status"].update(_make_status_panel())
-                layout["body"]["top"]["routes"].update(_make_routes_panel())
-                layout["body"]["bottom"]["events"].update(_make_events_panel())
-                layout["body"]["bottom"]["cost"].update(_make_cost_panel())
+                layout["infobar"].update(_make_infobar())
+                layout["body"]["stream"].update(_make_stream_panel())
+                layout["body"]["side"]["autonomy"].update(_make_autonomy_panel())
+                layout["body"]["side"]["routes"].update(_make_routes_panel())
+                layout["footer"].update(_make_footer())
                 time.sleep(_REFRESH)
     except KeyboardInterrupt:
         pass
@@ -3892,6 +4033,300 @@ def opportunities_approve(
     if action:
         console.print(f"    {action}")
     console.print(f"    opencobalt why {rid}\n")
+
+
+# --- Evolve Mode ---
+
+
+def _evolve_engine(**kwargs):
+    from .core.evolve import EvolveEngine
+
+    return EvolveEngine(db_path=_DB_PATH, **kwargs)
+
+
+def _resolve_evolve_mission(engine, mission_id: str | None):
+    if mission_id:
+        return engine.store.get_mission(mission_id)
+    return engine.store.latest_mission()
+
+
+def _print_evolve_report(report) -> None:
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Candidate", style="dim", max_width=18)
+    table.add_column("Title", max_width=44)
+    table.add_column("Type", style="dim")
+    table.add_column("Score", justify="right")
+    table.add_column("Escape", justify="right")
+    table.add_column("Risk")
+    table.add_column("Status")
+    for entry in report.ranked:
+        escape = entry.get("wrapperware_escape")
+        table.add_row(
+            entry["candidate_id"][:16],
+            entry["title"][:44],
+            entry["candidate_type"],
+            f"{entry['total']:.3f}",
+            f"{escape:.2f}" if escape is not None else "-",
+            _risk_str(entry["risk_level"]),
+            entry["status"],
+        )
+    console.print()
+    console.print(table)
+    if report.next_commands:
+        console.print("  [dim]Next commands:[/dim]")
+        for command in report.next_commands:
+            console.print(f"    {command}")
+    console.print()
+
+
+@evolve_app.callback(invoke_without_command=True)
+def evolve_cmd(ctx: typer.Context) -> None:
+    """Evolve Mode: supervised self-improvement missions."""
+    if ctx.invoked_subcommand is None:
+        if ctx.args:
+            goal = " ".join(ctx.args).strip()
+            if goal:
+                evolve_start(goal=goal)
+                return
+        console.print(
+            "  [dim]Usage: opencobalt evolve start \"goal text\" "
+            "| evolve report | evolve candidates | evolve approve <id> "
+            "| evolve run <id> | evolve roadmap [--write][/dim]"
+        )
+
+
+@evolve_app.command("start")
+def evolve_start(
+    goal: str = typer.Argument(
+        ..., help="Mission goal, e.g. \"make OpenCobalt more useful this week\""
+    ),
+    candidates: int = typer.Option(6, "--candidates", help="Max candidates to propose"),
+) -> None:
+    """Start a supervised self-improvement mission: read the roadmap and
+    repo, propose and score candidates, plan the subagent analysis tree,
+    and report. Nothing executes; approval and execution stay behind the
+    existing gates."""
+    from .core.evolve import EvolvePolicy
+
+    engine = _evolve_engine(policy=EvolvePolicy(max_candidates=candidates))
+    result = engine.start_mission(goal)
+    mission = result.mission
+    console.print(
+        f"\n  [bold {_COBALT}]Evolve mission[/bold {_COBALT}] {mission.mission_id}"
+        f"  [dim]status:[/dim] {mission.status}"
+    )
+    console.print(f"  [dim]Goal:[/dim] {mission.goal[:100]}")
+    console.print(
+        f"  [dim]Roadmap proposals:[/dim] {len(mission.roadmap_proposals)}"
+        f"  [dim]Subagent nodes:[/dim] {len(mission.delegation.get('nodes', []))}"
+        f"  [dim]Backing run:[/dim] {mission.run_id[:16] if mission.run_id else '-'}"
+    )
+    _print_evolve_report(result.report)
+    console.print(
+        "  [dim]Supervised mode: nothing executed, no docs written, no push. "
+        f"{len(engine.events)} event(s) emitted.[/dim]\n"
+    )
+
+
+@evolve_app.command("list")
+def evolve_list(
+    limit: int = typer.Option(10, "--limit", help="Max missions to show"),
+) -> None:
+    """List evolve missions, newest first."""
+    missions = _evolve_engine().store.list_missions(limit=limit)
+    if not missions:
+        console.print("\n  [dim]No evolve missions yet. Try: opencobalt evolve \"goal\"[/dim]\n")
+        return
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Mission", style="dim", max_width=18)
+    table.add_column("Status")
+    table.add_column("Goal", style="dim", max_width=56)
+    table.add_column("Created", style="dim")
+    for row in missions:
+        table.add_row(
+            row["mission_id"][:16], row["status"], row["goal"][:56],
+            row["created_at"][:19],
+        )
+    console.print()
+    console.print(table)
+    console.print(f"  [dim]{len(missions)} mission(s).[/dim]\n")
+
+
+@evolve_app.command("report")
+def evolve_report(
+    mission_id: str = typer.Argument(None, help="Mission id (default: latest)"),
+) -> None:
+    """Print the ranked candidate report for a mission."""
+    engine = _evolve_engine()
+    mission = _resolve_evolve_mission(engine, mission_id)
+    if mission is None or mission.report is None:
+        err.print("  [red]No evolve mission found. Try: opencobalt evolve \"goal\"[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"\n  [bold]Evolve report[/bold] {mission.mission_id}"
+        f"  [dim]status:[/dim] {mission.status}"
+    )
+    console.print(f"  [dim]Goal:[/dim] {mission.goal[:100]}")
+    _print_evolve_report(mission.report)
+
+
+@evolve_app.command("candidates")
+def evolve_candidates(
+    mission_id: str = typer.Argument(None, help="Mission id (default: latest)"),
+    explain: str | None = typer.Option(None, "--explain", help="Candidate id to explain in full"),
+) -> None:
+    """Show candidate details: score breakdown, steps, and linked ids."""
+    engine = _evolve_engine()
+    mission = _resolve_evolve_mission(engine, mission_id)
+    if mission is None:
+        err.print("  [red]No evolve mission found. Try: opencobalt evolve \"goal\"[/red]")
+        raise typer.Exit(1)
+    items = engine.store.list_candidates(mission.mission_id)
+    console.print(f"\n  [bold]Candidates[/bold] for {mission.mission_id}")
+    for candidate in items:
+        total = f"{candidate.score.total:.3f}" if candidate.score else "-"
+        console.print(
+            f"\n  {candidate.candidate_id[:16]}  [{candidate.candidate_type}]"
+            f"  score {total}  risk {_risk_str(candidate.risk_level)}"
+            f"  status {candidate.status}"
+        )
+        console.print(f"    [dim]{candidate.title}[/dim]")
+        for step in candidate.steps:
+            console.print(f"      - {step}")
+        if candidate.track_id:
+            console.print(f"    [dim]track:[/dim] {candidate.track_id[:16]}")
+        if candidate.approval_request_id:
+            console.print(f"    [dim]approval:[/dim] {candidate.approval_request_id[:16]}")
+        if candidate.receipt_ids:
+            console.print(f"    [dim]receipts:[/dim] {len(candidate.receipt_ids)}")
+        if explain and candidate.candidate_id.startswith(explain) and candidate.score:
+            console.print("    [dim]Score explanation:[/dim]")
+            for line in candidate.score.explanation:
+                console.print(f"      [dim]{line}[/dim]")
+    console.print()
+
+
+@evolve_app.command("approve")
+def evolve_approve(
+    candidate_id: str = typer.Argument(..., help="Candidate id (full or prefix)"),
+) -> None:
+    """Promote a candidate through the Approval Bridge and approve its
+    approvable steps. Black-risk steps stay blocked as always."""
+    engine = _evolve_engine()
+    try:
+        candidate, request = engine.approve_candidate(candidate_id)
+    except KeyError as exc:
+        err.print(f"  [red]{exc.args[0]}[/red]")
+        raise typer.Exit(1) from None
+    console.print(
+        f"\n  [bold]Candidate approved:[/bold] {candidate.candidate_id[:16]}"
+        f"  [dim]status:[/dim] {candidate.status}"
+    )
+    console.print(
+        f"  [dim]Approval request:[/dim] {request.request_id}"
+        f"  [dim]state:[/dim] {_approval_state_str(request.state)}"
+    )
+    _print_request_steps(request)
+    console.print(
+        f"  [dim]Next:[/dim] opencobalt evolve run {candidate.candidate_id[:14]}"
+        " --runtime noop [--execute]\n"
+    )
+
+
+@evolve_app.command("run")
+def evolve_run(
+    candidate_id: str = typer.Argument(..., help="Candidate id (full or prefix)"),
+    runtime: str | None = typer.Option(
+        None, "--runtime", help="Runtime id (google-antigravity, ollama, noop). Routed if omitted."
+    ),
+    execute: bool = typer.Option(False, "--execute", help="Actually run (default is dry-run)"),
+    yes: bool = typer.Option(False, "--yes", help="Approve red-risk execution explicitly"),
+    rerun: bool = typer.Option(False, "--rerun", help="Run again even if already executed"),
+) -> None:
+    """Run a candidate's approved steps through the policy-gated execution
+    engine. Dry-run by default; every step writes a receipt."""
+    engine = _evolve_engine()
+    exec_engine = _execution_engine()
+    try:
+        candidate, reports = engine.run_candidate(
+            candidate_id,
+            engine=exec_engine,
+            runtime=runtime,
+            execute=execute,
+            approved=yes,
+            rerun=rerun,
+        )
+    except KeyError as exc:
+        err.print(f"  [red]{exc.args[0]}[/red]")
+        raise typer.Exit(1) from None
+    console.print(
+        f"\n  [bold]Evolve run[/bold] {candidate.candidate_id[:16]}"
+        f"  [dim]status:[/dim] {candidate.status}"
+    )
+    refused = 0
+    for report in reports:
+        s = report.step
+        if report.action == "executed":
+            console.print(f"    {s.step_id[:13]}  [{_GREEN}]executed[/{_GREEN}]  {s.task[:48]}")
+            console.print(
+                f"        [dim]receipt:[/dim] {s.receipt_id}"
+                f"  [dim]verification:[/dim] {report.outcome.receipt.verification_status}"
+            )
+        elif report.action == "dry_run":
+            console.print(f"    {s.step_id[:13]}  [dim]dry-run[/dim]  {s.task[:48]}")
+        elif report.action in ("refused", "blocked"):
+            refused += 1
+            console.print(f"    {s.step_id[:13]}  [{_RED}]{report.action}[/{_RED}]  {s.task[:48]}")
+            console.print(f"        [dim]{report.reason}[/dim]")
+        else:
+            console.print(f"    {s.step_id[:13]}  [dim]skipped[/dim]  {report.reason}")
+    if not execute and any(r.action == "dry_run" for r in reports):
+        console.print("  [dim]Dry-run only. Add --execute to run for real.[/dim]")
+    if candidate.status == "verified":
+        console.print(
+            f"  [dim]Record outcome:[/dim] opencobalt approvals outcome "
+            f"{candidate.approval_request_id[:13]} useful"
+        )
+    console.print(f"  [dim]Lineage:[/dim] opencobalt why {candidate.candidate_id[:14]}\n")
+    if refused and execute:
+        raise typer.Exit(2)
+
+
+@evolve_app.command("roadmap")
+def evolve_roadmap(
+    mission_id: str = typer.Argument(None, help="Mission id (default: latest)"),
+    write: bool = typer.Option(
+        False, "--write", help="Append proposals to docs/ROADMAP.md (explicitly gated)"
+    ),
+) -> None:
+    """Show a mission's roadmap proposals. Writing to docs/ROADMAP.md
+    requires the explicit --write flag and only appends a marked section."""
+    from .core.evolve import EvolvePolicy
+
+    engine = _evolve_engine(policy=EvolvePolicy(allow_roadmap_write=write))
+    mission = _resolve_evolve_mission(engine, mission_id)
+    if mission is None:
+        err.print("  [red]No evolve mission found. Try: opencobalt evolve \"goal\"[/red]")
+        raise typer.Exit(1)
+    console.print(f"\n  [bold]Roadmap proposals[/bold] for {mission.mission_id}")
+    if not mission.roadmap_proposals:
+        console.print("  [dim]No proposals recorded for this mission.[/dim]\n")
+        return
+    for proposal in mission.roadmap_proposals:
+        console.print(
+            f"    [{proposal.proposal_type}] {proposal.title}"
+            f"  [dim]escape {proposal.wrapperware_escape_value:.2f}"
+            f"  status {proposal.status}[/dim]"
+        )
+    if write:
+        path = engine.write_roadmap_proposals(mission)
+        console.print(f"\n  [bold]Proposals appended to[/bold] {path}")
+        console.print("  [dim]Review the diff before committing; nothing was pushed.[/dim]\n")
+    else:
+        console.print(
+            "\n  [dim]Proposals are read-only. Append to docs/ROADMAP.md with: "
+            f"opencobalt evolve roadmap {mission.mission_id[:13]} --write[/dim]\n"
+        )
 
 
 # --- Provenance ---
