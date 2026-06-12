@@ -20,7 +20,7 @@ tiered model policy, working commands, and what not to do).
 
 **Testing:**
 - Always run `python3 -m pytest -q` after any code change.
-- Baseline: 918 passing tests (after Phase 20 Evolve Mode v0). All must stay green.
+- Baseline: 947 passing tests (after Phase 21 Mission State Machine v1). All must stay green.
 - New code requires new tests. Use `tmp_path` from pytest fixtures for SQLite isolation.
 
 **Commits:**

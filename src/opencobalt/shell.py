@@ -74,6 +74,7 @@ class CobaltShell:
         "ui",
         "opportunities",
         "approvals",
+        "missions",
         "evolve",
         "why",
         "receipts",
