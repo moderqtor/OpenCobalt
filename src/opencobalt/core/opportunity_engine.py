@@ -55,6 +55,7 @@ EVIDENCE_SOURCES = (
     "route_history",
     "subagent_report",
     "note",
+    "web_research",
 )
 
 EVENT_GOAL_RECEIVED = "opportunity.goal_received"
@@ -622,17 +623,103 @@ class RouteHistoryEvidenceCollector:
         ]
 
 
+class WebResearchEvidenceCollector:
+    """Phase 19 web research interface. Disabled by default; never networks.
+
+    This class performs no I/O itself. A caller must both enable it and
+    inject a fetcher callable (query -> list of result dicts with title,
+    reference, summary, and optional strength). Until then collect()
+    returns [] and the engine behaves exactly as before. Tests inject fake
+    fetchers; live fetchers are a future, explicitly-configured addition.
+    """
+
+    source_type = "web_research"
+
+    def __init__(
+        self,
+        *,
+        enabled: bool = False,
+        fetcher: Callable[[str], list[dict[str, Any]]] | None = None,
+        max_results: int = 3,
+    ) -> None:
+        self.enabled = enabled
+        self.fetcher = fetcher
+        self.max_results = max_results
+
+    def collect(
+        self, track: OpportunityTrack, *, context: ProjectContext
+    ) -> list[OpportunityEvidence]:
+        if not self.enabled or self.fetcher is None:
+            return []
+        query = f"{track.name}: {track.description}".strip(": ")
+        try:
+            results = self.fetcher(query)
+        except Exception:
+            return []  # a failing fetcher never blocks the run
+        items: list[OpportunityEvidence] = []
+        for result in results[: self.max_results]:
+            items.append(
+                OpportunityEvidence(
+                    evidence_id=_uid("ev"),
+                    track_id=track.track_id,
+                    source_type="web_research",
+                    reference=str(result.get("reference", result.get("url", "web"))),
+                    summary=str(result.get("summary", result.get("title", "")))[:200],
+                    strength=float(result.get("strength", 0.4)),
+                    collected_by=type(self).__name__,
+                )
+            )
+        return items
+
+
 # --- Scoring ---
+
+# Outcome history nudges totals by at most this much in either direction.
+# History informs scoring; it never dominates the transparent dimensions.
+_OUTCOME_ADJUSTMENT_CAP = 0.1
+
+
+def outcome_adjustment(
+    track_type: str, outcome_stats: dict[str, dict[str, int]] | None
+) -> tuple[float, str] | None:
+    """Bounded score delta from recorded outcomes for this track type.
+
+    useful outcomes push up, wasted/abandoned push down, neutral counts
+    toward the denominator only. Returns (delta, explanation) or None when
+    there is no history for the type.
+    """
+    if not outcome_stats:
+        return None
+    counts = outcome_stats.get(track_type)
+    if not counts:
+        return None
+    total = sum(counts.values())
+    if total <= 0:
+        return None
+    useful = counts.get("useful", 0)
+    negative = counts.get("wasted", 0) + counts.get("abandoned", 0)
+    delta = _OUTCOME_ADJUSTMENT_CAP * (useful - negative) / total
+    delta = max(-_OUTCOME_ADJUSTMENT_CAP, min(_OUTCOME_ADJUSTMENT_CAP, delta))
+    explanation = (
+        f"outcome_history({track_type}: useful={useful} "
+        f"negative={negative} total={total}) -> {delta:+.3f}"
+    )
+    return delta, explanation
 
 
 def score_track(
-    track: OpportunityTrack, evidence: list[OpportunityEvidence]
+    track: OpportunityTrack,
+    evidence: list[OpportunityEvidence],
+    *,
+    outcome_stats: dict[str, dict[str, int]] | None = None,
 ) -> OpportunityScore:
     """Score one track. Transparent: every contribution is one line.
 
     Dimension values start from the track's priors. evidence_strength is
     computed from attached evidence, and verification_quality gets a small
-    boost when receipt-backed evidence is present.
+    boost when receipt-backed evidence is present. When outcome history is
+    provided, recorded useful/wasted outcomes for this track type nudge the
+    total by a bounded, explained amount.
     """
     dims = {dim: 0.5 for dim in SCORE_DIMENSIONS}
     dims.update({k: v for k, v in track.priors.items() if k in dims})
@@ -654,6 +741,12 @@ def score_track(
         contribution = dims[dim] * weight
         total -= contribution
         explanation.append(f"{dim}={dims[dim]:.2f} x -{weight:.2f} -> {-contribution:+.3f}")
+
+    adjusted = outcome_adjustment(track.track_type, outcome_stats)
+    if adjusted is not None:
+        delta, line = adjusted
+        total += delta
+        explanation.append(line)
 
     total = max(0.0, min(1.0, round(total, 4)))
     explanation.append(f"total={total:.4f} (clamped 0..1)")
@@ -912,6 +1005,7 @@ class OpportunityEngine:
 
         context = ProjectContext.scan(self.root)
         run.tracks = self.generate_tracks(goal, run_id=run.run_id)
+        stats = self._outcome_stats()
 
         for track in run.tracks:
             evidence = self.collect_evidence(track, context=context, run_id=run.run_id)
@@ -924,7 +1018,7 @@ class OpportunityEngine:
             track.hypothesis_ids.append(hypothesis.hypothesis_id)
             run.hypotheses.append(hypothesis)
 
-            score = score_track(track, evidence)
+            score = score_track(track, evidence, outcome_stats=stats)
             track.status = "scored"
             run.scores.append(score)
             self._emit(
@@ -1012,11 +1106,12 @@ class OpportunityEngine:
         return evidence
 
     def rescore(self, run: OpportunityRun) -> list[OpportunityScore]:
-        """Recompute every track score from current evidence."""
+        """Recompute every track score from current evidence and outcomes."""
         run.scores = []
+        stats = self._outcome_stats()
         for track in run.tracks:
             evidence = [e for e in run.evidence if e.track_id == track.track_id]
-            score = score_track(track, evidence)
+            score = score_track(track, evidence, outcome_stats=stats)
             run.scores.append(score)
             self._emit(
                 EVENT_SCORED, track.track_id,
@@ -1105,6 +1200,15 @@ class OpportunityEngine:
         return report
 
     # --- Persistence and events ---
+
+    def _outcome_stats(self) -> dict[str, dict[str, int]] | None:
+        """Outcome history for outcome-weighted scoring. Best effort."""
+        try:
+            from .opportunity_store import OpportunityStore
+
+            return OpportunityStore(self.db_path).outcome_stats_by_track_type()
+        except Exception:
+            return None
 
     def _persist(self, run: OpportunityRun) -> None:
         try:

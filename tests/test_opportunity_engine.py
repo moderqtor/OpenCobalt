@@ -22,6 +22,7 @@ from opencobalt.core.opportunity_engine import (
     OpportunityEvidence,
     OpportunityRun,
     OpportunityTrack,
+    ProjectContext,
     TrackTemplate,
     build_delegation_tree,
     classify_goal,
@@ -281,3 +282,94 @@ class TestStore:
         assert outcomes[0]["outcome"] == "useful"
         with pytest.raises(ValueError):
             store.record_outcome("otrk-abc", outcome="amazing")
+
+
+class TestOutcomeWeightedScoring:
+    def test_no_history_means_no_adjustment(self) -> None:
+        from opencobalt.core.opportunity_engine import outcome_adjustment
+
+        assert outcome_adjustment("tests", None) is None
+        assert outcome_adjustment("tests", {}) is None
+        assert outcome_adjustment("tests", {"docs": {"useful": 2}}) is None
+
+    def test_useful_history_raises_and_wasted_lowers(self) -> None:
+        from opencobalt.core.opportunity_engine import outcome_adjustment
+
+        up, up_line = outcome_adjustment("tests", {"tests": {"useful": 3}})
+        down, down_line = outcome_adjustment("tests", {"tests": {"wasted": 3}})
+        assert up > 0 and down < 0
+        assert abs(up) <= 0.1 and abs(down) <= 0.1
+        assert "outcome_history" in up_line and "outcome_history" in down_line
+
+    def test_score_track_applies_history(self, tmp_path) -> None:
+        track = _track()
+        baseline = score_track(track, [])
+        boosted = score_track(track, [], outcome_stats={"docs": {"useful": 4}})
+        assert boosted.total > baseline.total
+        assert any("outcome_history" in line for line in boosted.explanation)
+
+    def test_engine_rescore_uses_recorded_outcomes(self, tmp_path) -> None:
+        from opencobalt.core.opportunity_store import OpportunityStore
+
+        engine = make_engine(tmp_path)
+        run = engine.brainstorm("improve code quality", plan=False)
+        track = next(t for t in run.tracks if t.track_type == "tests")
+        before = run.score_for(track.track_id).total
+        store = OpportunityStore(tmp_path / "ledger.db")
+        for _ in range(3):
+            store.record_outcome(track.track_id, outcome="useful")
+        engine.rescore(run)
+        after = run.score_for(track.track_id).total
+        assert after > before
+
+    def test_stats_grouped_by_track_type(self, tmp_path) -> None:
+        from opencobalt.core.opportunity_store import OpportunityStore
+
+        engine = make_engine(tmp_path)
+        run = engine.brainstorm("improve code quality", plan=False)
+        track = run.tracks[0]
+        store = OpportunityStore(tmp_path / "ledger.db")
+        store.record_outcome(track.track_id, outcome="useful")
+        store.record_outcome(track.track_id, outcome="wasted")
+        stats = store.outcome_stats_by_track_type()
+        assert stats[track.track_type]["useful"] == 1
+        assert stats[track.track_type]["wasted"] == 1
+
+
+class TestWebResearchCollector:
+    def test_disabled_by_default_returns_nothing(self, tmp_path) -> None:
+        from opencobalt.core.opportunity_engine import WebResearchEvidenceCollector
+
+        collector = WebResearchEvidenceCollector()
+        track = _track()
+        context = ProjectContext(root=tmp_path)
+        assert collector.collect(track, context=context) == []
+        # Enabled without a fetcher still does nothing (never networks).
+        assert WebResearchEvidenceCollector(enabled=True).collect(
+            track, context=context
+        ) == []
+
+    def test_injected_fetcher_produces_evidence(self, tmp_path) -> None:
+        from opencobalt.core.opportunity_engine import WebResearchEvidenceCollector
+
+        def fake_fetcher(query: str):
+            return [
+                {"reference": "local://result", "summary": f"prior art for {query}",
+                 "strength": 0.7},
+            ]
+
+        collector = WebResearchEvidenceCollector(enabled=True, fetcher=fake_fetcher)
+        track = _track()
+        items = collector.collect(track, context=ProjectContext(root=tmp_path))
+        assert len(items) == 1
+        assert items[0].source_type == "web_research"
+        assert items[0].strength == 0.7
+
+    def test_broken_fetcher_never_blocks(self, tmp_path) -> None:
+        from opencobalt.core.opportunity_engine import WebResearchEvidenceCollector
+
+        def broken(query: str):
+            raise RuntimeError("no network in tests")
+
+        collector = WebResearchEvidenceCollector(enabled=True, fetcher=broken)
+        assert collector.collect(_track(), context=ProjectContext(root=tmp_path)) == []
