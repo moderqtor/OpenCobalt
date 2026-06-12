@@ -439,3 +439,50 @@ def test_council_coordinate_mode_publishes_artifact(tmp_path, monkeypatch):
     assert result.exit_code == 0, _debug(result)
     assert "coordinate" in result.output
     assert "artifact" in result.output.lower()
+
+
+class TestTuiHelpers:
+    def test_tool_chips_shape(self):
+        from opencobalt.cli import _tool_chips
+
+        chips = _tool_chips()
+        labels = [c[0] for c in chips]
+        assert labels == ["antigravity", "claude", "codex", "ollama"]
+        for _label, detail, available in chips:
+            assert isinstance(detail, str)
+            assert isinstance(available, bool)
+
+    def test_merged_event_stream_orders_and_limits(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from opencobalt.cli import _merged_event_stream
+        from opencobalt.core.events import append_event, make_event
+
+        base = tmp_path / ".opencobalt" / "events"
+        for i, (name, source) in enumerate(
+            [("execution.jsonl", "x"), ("approval.jsonl", "y")]
+        ):
+            event = make_event(
+                event_type=f"test.{source}", subject_type="t", subject_id=str(i),
+                message=f"message {source}",
+            )
+            append_event(event, path=base / name)
+        rows = _merged_event_stream(limit=5)
+        assert len(rows) == 2
+        assert {r[1] for r in rows} == {"execution", "approval"}
+        # Sorted by time-of-day stamp.
+        assert rows == sorted(rows, key=lambda r: r[0])
+
+    def test_merged_event_stream_empty_dir(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from opencobalt.cli import _merged_event_stream
+
+        assert _merged_event_stream() == []
+
+    def test_git_branch_reads_head(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        from opencobalt.cli import _git_branch
+
+        assert _git_branch() == "-"
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/evolve-mode-v0\n")
+        assert _git_branch() == "evolve-mode-v0"

@@ -72,6 +72,12 @@ class CobaltShell:
         "install-hooks",
         "tui",
         "ui",
+        "opportunities",
+        "approvals",
+        "evolve",
+        "why",
+        "receipts",
+        "plans",
     ]
 
     def __init__(self, db_path: Path, bridge_path: Path) -> None:
