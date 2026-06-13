@@ -124,6 +124,7 @@ class ProvenanceBuilder:
         if not any_id:
             return None
         resolvers = (
+            self._trace_mission,
             self._trace_evolve,
             self._trace_opportunity_side,
             self._trace_approval_side,
@@ -175,6 +176,68 @@ class ProvenanceBuilder:
                     track_ids = [item.track_id]
                     trace.focus_id = item.evidence_id
         self._add_run_lineage(trace, run, only_tracks=track_ids)
+        return trace
+
+    def _trace_mission(self, any_id: str) -> ProvenanceTrace | None:
+        if not any_id.startswith(("mis-", "mstp-")):
+            return None
+        from .mission_engine import MissionStore
+
+        store = MissionStore(self.db_path)
+        step = None
+        if any_id.startswith("mstp-"):
+            step = store.get_step(any_id)
+            if step is None:
+                return None
+            mission = store.get_mission(step.mission_id)
+        else:
+            mission = store.get_mission(any_id)
+        if mission is None:
+            return None
+
+        focus_id = step.step_id if step else mission.mission_id
+        focus_kind = "mission_step" if step else "mission"
+        trace = ProvenanceTrace(focus_id=focus_id, focus_kind=focus_kind)
+        trace.add_node(
+            ProvenanceNode(
+                node_id=mission.mission_id,
+                kind="mission",
+                label=mission.goal[:80],
+                data={
+                    "mission_type": mission.mission_type,
+                    "status": mission.status,
+                    "outcome": mission.outcome,
+                },
+            )
+        )
+        if mission.run_id:
+            run = self._opportunity_store().get_run(mission.run_id)
+            if run is not None:
+                only = (
+                    [mission.selected_track_id] if mission.selected_track_id else None
+                )
+                self._add_run_lineage(trace, run, only_tracks=only)
+                trace.add_edge(mission.mission_id, run.goal.goal_id, "pursues")
+        for mission_step in store.list_steps(mission.mission_id):
+            trace.add_node(
+                ProvenanceNode(
+                    node_id=mission_step.step_id,
+                    kind="mission_step",
+                    label=mission_step.title[:70],
+                    data={
+                        "risk_level": mission_step.risk_level,
+                        "approval_state": mission_step.approval_state,
+                        "execution_state": mission_step.execution_state,
+                    },
+                )
+            )
+            trace.add_edge(mission.mission_id, mission_step.step_id, "tracks")
+            if mission_step.approval_step_id and trace.get_node(
+                mission_step.approval_step_id
+            ):
+                trace.add_edge(
+                    mission_step.step_id, mission_step.approval_step_id, "mirrors"
+                )
         return trace
 
     def _trace_evolve(self, any_id: str) -> ProvenanceTrace | None:

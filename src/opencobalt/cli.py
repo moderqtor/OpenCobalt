@@ -122,6 +122,12 @@ approvals_app = typer.Typer(
 )
 app.add_typer(approvals_app, name="approvals")
 
+missions_app = typer.Typer(
+    help="Mission State Machine v1: durable supervised missions that link "
+    "discovery, approval, execution, receipts, provenance, and outcomes."
+)
+app.add_typer(missions_app, name="missions")
+
 
 class _EvolveGroup(typer.core.TyperGroup):
     """Let `opencobalt evolve "goal text"` behave like `evolve start`."""
@@ -1217,6 +1223,7 @@ def public_check() -> None:
 _EVENT_STREAMS = (
     ("execution", "execution.jsonl", _GREEN),
     ("approval", "approval.jsonl", _YELLOW),
+    ("mission", "mission.jsonl", "#38bdf8"),
     ("evolve", "evolve.jsonl", _COBALT),
     ("opportunity", "opportunity.jsonl", "#c084fc"),
 )
@@ -4329,14 +4336,363 @@ def evolve_roadmap(
         )
 
 
+# --- Mission State Machine v1 ---
+
+
+def _mission_engine():
+    from .core.mission_engine import MissionEngine
+
+    return MissionEngine(db_path=_DB_PATH)
+
+
+_MISSION_STATUS_COLORS = {
+    "completed": _GREEN,
+    "failed": _RED,
+    "abandoned": "dim",
+    "awaiting_approval": _YELLOW,
+    "awaiting_feedback": _YELLOW,
+}
+
+
+def _mission_status_str(status: str) -> str:
+    color = _MISSION_STATUS_COLORS.get(status, _COBALT)
+    return f"[{color}]{status}[/{color}]"
+
+
+def _print_mission_steps(steps) -> None:
+    if not steps:
+        return
+    console.print("  [dim]Steps:[/dim]")
+    for step in steps:
+        line = (
+            f"    {step.step_id[:14]}  [{_risk_str(step.risk_level)}]"
+            f"  {_approval_state_str(step.approval_state)}"
+            f"  [dim]{step.execution_state}[/dim]  {step.title[:48]}"
+        )
+        if step.risk_level == "black":
+            line += f"  [{_RED}]blocked[/{_RED}]"
+        console.print(line)
+        if step.receipt_id:
+            console.print(f"        [dim]receipt:[/dim] {step.receipt_id[:14]}")
+
+
+def _mission_next_action(mission, steps) -> str | None:
+    mid = mission.mission_id[:13]
+    if mission.status in ("opportunities_generated", "candidates_generated",
+                          "plan_proposed", "verifying"):
+        return f"opencobalt missions advance {mid}"
+    for step in steps:
+        if step.approval_state == "pending" and step.risk_level != "black":
+            return f"opencobalt missions approve-step {step.step_id[:14]}"
+    for step in steps:
+        if step.approval_state == "approved":
+            return f"opencobalt missions run-step {step.step_id[:14]} --execute"
+    if mission.status == "awaiting_feedback":
+        return f"opencobalt missions outcome {mid} useful"
+    return None
+
+
+@missions_app.command("start")
+def missions_start(
+    goal: str = typer.Argument(..., help="The mission goal"),
+    mission_type: str = typer.Option(
+        "auto", "--type", help="auto / opportunity / evolve"
+    ),
+    max_risk: str = typer.Option(
+        "red", "--max-risk", help="Risk budget: green / yellow / red. "
+        "Only tightens the normal gates; black is always blocked."
+    ),
+    top_n: int = typer.Option(3, "--top", help="Tracks to plan during discovery"),
+) -> None:
+    """Create a durable mission and run opportunity discovery.
+
+    Discovery proposes, scores, and plans. Nothing executes; execution
+    only ever happens later via approved steps and --execute.
+    """
+    from .core.mission_engine import MissionError
+
+    engine = _mission_engine()
+    try:
+        mission = engine.start_mission(
+            goal, mission_type=mission_type, max_risk=max_risk, top_n=top_n
+        )
+    except MissionError as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"\n  [bold]Mission started:[/bold] {mission.mission_id}"
+        f"\n  [dim]Goal:[/dim]   {mission.goal}"
+        f"\n  [dim]Type:[/dim]   {mission.mission_type}"
+        f"\n  [dim]Status:[/dim] {_mission_status_str(mission.status)}"
+        f"\n  [dim]Budget:[/dim] {_risk_str(mission.max_risk)}"
+    )
+    if mission.run_id:
+        console.print(f"  [dim]Run:[/dim]    {mission.run_id}")
+    if mission.evolve_mission_id:
+        console.print(f"  [dim]Evolve:[/dim] {mission.evolve_mission_id}")
+    console.print(
+        f"\n  [dim]Next:[/dim] opencobalt missions advance {mission.mission_id[:13]}\n"
+    )
+
+
+@missions_app.command("list")
+def missions_list(
+    limit: int = typer.Option(10, "--limit", help="Missions to show"),
+) -> None:
+    """List missions with status, selection, approvals, and outcomes."""
+    engine = _mission_engine()
+    rows = engine.store.list_missions(limit=limit)
+    if not rows:
+        console.print(
+            "\n  [dim]No missions yet. Start one:[/dim] "
+            'opencobalt missions start "your goal"\n'
+        )
+        return
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("mission_id", style=_COBALT)
+    table.add_column("status")
+    table.add_column("track")
+    table.add_column("approval")
+    table.add_column("receipt")
+    table.add_column("outcome")
+    table.add_column("goal")
+    for row in rows:
+        table.add_row(
+            row["mission_id"][:14],
+            _mission_status_str(row["status"]),
+            (row["selected_track_id"] or "")[:13],
+            (row["approval_request_id"] or "")[:13],
+            (row["last_receipt_id"] or "")[:13],
+            row["outcome"] or "",
+            row["goal"][:38],
+        )
+    console.print(table)
+
+
+@missions_app.command("show")
+def missions_show(
+    mission_id: str = typer.Argument(..., help="Mission id (full or prefix)"),
+) -> None:
+    """Show one mission's full state: selection, plan, steps, receipts."""
+    engine = _mission_engine()
+    mission = engine.store.get_mission(mission_id)
+    if mission is None:
+        err.print(f"  [red]Unknown mission: {mission_id}[/red]")
+        raise typer.Exit(1)
+    steps = engine.sync_steps(mission)
+    console.print(
+        f"\n  [bold]Mission[/bold] {mission.mission_id}"
+        f"\n  [dim]Goal:[/dim]      {mission.goal}"
+        f"\n  [dim]Type:[/dim]      {mission.mission_type}"
+        f"\n  [dim]Status:[/dim]    {_mission_status_str(mission.status)}"
+        f"\n  [dim]Budget:[/dim]    {_risk_str(mission.max_risk)}"
+    )
+    for label, value in (
+        ("Run", mission.run_id),
+        ("Evolve", mission.evolve_mission_id),
+        ("Track", mission.selected_track_id),
+        ("Candidate", mission.selected_candidate_id),
+        ("Plan", mission.active_plan_id),
+        ("Approval", mission.approval_request_id),
+        ("Receipt", mission.last_receipt_id),
+        ("Outcome", mission.outcome),
+    ):
+        if value:
+            console.print(f"  [dim]{label}:[/dim]{' ' * max(1, 10 - len(label))}{value}")
+    _print_mission_steps(steps)
+    action = _mission_next_action(mission, steps)
+    if action:
+        console.print(f"\n  [dim]Next:[/dim] {action}")
+    console.print("")
+
+
+@missions_app.command("advance")
+def missions_advance(
+    mission_id: str = typer.Argument(..., help="Mission id (full or prefix)"),
+) -> None:
+    """Advance the mission one safe stage. Stops at approval boundaries;
+    never executes anything."""
+    from .core.mission_engine import MissionError
+
+    engine = _mission_engine()
+    try:
+        report = engine.advance(mission_id)
+    except (KeyError, MissionError) as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    mission = report.mission
+    console.print(
+        f"\n  [bold]Mission[/bold] {mission.mission_id[:14]}"
+        f"  [dim]status:[/dim] {_mission_status_str(mission.status)}"
+        f"\n  [dim]Action:[/dim] {report.action}"
+        f"\n  {report.detail}"
+    )
+    _print_mission_steps(report.steps)
+    action = _mission_next_action(mission, report.steps or engine.store.list_steps(mission.mission_id))
+    if action:
+        console.print(f"\n  [dim]Next:[/dim] {action}")
+    console.print("")
+
+
+@missions_app.command("approve-step")
+def missions_approve_step(
+    step_id: str = typer.Argument(..., help="Mission step id (full or prefix)"),
+    reason: str = typer.Option("", "--reason", help="Why this step is approved"),
+) -> None:
+    """Approve one pending mission step. Black risk cannot be approved;
+    approval never executes anything."""
+    from .core.approval_bridge import ApprovalError
+    from .core.mission_engine import MissionError
+
+    engine = _mission_engine()
+    try:
+        step = engine.approve_step(step_id, reason=reason)
+    except (KeyError, MissionError, ApprovalError) as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"\n  [bold]Step approved:[/bold] {step.step_id[:14]}"
+        f"  [{_risk_str(step.risk_level)}]"
+        f"  {_approval_state_str(step.approval_state)}"
+        f"\n  {step.title[:80]}"
+        f"\n\n  [dim]Run it (explicitly):[/dim] opencobalt missions run-step "
+        f"{step.step_id[:14]} --execute\n"
+    )
+
+
+@missions_app.command("run-step")
+def missions_run_step(
+    step_id: str = typer.Argument(..., help="Mission step id (full or prefix)"),
+    runtime: str | None = typer.Option(None, "--runtime", help="Runtime adapter id"),
+    execute: bool = typer.Option(
+        False, "--execute", help="Actually run (default is dry-run)"
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", help="Explicit approval for red-risk execution"
+    ),
+    rerun: bool = typer.Option(False, "--rerun", help="Run again if already executed"),
+) -> None:
+    """Run one approved mission step through the policy-gated, receipt-backed
+    execution engine. Dry-run by default; red needs --execute --yes; black
+    never runs."""
+    from .core.approval_bridge import ApprovalError
+    from .core.mission_engine import MissionError
+
+    engine = _mission_engine()
+    try:
+        step, report = engine.run_step(
+            step_id, runtime=runtime, execute=execute, approved=yes, rerun=rerun
+        )
+    except (KeyError, MissionError, ApprovalError) as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"\n  [bold]Step:[/bold] {step.step_id[:14]}"
+        f"  [{_risk_str(step.risk_level)}]"
+        f"  [dim]action:[/dim] {report.action}"
+        f"\n  {report.reason}"
+    )
+    if step.receipt_id:
+        console.print(f"  [dim]Receipt:[/dim] {step.receipt_id}")
+    if step.execution_plan_id:
+        console.print(f"  [dim]Exec plan:[/dim] {step.execution_plan_id[:14]}")
+    if not execute:
+        console.print(
+            "\n  [dim]Dry-run only. To execute:[/dim] opencobalt missions run-step "
+            f"{step.step_id[:14]} --execute"
+        )
+    if report.action in ("refused", "blocked") and execute:
+        console.print("")
+        raise typer.Exit(2)
+    console.print("")
+
+
+@missions_app.command("outcome")
+def missions_outcome(
+    mission_id: str = typer.Argument(..., help="Mission id (full or prefix)"),
+    outcome: str = typer.Argument(..., help="useful / neutral / wasted / abandoned"),
+    notes: str | None = typer.Option(None, "--notes", help="Optional notes"),
+) -> None:
+    """Record a receipt-evidenced outcome. Feeds bounded, explainable
+    outcome-weighted scoring for future missions."""
+    from .core.mission_engine import MissionError
+
+    engine = _mission_engine()
+    try:
+        outcome_id = engine.record_outcome(mission_id, outcome, notes=notes)
+    except (KeyError, MissionError, ValueError) as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    mission = engine.store.get_mission(mission_id)
+    status = mission.status if mission else "?"
+    console.print(
+        f"\n  [bold]Outcome recorded:[/bold] {outcome_id} ({outcome})"
+        f"\n  [dim]Mission status:[/dim] {_mission_status_str(status)}\n"
+    )
+
+
+@missions_app.command("why")
+def missions_why(
+    mission_id: str = typer.Argument(..., help="Mission id (full or prefix)"),
+) -> None:
+    """Readable provenance for one mission: goal, evidence, score, plan,
+    approvals, receipts, artifacts, and outcome."""
+    from .core.provenance import ProvenanceBuilder, render_trace_lines
+
+    engine = _mission_engine()
+    mission = engine.store.get_mission(mission_id)
+    if mission is None:
+        err.print(f"  [red]Unknown mission: {mission_id}[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"\n  [bold]Why mission[/bold] {mission.mission_id}"
+        f"\n  [dim]Goal:[/dim]    {mission.goal}"
+        f"\n  [dim]Type:[/dim]    {mission.mission_type}"
+        f"\n  [dim]Status:[/dim]  {_mission_status_str(mission.status)}"
+        f"\n  [dim]Outcome:[/dim] {mission.outcome or 'not recorded'}"
+    )
+
+    # Score explanation for the selected track, if any.
+    if mission.run_id and mission.selected_track_id:
+        from .core.opportunity_store import OpportunityStore
+
+        run = OpportunityStore(_DB_PATH).get_run(mission.run_id)
+        score = run.score_for(mission.selected_track_id) if run else None
+        if score:
+            console.print(f"\n  [dim]Score explanation ({score.total:.3f}):[/dim]")
+            for line in score.explanation[:12]:
+                console.print(f"    {line}", markup=False, highlight=False)
+
+    trace = ProvenanceBuilder(_DB_PATH).trace(mission.mission_id)
+    if trace is not None:
+        console.print(f"\n  [dim]Lineage ({len(trace.nodes)} node(s)):[/dim]")
+        for line in render_trace_lines(trace):
+            console.print(f"  {line}", markup=False, highlight=False)
+
+    events = engine.store.list_mission_events(mission.mission_id)
+    if events:
+        console.print(f"\n  [dim]Mission events ({len(events)}):[/dim]")
+        for event in events[-15:]:
+            message = event["payload"].get("message", event["event_type"])
+            console.print(
+                f"    {event['created_at'][:19]}  {event['event_type']}  {message}",
+                markup=False, highlight=False,
+            )
+    console.print("")
+
+
 # --- Provenance ---
 
 
 @app.command("why")
 def why(
     any_id: str = typer.Argument(
-        ..., help="Any known id: run, goal, track, evidence, opportunity plan, "
-        "approval request, step, execution plan, receipt, artifact, or outcome"
+        ..., help="Any known id: mission, mission step, run, goal, track, "
+        "evidence, opportunity plan, approval request, step, execution plan, "
+        "receipt, artifact, or outcome"
     ),
 ) -> None:
     """Trace the lineage of any object: what caused it, what evidence and
@@ -4348,7 +4704,8 @@ def why(
     if trace is None:
         err.print(
             f"  [red]No lineage found for: {any_id}[/red]\n"
-            "  [dim]Accepted: orun-/goal-/otrk-/ev-/oplan-/areq-/astp-/oout- ids, "
+            "  [dim]Accepted: mis-/mstp-/emis-/ecand-/orun-/goal-/otrk-/ev-/"
+            "oplan-/areq-/astp-/oout- ids, "
             "or execution plan / receipt / artifact ids.[/dim]"
         )
         raise typer.Exit(1)

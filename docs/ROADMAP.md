@@ -211,9 +211,90 @@ that does not change the local-first default.
 - Hard boundaries: no self-replication, no auto-merge/push, no network,
   no spend/credential paths, no policy-gate bypass
 
+### Phase 21: Mission State Machine v1
+
+- Durable mission spine (`core/mission_engine.py`, see `docs/MISSIONS.md`):
+  missions (`mis-`), mirrored mission steps (`mstp-`), append-only mission
+  events (`mev-`, enforced by SQLite triggers)
+- One lifecycle across the existing systems: discovery (opportunity or
+  evolve), selection, plan promotion, approval-backed steps, policy-gated
+  execution, receipts, verification, provenance, outcome feedback
+- `missions advance` moves one safe stage and stops at approval
+  boundaries; execution only via `missions run-step --execute`
+- Risk budgets (`--max-risk`) only tighten the existing gates; black
+  remains blocked with no override; red still needs `--execute --yes`
+- Evolve missions are a mission type, not a separate universe: evolve
+  candidates back mission selection and keep receipt/outcome linkage
+- `why` resolves `mis-`/`mstp-` ids through the same provenance builder
+- CLI: `missions start/list/show/advance/approve-step/run-step/outcome/why`
+
 ## In Progress / Next
 
-### Phase 21: Loop depth and surfaces
+Direction note: OpenCobalt is a trust, control, provenance, and
+orchestration layer, not wrapperware. Adding "support for tool X" is not a
+goal by itself and shallow adapter work is rejected. Every future adapter
+must arrive as a full loop: capability discovery -> normalized receipt
+contract -> artifact capture -> policy boundary -> provenance edge ->
+outcome feedback. An adapter that cannot produce verifiable receipts and
+provenance edges does not ship.
+
+### Adapter and evidence loops
+
+- cursor-runtime-adapter-v0: Cursor as a runtime behind the existing
+  policy gate. Capability discovery first, then a receipt contract for its
+  outputs, artifact hashing, provenance edges, and outcome feedback. Not a
+  "Cursor integration" checkbox.
+- adapter-receipt-normalization-v1: one normalized receipt contract that
+  every runtime adapter (claude-code, codex-cli, gemini-cli, cursor,
+  ollama, noop) must satisfy, so receipts stay comparable across runtimes
+  and learned routing has a consistent signal.
+- web-research-evidence-collector-v0: a live fetcher for the existing
+  `EvidenceCollector` protocol. Explicit configuration required, off by
+  default, every fetch logged as evidence with source and strength, no
+  background crawling.
+
+### Mission depth
+
+- evolve-long-running-missions-v1: multi-cycle evolve missions that reuse
+  Mission State Machine v1 (propose -> score -> plan -> approve -> execute
+  -> verify -> learn, repeated across cycles with durable mission events).
+- learned routing from outcomes: extend bounded outcome-weighted scoring
+  from track selection into runtime selection. Weights stay capped and
+  explainable; no hidden self-modifying state.
+- self-upgrade-pr-automation-v0: an approved evolve candidate can prepare
+  a local branch, commits, and a PR draft as artifacts behind explicit
+  approval. No auto-merge, no push without instruction, receipts for every
+  step.
+- long-running supervised autonomy: a legitimate "make useful progress
+  while I'm away" mode. It may gather evidence, score opportunities,
+  generate candidates, prepare plans, run safe dry-runs, queue approvals,
+  verify local artifacts, and summarize blocked decisions. It never
+  crosses an approval boundary and never spends, deploys, publishes, or
+  messages. Everything it does is replayable from receipts and why traces.
+
+### Surfaces
+
+- provenance graph visualization: render the existing why-trace graph
+  (nodes and edges already exist) in the TUI and desktop UI.
+- desktop-control-room-prototype-v0: a desktop surface over missions,
+  approvals, receipts, and provenance. A control room for bounded
+  autonomy, not a chat window.
+
+### capital-mission-envelope-v0 (design only)
+
+A future mission type for capital allocation research. Design constraints,
+all mandatory:
+
+- watch-only wallet state; OpenCobalt never holds keys
+- explicit budget caps declared up front, enforced as a mission risk budget
+- opportunity research and risk scoring through the existing engines
+- simulations and dry-runs only; every projection is an artifact
+- unsigned transaction proposals as artifacts; a human signs elsewhere
+- human approval for every step; receipts and outcome tracking throughout
+- no custody of seed phrases or private keys, ever
+- no autonomous spending path exists, even behind flags
+
+### Phase 21 (continued): Loop depth and surfaces
 
 - UI panels for opportunity tracks, subagent trees, evidence, and approval state
 - Evaluator-driven discovery on bounded local domains (routing keywords,
