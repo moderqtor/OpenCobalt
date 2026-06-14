@@ -35,7 +35,7 @@ All code lives in `src/opencobalt/execution/`:
 |--------|----------------|
 | `models.py` | `ExecutionPlan`, `ExecutionStep`, `ExecutionResult`, `ExecutionArtifact`, `WorkReceipt` (Pydantic) |
 | `policy.py` | Deterministic risk classification and the execution gate |
-| `adapters.py` | `RuntimeAdapter` protocol plus `cursor`, `google-antigravity`, `ollama`, `noop` adapters |
+| `adapters.py` | `RuntimeAdapter` protocol plus `claude-code`, `cursor`, `google-antigravity`, `ollama`, `noop` adapters |
 | `runner.py` | Safe subprocess runner (argv lists, no shell, timeouts, output spill) |
 | `artifacts.py` | Streaming SHA-256 hashing, attach, verify |
 | `store.py` | SQLite persistence in `.opencobalt/ledger.db` |
@@ -102,6 +102,12 @@ normalized capability snapshot, and builds a default-safe argv:
   `--sandbox enabled` are included only when local help advertises them.
   Cloud mode, force, browser automation, MCP auto-approval, login, logout,
   and API-key flags are never used.
+- `claude-code`: limited to discovered `claude --print --output-format text`
+  with `--permission-mode plan`. `--model`, `--no-session-persistence`,
+  `--safe-mode`, `--no-chrome`, and empty MCP config flags are included only
+  when local help advertises them. Dangerous permission bypass, unrestricted
+  tools, auth, token, browser-control, deploy, publish, spend, message, and MCP
+  auto-approval paths are never used.
 - `ollama`: one-shot `ollama run <model> <prompt>` (default model `llama3`).
 - `noop`: echoes the task. Exists for tests and pipeline verification.
 
@@ -208,3 +214,9 @@ model behavior.
 - Cursor receipts verify captured stdout/stderr artifacts, not Cursor account
   state or semantic correctness. Cursor credentials, cookies, tokens, and
   project auth are never stored by OpenCobalt.
+- Claude Code Runtime Adapter v0 is partial when local `claude --help` proves
+  print mode with permission-mode plan. It is unavailable when `claude` is
+  absent and discovery-only when safe headless invocation is not proven.
+- Claude Code receipts verify captured stdout/stderr artifacts, not Claude
+  account state, model correctness, or internal permission enforcement. Raw
+  environment variables and credentials are never stored by OpenCobalt.

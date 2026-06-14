@@ -25,7 +25,7 @@ entry is not runtime adapter support.
 |------|--------|------|-------------|---------------|--------|
 | aider | https://github.com/paul-gauthier/aider | worker | code editing | `shutil.which("aider")` | stub if not installed |
 | ollama | https://github.com/ollama/ollama | worker | local inference | `subprocess.run(["ollama", "list"])` returns 0 | stub if not installed |
-| claude-code | https://github.com/anthropics/claude-code | executive | architecture, code, review, debug, security | `shutil.which("claude")` | stub if not installed |
+| claude-code | https://github.com/anthropics/claude-code | executive | architecture, code, review, debug, security | `shutil.which("claude")` | executable awareness only; runtime support comes from `opencobalt adapters inspect claude-code` |
 | google-antigravity | https://antigravity.google/product/antigravity-cli | executive | agent-runtime, interactive-cli, runtime-discovered workflows | `shutil.which("agy")` plus `agy --version` and `agy --help` diagnostics | primary Google agent runtime |
 | cursor | https://www.cursor.com | manager | ui, editor, frontend, component, style, adapter-aware | `shutil.which("cursor")` or common macOS `Cursor.app` paths | editor awareness only; runtime support comes from `opencobalt adapters inspect cursor` |
 | context7 | https://github.com/upstash/context7 | manager | docs, search, mcp, library-context | not checkable via PATH | always available |
@@ -44,6 +44,14 @@ The integration check can say the editor is installed, but it does not prove
 receipt-backed execution. Cursor runtime support requires the execution adapter
 to discover `cursor agent --print --mode plan` locally. If that surface is
 missing, Cursor is discovery-only or unavailable and must not produce fake
+successful receipts.
+
+Use `opencobalt adapters inspect claude-code` to inspect Claude Code runtime
+evidence. The integration check can say `claude` is installed, but it does not
+prove receipt-backed execution. Claude Code runtime support requires the
+execution adapter to discover `claude --print`, `--output-format text`, and
+`--permission-mode plan` locally. If that safe headless surface is missing,
+Claude Code is discovery-only or unavailable and must not produce fake
 successful receipts.
 
 ## Adding a new integration

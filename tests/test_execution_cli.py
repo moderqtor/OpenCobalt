@@ -46,6 +46,27 @@ Options:
 """
 
 
+def _claude_help() -> str:
+    return """
+Usage: claude [options] [command] [prompt]
+
+Claude Code - starts an interactive session by default, use -p/--print for
+non-interactive output
+
+Options:
+  --allow-dangerously-skip-permissions  Enable bypassing all permission checks as an option.
+  --dangerously-skip-permissions        Bypass all permission checks.
+  --mcp-config <configs...>             Load MCP servers from JSON files or strings.
+  --strict-mcp-config                   Only use MCP servers from --mcp-config.
+  --no-chrome                           Disable Claude in Chrome integration
+  --no-session-persistence              Disable session persistence.
+  --output-format <format>              Output format (only works with --print): text, json, stream-json
+  --permission-mode <mode>              Permission mode choices: acceptEdits, auto, bypassPermissions, default, dontAsk, plan
+  -p, --print                           Print response and exit.
+  --safe-mode                           Start with customizations disabled.
+"""
+
+
 class TestRunCommand:
     def test_dry_run_produces_plan_without_subprocess(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -227,6 +248,7 @@ class TestAdapterCommands:
         monkeypatch.chdir(tmp_path)
         result = _invoke("adapters", "list")
         assert result.exit_code == 0, result.output
+        assert "claude-code" in result.output
         assert "cursor" in result.output
         assert "noop" in result.output
         assert "google-antigravity" in result.output
@@ -272,6 +294,72 @@ class TestAdapterCommands:
         assert "non_interactive_print" in result.output
         assert "read_only_plan_mode" in result.output
         assert "cloud mode is not enabled" in result.output
+
+    def test_adapters_inspect_claude_shows_partial_runtime_limits(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        fake_claude = tmp_path / "claude"
+        fake_claude.write_text("#!/bin/sh\nexit 0\n")
+        fake_claude.chmod(0o755)
+
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_claude) if command == "claude" else None,
+        )
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.subprocess.run",
+            lambda args, **kwargs: subprocess.CompletedProcess(
+                args,
+                0,
+                stdout=(
+                    "2.1.176 (Claude Code)"
+                    if "--version" in args
+                    else _claude_help()
+                ),
+                stderr="",
+            ),
+        )
+
+        result = _invoke("adapters", "inspect", "claude-code")
+
+        assert result.exit_code == 0, result.output
+        assert "Adapter claude-code" in result.output
+        assert str(fake_claude) in result.output.replace("\n", "")
+        assert "Available: yes" in result.output
+        assert "Capability level: partial" in result.output
+        assert "Requires network: yes" in result.output
+        assert "Requires credentials: yes" in result.output
+        assert "Artifact support:" in result.output
+        assert "stdout, stderr" in result.output
+        assert "non_interactive_print" in result.output
+        assert "plan_permission_mode" in result.output
+        assert "dangerous permission bypass modes are not used" in result.output
+
+    def test_integrations_check_claude_does_not_overclaim_runtime_support(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.integrations.claude_code_integration.shutil.which",
+            lambda command: "/usr/local/bin/claude" if command == "claude" else None,
+        )
+
+        result = _invoke("integrations", "check")
+
+        assert result.exit_code == 0, result.output
+        assert "claude-code" in result.output
+        flat_output = re.sub(r"\s+", " ", result.output)
+        assert "runtime evidence: opencobalt adapters inspect claude-code" in flat_output
+        assert "receipt-backed execution ready" not in result.output
+
+    def test_run_help_lists_claude_code_runtime(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        result = _invoke("run", "--help")
+
+        assert result.exit_code == 0, result.output
+        assert "claude-code" in result.output
 
 
 class TestArtifactsCommands:

@@ -106,6 +106,12 @@ Adapter Receipt Normalization v1 covers the existing execution adapters:
 - `google-antigravity`: canonical Antigravity runtime id, with legacy Gemini CLI
   aliases resolved to the canonical adapter. Unknown runtime capabilities remain
   unknown.
+- `claude-code`: Claude Code runtime id. Discovery checks a real `claude`
+  executable on PATH plus local `claude --version` and `claude --help`
+  evidence. Execution is available only when local help proves `--print`,
+  `--output-format text`, and `--permission-mode plan`. Receipts are partial
+  because Claude account state, network model behavior, and internal permission
+  enforcement live outside OpenCobalt.
 - `cursor`: Cursor Agent runtime id. Discovery checks a real `cursor`
   executable on PATH and common macOS `Cursor.app` locations. Execution is
   only available when local help proves `cursor agent --print --mode plan`
@@ -169,9 +175,45 @@ Cursor execution still flows through `ExecutionEngine`: deterministic risk
 classification, dry-run default, policy gate, captured stdout/stderr artifacts,
 hash verification, normalized receipt metadata, and provenance references.
 
+## Claude Code Runtime Adapter v0
+
+Claude Code is a runtime adapter only through the normalized receipt contract.
+The integration registry can report that `claude` is installed, but runtime
+support is determined by:
+
+```
+opencobalt adapters inspect claude-code
+```
+
+Discovery is conservative:
+
+- `unavailable`: no `claude` executable was found.
+- `partial`: `claude` is installed or local help/version evidence was
+  discovered. If safe headless invocation is not proven, support is
+  discovery-only.
+- `full`: not claimed in v0.
+
+The only command OpenCobalt builds in v0 is a read-only planning prompt through
+local help-proven print mode:
+
+```
+claude --print --output-format text --permission-mode plan "OpenCobalt read-only planning request:
+TASK"
+```
+
+Optional `--model`, `--no-session-persistence`, `--safe-mode`, `--no-chrome`,
+and empty MCP config flags are included only when local help advertises them.
+OpenCobalt never adds dangerous permission bypass flags, MCP auto-approval,
+browser-control, auth, token, deploy, publish, spend, or message paths.
+
+Claude Code execution still flows through `ExecutionEngine`: deterministic risk
+classification, dry-run default, policy gate, captured stdout/stderr artifacts,
+hash verification, normalized receipt metadata, and provenance references.
+OpenCobalt does not rely on Claude Code's internal permission system alone.
+
 ## Next Branch
 
-After Cursor Runtime Adapter v0, the next adapter branches should add
-receipt-backed Claude Code and Codex CLI runtime adapters, then outcome-weighted
-adapter routing. Long-running mission execution should wait until those
-runtime receipts are in place.
+After Claude Code Runtime Adapter v0, the next adapter branch should add
+receipt-backed Codex CLI support, then outcome-weighted adapter routing.
+Long-running mission execution should wait until those runtime receipts are in
+place.

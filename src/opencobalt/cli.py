@@ -1767,7 +1767,13 @@ def integrations_check() -> None:
             inactive.append(name)
 
     for name in sorted(active):
-        if name == "cursor":
+        if name == "claude-code":
+            console.print(
+                f"  {_dot(True)}  {name}"
+                " [dim](installed; runtime evidence: "
+                "opencobalt adapters inspect claude-code)[/dim]"
+            )
+        elif name == "cursor":
             console.print(
                 f"  {_dot(True)}  {name}"
                 " [dim](editor installed; runtime evidence: "
@@ -1828,6 +1834,7 @@ def adapters_inspect(
     console.print(f"  [dim]Executable:[/dim] {snapshot.executable_path or adapter.executable}")
     console.print(f"  [dim]Available:[/dim] {'yes' if snapshot.available else 'no'}")
     console.print(f"  [dim]snapshot hash:[/dim] {snapshot.snapshot_hash}")
+    console.print(f"  [dim]Capability level:[/dim] {snapshot.verifiability_level}")
     console.print(f"  [dim]Verifiability:[/dim] {snapshot.verifiability_level}")
     console.print(f"  [dim]Requires network:[/dim] {'yes' if snapshot.requires_network else 'no'}")
     console.print(
@@ -3178,7 +3185,10 @@ def run_task(
     runtime: str | None = typer.Option(
         None,
         "--runtime",
-        help="Runtime id (cursor, google-antigravity, ollama, noop). Routed if omitted.",
+        help=(
+            "Runtime id (claude-code, cursor, google-antigravity, ollama, noop). "
+            "Routed if omitted."
+        ),
     ),
     model: str | None = typer.Option(None, "--model", help="Model to request, if the runtime supports selection"),
     execute: bool = typer.Option(False, "--execute", help="Actually run the command (default is dry-run)"),
