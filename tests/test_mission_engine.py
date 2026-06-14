@@ -316,6 +316,10 @@ class TestExecutionAndReceipts:
         receipt = ExecutionStore(env["db"]).get_receipt(step.receipt_id)
         assert receipt is not None
         assert receipt.artifact_ids, "execution must hash output artifacts"
+        assert receipt.adapter_id == "noop"
+        assert receipt.capability_snapshot_hash
+        assert receipt.normalized_invocation is not None
+        assert receipt.normalized_receipt is not None
 
     def test_receipt_links_back_to_mission_step_and_mission(self, env) -> None:
         run, track, plan = _make_run_with_steps(
@@ -333,6 +337,26 @@ class TestExecutionAndReceipts:
         stored_mission = env["engine"].store.get_mission(mission.mission_id)
         assert stored_mission.last_receipt_id == step.receipt_id
         assert stored_mission.status == "verifying"
+
+    def test_mission_run_step_links_receipt_with_adapter_snapshot(self, env) -> None:
+        run, track, plan = _make_run_with_steps(
+            env["db"], [("edit the config file safely", "yellow")]
+        )
+        mission = _make_mission_at_plan_proposed(env["db"], run, track, plan)
+        steps = _promote(env["engine"], mission)
+        env["engine"].approve_step(steps[0].step_id)
+        step, _ = env["engine"].run_step(
+            steps[0].step_id, runtime="noop", execute=True
+        )
+
+        from opencobalt.execution.store import ExecutionStore
+
+        receipt = ExecutionStore(env["db"]).get_receipt(step.receipt_id)
+        assert receipt is not None
+        assert receipt.adapter_id == "noop"
+        assert receipt.capability_snapshot_hash
+        assert receipt.normalized_receipt is not None
+        assert step.receipt_id == receipt.receipt_id
 
     def test_verify_then_feedback_then_outcome(self, env) -> None:
         run, track, plan = _make_run_with_steps(
@@ -385,6 +409,8 @@ class TestProvenance:
             assert expected in kinds, f"trace missing {expected}: {kinds}"
         rendered = "\n".join(render_trace_lines(trace))
         assert mission.mission_id[:14] in rendered
+        assert "adapter_id=noop" in rendered
+        assert "capability_snapshot_hash=" in rendered
 
     def test_mission_step_id_resolves_in_provenance(self, env) -> None:
         from opencobalt.core.provenance import ProvenanceBuilder

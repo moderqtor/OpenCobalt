@@ -25,6 +25,13 @@ from .models import (
     ExecutionStep,
     WorkReceipt,
 )
+from .normalization import (
+    build_invocation,
+    build_normalized_receipt,
+    capability_snapshot_payload,
+    events_for_receipt,
+    verify_normalized_integrity,
+)
 from .policy import PolicyDecision, check_execution, classify_risk, max_risk
 from .runner import ProcessRunner, redact_argv, redact_text
 from .store import ExecutionStore
@@ -110,6 +117,10 @@ class ExecutionEngine:
         cwd: str | None = None,
         unsafe_skip_permissions: bool = False,
         adapter: RuntimeAdapter | None = None,
+        mission_id: str | None = None,
+        approval_id: str | None = None,
+        mission_step_id: str | None = None,
+        approval_step_id: str | None = None,
     ) -> ExecutionOutcome:
         """Run the full receipt-backed slice for one task.
 
@@ -150,6 +161,9 @@ class ExecutionEngine:
         # 2. Classify risk: worst of policy keywords, router, and adapter view.
         risk = max_risk(classify_risk(task), risk_from_route, adapter.risk_for_task(task))
         needs_approval = risk in ("red", "black")
+        capability_snapshot = adapter.discover_capabilities()
+        capabilities = capability_snapshot.capability_details
+        limitations = list(capability_snapshot.limitations)
 
         # 3. Build the safe command. Capability mismatches fail before any plan runs.
         options = CommandOptions(
@@ -164,8 +178,27 @@ class ExecutionEngine:
                 "WARNING: unsafe permission-skip override requested",
                 unsafe_override=True,
             )
-        command_argv = adapter.build_command(task, options)
         timeout = timeout_seconds or adapter.default_timeout_seconds()
+        command_error: str | None = None
+        command_argv: list[str] = []
+        if not capability_snapshot.available:
+            command_error = f"runtime unavailable: {runtime}"
+        elif not capability_snapshot.supports_noninteractive:
+            command_error = "non-interactive invocation unavailable"
+        else:
+            try:
+                command_argv = adapter.build_command(redacted_task, options)
+            except ValueError as exc:
+                command_error = str(exc)
+        if command_error:
+            limitations.append(command_error)
+            self._emit(
+                EVENT_POLICY_CHECKED,
+                runtime,
+                f"adapter skipped: {command_error}",
+                allowed=False,
+                risk_level=risk,
+            )
 
         # 4. Create and persist the plan.
         step = ExecutionStep(
@@ -177,7 +210,7 @@ class ExecutionEngine:
             timeout_seconds=timeout,
         )
         plan = ExecutionPlan(
-            task=task,
+            task=redacted_task,
             runtime=runtime,
             model_policy=model,
             cwd=cwd,
@@ -185,6 +218,20 @@ class ExecutionEngine:
             approval_required=needs_approval,
             steps=[step],
             dry_run=dry_run,
+        )
+        invocation = build_invocation(
+            adapter_id=runtime,
+            command_argv=command_argv,
+            cwd=cwd,
+            expected_artifacts=list(capability_snapshot.supported_artifact_types),
+            risk_level=risk,
+            dry_run=dry_run,
+            timeout_seconds=timeout,
+            mission_id=mission_id,
+            approval_id=approval_id,
+            mission_step_id=mission_step_id,
+            approval_step_id=approval_step_id,
+            structured_action={"skipped_reason": command_error} if command_error else None,
         )
         self.store.save_plan(plan)
         self._emit(
@@ -201,22 +248,28 @@ class ExecutionEngine:
             allowed=policy.allowed, risk_level=policy.risk_level,
         )
 
-        capabilities = adapter.capabilities()
         receipt = WorkReceipt(
             plan_id=plan.plan_id,
-            task=task,
+            task=redacted_task,
             selected_runtime=runtime,
             route_reason=route_reason,
             risk_level=risk,
             approval_required=needs_approval,
-            capabilities_snapshot=capabilities,
-            command_plan=command_argv,
+            capabilities_snapshot=capability_snapshot_payload(
+                capabilities,
+                capability_snapshot,
+            ),
+            command_plan=redact_argv(command_argv),
+            adapter_id=runtime,
+            capability_snapshot_hash=capability_snapshot.snapshot_hash,
+            normalized_invocation=invocation,
+            limitations=limitations,
         )
 
         result: ExecutionResult | None = None
-        if policy.allowed and not dry_run:
+        if policy.allowed and not dry_run and not command_error:
             result = self._execute(plan, step, receipt)
-        elif dry_run:
+        elif dry_run or command_error:
             step.status = "skipped"
             self.store.save_plan(plan)
 
@@ -232,6 +285,14 @@ class ExecutionEngine:
             refreshed = self.store.get_receipt(receipt.receipt_id)
             if refreshed is not None:
                 receipt = refreshed
+        receipt = self._finalize_receipt(
+            receipt=receipt,
+            plan=plan,
+            invocation=invocation,
+            capability_snapshot=capability_snapshot,
+            result=result,
+            limitations=limitations,
+        )
 
         return ExecutionOutcome(
             plan=plan,
@@ -280,7 +341,7 @@ class ExecutionEngine:
             for source in original.steps
         ]
         plan = ExecutionPlan(
-            task=original.task,
+            task=redact_text(original.task),
             runtime=original.runtime,
             model_policy=original.model_policy,
             cwd=original.cwd,
@@ -288,6 +349,20 @@ class ExecutionEngine:
             approval_required=needs_approval,
             steps=steps,
             dry_run=dry_run,
+        )
+        adapter = get_adapter(original.runtime)
+        capability_snapshot = adapter.discover_capabilities()
+        capabilities = capability_snapshot.capability_details
+        limitations = list(capability_snapshot.limitations)
+        invocation = build_invocation(
+            adapter_id=original.runtime,
+            command_argv=steps[0].command_argv,
+            cwd=original.cwd,
+            expected_artifacts=list(capability_snapshot.supported_artifact_types),
+            risk_level=risk,
+            dry_run=dry_run,
+            timeout_seconds=steps[0].timeout_seconds,
+            structured_action={"replay_of_plan": plan_id},
         )
         self.store.save_plan(plan)
         self._emit(
@@ -307,12 +382,20 @@ class ExecutionEngine:
 
         receipt = WorkReceipt(
             plan_id=plan.plan_id,
-            task=original.task,
+            task=redact_text(original.task),
             selected_runtime=original.runtime,
             route_reason=route_reason,
             risk_level=risk,
             approval_required=needs_approval,
-            command_plan=list(steps[0].command_argv),
+            capabilities_snapshot=capability_snapshot_payload(
+                capabilities,
+                capability_snapshot,
+            ),
+            command_plan=redact_argv(list(steps[0].command_argv)),
+            adapter_id=original.runtime,
+            capability_snapshot_hash=capability_snapshot.snapshot_hash,
+            normalized_invocation=invocation,
+            limitations=limitations,
         )
 
         result: ExecutionResult | None = None
@@ -335,6 +418,14 @@ class ExecutionEngine:
             refreshed = self.store.get_receipt(receipt.receipt_id)
             if refreshed is not None:
                 receipt = refreshed
+        receipt = self._finalize_receipt(
+            receipt=receipt,
+            plan=plan,
+            invocation=invocation,
+            capability_snapshot=capability_snapshot,
+            result=result,
+            limitations=limitations,
+        )
 
         return ExecutionOutcome(
             plan=plan,
@@ -402,6 +493,51 @@ class ExecutionEngine:
             )
         return result
 
+    def _finalize_receipt(
+        self,
+        *,
+        receipt: WorkReceipt,
+        plan: ExecutionPlan,
+        invocation,
+        capability_snapshot,
+        result: ExecutionResult | None,
+        limitations: list[str],
+        provenance_refs: list[str] | None = None,
+    ) -> WorkReceipt:
+        artifacts = [
+            artifact
+            for artifact_id in receipt.artifact_ids
+            if (artifact := self.store.get_artifact(artifact_id)) is not None
+        ]
+        refs = provenance_refs or [plan.plan_id]
+        if receipt.execution_id:
+            refs.append(receipt.execution_id)
+        refs.extend(receipt.artifact_ids)
+        receipt.adapter_id = invocation.adapter_id
+        receipt.capability_snapshot_hash = capability_snapshot.snapshot_hash
+        receipt.normalized_invocation = invocation
+        receipt.adapter_events = events_for_receipt(
+            events=self._events,
+            invocation_id=invocation.invocation_id,
+            adapter_id=invocation.adapter_id,
+        )
+        receipt.provenance_refs = refs
+        receipt.limitations = list(dict.fromkeys(limitations))
+        receipt.normalized_receipt = build_normalized_receipt(
+            receipt_id=receipt.receipt_id,
+            invocation=invocation,
+            capability_snapshot=capability_snapshot,
+            plan=plan,
+            result=result,
+            artifacts=artifacts,
+            verification_status=receipt.verification_status,
+            limitations=receipt.limitations,
+            provenance_refs=receipt.provenance_refs,
+            event_count=len(self._events),
+        )
+        self.store.save_receipt(receipt)
+        return receipt
+
     # --- Verification ---
 
     def verify_receipt(self, receipt_id: str) -> str:
@@ -414,14 +550,19 @@ class ExecutionEngine:
         if receipt is None:
             raise KeyError(f"unknown receipt: {receipt_id}")
         if not receipt.artifact_ids:
+            if not verify_normalized_integrity(receipt, []):
+                self.store.set_receipt_verification(receipt_id, "failed")
+                return "failed"
             return receipt.verification_status
 
         outcomes: list[bool] = []
+        artifacts = []
         for artifact_id in receipt.artifact_ids:
             artifact = self.store.get_artifact(artifact_id)
             if artifact is None:
                 outcomes.append(False)
                 continue
+            artifacts.append(artifact)
             outcomes.append(verify_artifact(artifact).verified)
 
         if all(outcomes):
@@ -439,5 +580,14 @@ class ExecutionEngine:
                 EVENT_VERIFICATION_FAILED, receipt_id,
                 "all artifact hashes failed verification",
             )
+        if not verify_normalized_integrity(receipt, artifacts):
+            status = "failed"
+            self._emit(
+                EVENT_VERIFICATION_FAILED, receipt_id,
+                "normalized receipt integrity failed",
+            )
+        if receipt.normalized_receipt is not None:
+            receipt.normalized_receipt.verification_status = status
+            self.store.save_receipt(receipt)
         self.store.set_receipt_verification(receipt_id, status)
         return status

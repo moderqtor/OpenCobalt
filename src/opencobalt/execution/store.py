@@ -12,10 +12,13 @@ import sqlite3
 from pathlib import Path
 
 from .models import (
+    AdapterExecutionEvent,
     ExecutionArtifact,
     ExecutionPlan,
     ExecutionResult,
     ExecutionStep,
+    NormalizedAdapterReceipt,
+    NormalizedInvocation,
     WorkReceipt,
 )
 
@@ -82,9 +85,26 @@ CREATE TABLE IF NOT EXISTS work_receipts (
     command_plan_json          TEXT NOT NULL DEFAULT '[]',
     artifact_ids_json          TEXT NOT NULL DEFAULT '[]',
     verification_status        TEXT NOT NULL DEFAULT 'unverified',
+    adapter_id                 TEXT,
+    capability_snapshot_hash   TEXT,
+    normalized_invocation_json TEXT NOT NULL DEFAULT '{}',
+    normalized_receipt_json    TEXT NOT NULL DEFAULT '{}',
+    adapter_events_json        TEXT NOT NULL DEFAULT '[]',
+    limitations_json           TEXT NOT NULL DEFAULT '[]',
+    provenance_refs_json       TEXT NOT NULL DEFAULT '[]',
     created_at                 TEXT NOT NULL
 );
 """
+
+_WORK_RECEIPT_MIGRATIONS = {
+    "adapter_id": "TEXT",
+    "capability_snapshot_hash": "TEXT",
+    "normalized_invocation_json": "TEXT NOT NULL DEFAULT '{}'",
+    "normalized_receipt_json": "TEXT NOT NULL DEFAULT '{}'",
+    "adapter_events_json": "TEXT NOT NULL DEFAULT '[]'",
+    "limitations_json": "TEXT NOT NULL DEFAULT '[]'",
+    "provenance_refs_json": "TEXT NOT NULL DEFAULT '[]'",
+}
 
 
 class ExecutionStore:
@@ -93,11 +113,21 @@ class ExecutionStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            self._migrate(conn)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(work_receipts)").fetchall()
+        }
+        for name, definition in _WORK_RECEIPT_MIGRATIONS.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE work_receipts ADD COLUMN {name} {definition}")
 
     # --- Plans ---
 
@@ -231,7 +261,14 @@ class ExecutionStore:
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO work_receipts "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "(receipt_id, plan_id, execution_id, task, selected_runtime, "
+                "route_reason, risk_level, approval_required, "
+                "capabilities_snapshot_json, command_plan_json, "
+                "artifact_ids_json, verification_status, adapter_id, "
+                "capability_snapshot_hash, normalized_invocation_json, "
+                "normalized_receipt_json, adapter_events_json, limitations_json, "
+                "provenance_refs_json, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     receipt.receipt_id,
                     receipt.plan_id,
@@ -245,6 +282,15 @@ class ExecutionStore:
                     json.dumps(receipt.command_plan),
                     json.dumps(receipt.artifact_ids),
                     receipt.verification_status,
+                    receipt.adapter_id,
+                    receipt.capability_snapshot_hash,
+                    _dump_optional_model(receipt.normalized_invocation),
+                    _dump_optional_model(receipt.normalized_receipt),
+                    json.dumps(
+                        [event.model_dump(mode="json") for event in receipt.adapter_events]
+                    ),
+                    json.dumps(receipt.limitations),
+                    json.dumps(receipt.provenance_refs),
                     receipt.created_at.isoformat(),
                 ),
             )
@@ -353,5 +399,46 @@ def _decode_receipt(row: sqlite3.Row) -> WorkReceipt:
         command_plan=json.loads(row["command_plan_json"]),
         artifact_ids=json.loads(row["artifact_ids_json"]),
         verification_status=row["verification_status"],
+        adapter_id=row["adapter_id"] if "adapter_id" in row.keys() else None,
+        capability_snapshot_hash=(
+            row["capability_snapshot_hash"]
+            if "capability_snapshot_hash" in row.keys()
+            else None
+        ),
+        normalized_invocation=_load_optional_model(
+            NormalizedInvocation,
+            row["normalized_invocation_json"]
+            if "normalized_invocation_json" in row.keys()
+            else "{}",
+        ),
+        normalized_receipt=_load_optional_model(
+            NormalizedAdapterReceipt,
+            row["normalized_receipt_json"]
+            if "normalized_receipt_json" in row.keys()
+            else "{}",
+        ),
+        adapter_events=[
+            AdapterExecutionEvent(**event)
+            for event in json.loads(
+                row["adapter_events_json"] if "adapter_events_json" in row.keys() else "[]"
+            )
+        ],
+        limitations=json.loads(
+            row["limitations_json"] if "limitations_json" in row.keys() else "[]"
+        ),
+        provenance_refs=json.loads(
+            row["provenance_refs_json"] if "provenance_refs_json" in row.keys() else "[]"
+        ),
         created_at=row["created_at"],
     )
+
+
+def _dump_optional_model(model) -> str:
+    if model is None:
+        return "{}"
+    return json.dumps(model.model_dump(mode="json"))
+
+
+def _load_optional_model(model_cls, raw: str | None):
+    data = json.loads(raw or "{}")
+    return model_cls(**data) if data else None

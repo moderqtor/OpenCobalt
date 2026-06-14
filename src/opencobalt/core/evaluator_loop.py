@@ -21,7 +21,17 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from opencobalt.execution.models import ExecutionPlan, ExecutionStep, WorkReceipt
+from opencobalt.execution.models import (
+    ExecutionPlan,
+    ExecutionStep,
+    RuntimeCapabilitySnapshot,
+    WorkReceipt,
+)
+from opencobalt.execution.normalization import (
+    build_invocation,
+    build_normalized_receipt,
+    capability_snapshot_payload,
+)
 
 from .events import make_event
 
@@ -199,6 +209,33 @@ class EvaluatorLoop:
                 summary=f"evaluator history for {outcome.name}",
             )
             store.save_artifact(artifact)
+            raw_capabilities = {
+                "bounded_evaluator_loop": {"supported": True, "source": "static"}
+            }
+            snapshot = RuntimeCapabilitySnapshot(
+                adapter_id="local-evaluator",
+                adapter_name="Local Evaluator Loop",
+                available=True,
+                capabilities=["bounded_evaluator_loop"],
+                supported_artifact_types=["report"],
+                supports_dry_run=True,
+                supports_noninteractive=True,
+                supports_json_output=True,
+                requires_network=False,
+                requires_credentials=False,
+                max_safe_risk="green",
+                verifiability_level="full",
+                capability_details=raw_capabilities,
+            ).with_hash()
+            invocation = build_invocation(
+                adapter_id="local-evaluator",
+                command_argv=["evaluator-loop", outcome.name],
+                cwd=None,
+                expected_artifacts=["report"],
+                risk_level="green",
+                dry_run=True,
+                timeout_seconds=0,
+            )
 
             receipt = WorkReceipt(
                 plan_id=plan.plan_id,
@@ -206,9 +243,29 @@ class EvaluatorLoop:
                 selected_runtime="local-evaluator",
                 route_reason="bounded local evaluator loop",
                 risk_level="green",
+                capabilities_snapshot=capability_snapshot_payload(
+                    raw_capabilities,
+                    snapshot,
+                ),
                 command_plan=["evaluator-loop", outcome.name],
                 artifact_ids=[artifact.artifact_id],
+                adapter_id="local-evaluator",
+                capability_snapshot_hash=snapshot.snapshot_hash,
+                normalized_invocation=invocation,
+                normalized_receipt=build_normalized_receipt(
+                    receipt_id="",
+                    invocation=invocation,
+                    capability_snapshot=snapshot,
+                    plan=plan,
+                    result=None,
+                    artifacts=[artifact],
+                    verification_status="unverified",
+                    limitations=[],
+                    provenance_refs=[plan.plan_id, artifact.artifact_id],
+                    event_count=len(outcome.events),
+                ),
             )
+            receipt.normalized_receipt.receipt_id = receipt.receipt_id
             store.save_receipt(receipt)
             return receipt.receipt_id
         except Exception:

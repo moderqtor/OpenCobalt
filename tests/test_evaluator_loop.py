@@ -108,6 +108,10 @@ class TestReceipts:
         assert receipt is not None
         assert receipt.selected_runtime == "local-evaluator"
         assert receipt.artifact_ids
+        assert receipt.adapter_id == "local-evaluator"
+        assert receipt.capability_snapshot_hash
+        assert receipt.normalized_invocation is not None
+        assert receipt.normalized_receipt is not None
         artifact = store.get_artifact(receipt.artifact_ids[0])
         assert artifact is not None and artifact.sha256
         # history artifact is replayable JSON on disk

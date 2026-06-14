@@ -43,6 +43,10 @@ class TestReplayDryRun:
         outcome = engine.replay_plan(original.plan_id)
         assert outcome.plan.steps[0].command_argv == original.steps[0].command_argv
         assert outcome.receipt.command_plan == original.steps[0].command_argv
+        assert outcome.receipt.adapter_id == "noop"
+        assert outcome.receipt.normalized_invocation is not None
+        assert outcome.receipt.normalized_receipt is not None
+        assert outcome.receipt.normalized_receipt.status == "skipped"
 
     def test_replay_is_persisted(self, tmp_path):
         engine = _engine(tmp_path)

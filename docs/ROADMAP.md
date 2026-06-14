@@ -228,6 +228,25 @@ that does not change the local-first default.
 - `why` resolves `mis-`/`mstp-` ids through the same provenance builder
 - CLI: `missions start/list/show/advance/approve-step/run-step/outcome/why`
 
+### Phase 22: Adapter Receipt Normalization v1
+
+- Normalized adapter contract in `src/opencobalt/execution/`: capability
+  discovery, bounded invocation, policy boundary, event stream, artifact
+  capture, normalized receipt metadata, verification, provenance references,
+  and outcome-ready receipt ids.
+- Existing execution adapters (`noop`, `ollama`, `google-antigravity`) emit
+  `RuntimeCapabilitySnapshot`, `NormalizedInvocation`, and
+  `NormalizedAdapterReceipt` metadata through the existing `WorkReceipt`.
+- `opencobalt adapters list` and `opencobalt adapters inspect` expose adapter
+  availability, limitations, capability snapshot hashes, and verifiability
+  levels.
+- `receipts inspect`, `receipts verify`, mission receipt linkage, and `why`
+  traces surface adapter id, invocation hash, capability snapshot hash,
+  artifact hash counts, and verifiability without adding a parallel receipt or
+  provenance system.
+- Missing runtimes are unavailable, skipped, and auditable. Weak or
+  unverifiable adapters are marked limited, not trusted.
+
 ## In Progress / Next
 
 Direction note: OpenCobalt is a trust, control, provenance, and
@@ -240,18 +259,27 @@ provenance edges does not ship.
 
 ### Adapter and evidence loops
 
-- cursor-runtime-adapter-v0: Cursor as a runtime behind the existing
-  policy gate. Capability discovery first, then a receipt contract for its
-  outputs, artifact hashing, provenance edges, and outcome feedback. Not a
-  "Cursor integration" checkbox.
-- adapter-receipt-normalization-v1: one normalized receipt contract that
-  every runtime adapter (claude-code, codex-cli, gemini-cli, cursor,
-  ollama, noop) must satisfy, so receipts stay comparable across runtimes
-  and learned routing has a consistent signal.
+- cursor-runtime-adapter-v0: the next adapter branch after Adapter Receipt
+  Normalization v1. Cursor must run behind the existing policy gate and ship
+  with capability discovery, normalized receipts, artifact capture, provenance
+  edges, outcome feedback, and tests. It is not a shallow editor wrapper and
+  not a registry checkbox.
+- future-runtime-adapters: every future adapter (`claude-code`, `codex-cli`,
+  `google-antigravity`, `aider`, `continue`, `ollama`, `noop`, and Cursor)
+  must satisfy the normalized receipt contract before it can execute work.
+  Legacy Gemini CLI names remain aliases to `google-antigravity`, not a new
+  adapter family.
 - web-research-evidence-collector-v0: a live fetcher for the existing
   `EvidenceCollector` protocol. Explicit configuration required, off by
   default, every fetch logged as evidence with source and strength, no
   background crawling.
+
+### Safety hardening backlog
+
+- mission-outcome-status-guard: require `missions outcome` to run only from
+  `awaiting_feedback` unless an explicit repair mode is added. Mission
+  outcomes are already receipt-evidenced and traceable; this would make the
+  lifecycle harder to misuse.
 
 ### Mission depth
 

@@ -14,6 +14,7 @@ import subprocess
 from typer.testing import CliRunner
 
 from opencobalt.cli import app
+from opencobalt.execution import ExecutionStore, WorkReceipt
 
 runner = CliRunner()
 
@@ -52,6 +53,10 @@ class TestRunCommand:
         }
         monkeypatch.setattr(
             AntigravityAdapter, "capabilities", lambda self: caps
+        )
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: "/usr/local/bin/agy" if command == "agy" else None,
         )
         result = _invoke("run", "hello", "--runtime", "google-antigravity", "--dry-run")
         assert result.exit_code == 0
@@ -143,6 +148,51 @@ class TestReceiptsCommands:
         assert "echo hello" in result.output
         assert "noop" in result.output
 
+    def test_inspect_shows_normalized_adapter_fields(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        run_result = _invoke("run", "hello", "--runtime", "noop", "--execute")
+        receipt_id = _receipt_id(run_result.output)
+        result = _invoke("receipts", "inspect", receipt_id)
+        assert result.exit_code == 0
+        assert "Adapter id:" in result.output
+        assert "Capability snapshot:" in result.output
+        assert "Invocation hash:" in result.output
+        assert "Verifiability:" in result.output
+        assert "Artifact hashes:" in result.output
+
+    def test_inspect_redacts_secret_task_and_command(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        secret = "sk-testsecret123456789"
+        run_result = _invoke(
+            "run",
+            f"rotate api key {secret}",
+            "--runtime",
+            "noop",
+            "--execute",
+            "--yes",
+        )
+        receipt_id = _receipt_id(run_result.output)
+        result = _invoke("receipts", "inspect", receipt_id)
+        assert result.exit_code == 0
+        assert secret not in result.output
+        assert "<redacted>" in result.output
+
+    def test_inspect_handles_legacy_flat_capability_snapshot(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        store = ExecutionStore(tmp_path / ".opencobalt" / "ledger.db")
+        receipt = WorkReceipt(
+            plan_id="legacy-plan",
+            task="legacy",
+            selected_runtime="noop",
+            capabilities_snapshot={"echo_only": {"supported": True, "source": "static"}},
+            command_plan=["echo", "legacy"],
+        )
+        store.save_receipt(receipt)
+        result = _invoke("receipts", "inspect", receipt.receipt_id)
+        assert result.exit_code == 0, result.output
+        assert "Adapter id:" in result.output
+        assert "legacy-compatible" in result.output
+
     def test_inspect_unknown_receipt_fails(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         result = _invoke("receipts", "inspect", "ffffffff-0000-0000-0000-000000000000")
@@ -155,6 +205,24 @@ class TestReceiptsCommands:
         result = _invoke("receipts", "verify", receipt_id)
         assert result.exit_code == 0
         assert "verified" in result.output
+
+
+class TestAdapterCommands:
+    def test_adapters_list_shows_normalized_runtime_contract(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = _invoke("adapters", "list")
+        assert result.exit_code == 0, result.output
+        assert "noop" in result.output
+        assert "google-antigravity" in result.output
+        assert "Verifiability" in result.output
+
+    def test_adapters_inspect_shows_capability_snapshot(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = _invoke("adapters", "inspect", "noop")
+        assert result.exit_code == 0, result.output
+        assert "Adapter" in result.output
+        assert "snapshot hash" in result.output
+        assert "echo_only" in result.output
 
 
 class TestArtifactsCommands:
