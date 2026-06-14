@@ -303,6 +303,12 @@ class TestAdapters:
         assert "macos_app" in snapshot.capabilities
         assert "non_interactive_print" in snapshot.capabilities
         assert "read_only_plan_mode" in snapshot.capabilities
+        assert "cloud_mode" not in snapshot.capabilities
+        assert "credential_auth" not in snapshot.capabilities
+        assert snapshot.capability_details["cloud_mode"]["advertised_by_cursor"] is True
+        assert snapshot.capability_details["cloud_mode"]["enabled_by_opencobalt"] is False
+        assert snapshot.capability_details["credential_auth"]["advertised_by_cursor"] is True
+        assert snapshot.capability_details["credential_auth"]["stored_by_opencobalt"] is False
         assert any("cloud mode is not enabled" in item for item in snapshot.limitations)
 
     def test_cursor_builds_read_only_agent_print_command(self, tmp_path, monkeypatch):

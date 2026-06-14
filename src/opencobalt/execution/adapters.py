@@ -292,13 +292,16 @@ class CursorAdapter(RuntimeAdapter):
                 "source": "cursor agent --help" if help_text else "unknown",
             },
             "cloud_mode": {
-                "supported": "--cloud" in help_text,
+                "supported": False,
                 "source": "cursor agent --help" if help_text else "unknown",
+                "advertised_by_cursor": "--cloud" in help_text,
                 "enabled_by_opencobalt": False,
             },
             "credential_auth": {
-                "supported": "--api-key" in help_text or "CURSOR_API_KEY" in help_text,
+                "supported": False,
                 "source": "cursor agent --help" if help_text else "unknown",
+                "advertised_by_cursor": "--api-key" in help_text
+                or "CURSOR_API_KEY" in help_text,
                 "stored_by_opencobalt": False,
             },
         }
