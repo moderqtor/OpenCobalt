@@ -18,10 +18,14 @@ from .caffeinate import caffeinate_available, keep_awake
 from .engine import ExecutionEngine, ExecutionOutcome
 from .models import (
     ARTIFACT_TYPES,
+    AdapterExecutionEvent,
     ExecutionArtifact,
     ExecutionPlan,
     ExecutionResult,
     ExecutionStep,
+    NormalizedAdapterReceipt,
+    NormalizedInvocation,
+    RuntimeCapabilitySnapshot,
     WorkReceipt,
 )
 from .policy import PolicyDecision, check_execution, classify_risk, max_risk
@@ -30,6 +34,7 @@ from .store import ExecutionStore
 
 __all__ = [
     "ARTIFACT_TYPES",
+    "AdapterExecutionEvent",
     "AntigravityAdapter",
     "CommandOptions",
     "ExecutionArtifact",
@@ -40,10 +45,13 @@ __all__ = [
     "ExecutionStep",
     "ExecutionStore",
     "NoopAdapter",
+    "NormalizedAdapterReceipt",
+    "NormalizedInvocation",
     "OllamaAdapter",
     "PolicyDecision",
     "ProcessRunner",
     "RuntimeAdapter",
+    "RuntimeCapabilitySnapshot",
     "WorkReceipt",
     "attach_artifact",
     "available_runtimes",

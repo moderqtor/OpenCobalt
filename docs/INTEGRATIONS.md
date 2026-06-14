@@ -1,15 +1,23 @@
 # Integrations
 
-OpenCobalt uses an integration system to register awareness of external tools without depending on them. Each integration is a slot -- it describes a tool or runtime, checks whether it is installed, and can return a description of what it would do with a given task. Integrations do not execute commands or make API calls on their own.
+OpenCobalt uses an integration system to register awareness of external tools
+without depending on them. Each integration is a slot: it describes a tool or
+runtime and checks whether it is installed. Integrations do not execute commands
+or make API calls on their own.
 
 ## What integrations are
 
-An integration is a thin wrapper around an external tool (such as a CLI binary). It answers two questions:
+An integration answers two questions:
 
 1. Is this tool installed on the local machine?
-2. What would this tool do if invoked with a given task description?
+2. What static profile should OpenCobalt show for this tool?
 
 Integrations are not dependencies. If the external tool is not installed, the integration still loads and reports `installed: false`. Nothing crashes.
+
+Execution adapters are stricter. They live in `src/opencobalt/execution/` and
+must produce capability snapshots, normalized invocations, hashed artifacts,
+normalized receipts, provenance references, and tests. An integration registry
+entry is not runtime adapter support.
 
 ## Current integrations
 
@@ -19,16 +27,22 @@ Integrations are not dependencies. If the external tool is not installed, the in
 | ollama | https://github.com/ollama/ollama | worker | local inference | `subprocess.run(["ollama", "list"])` returns 0 | stub if not installed |
 | claude-code | https://github.com/anthropics/claude-code | executive | architecture, code, review, debug, security | `shutil.which("claude")` | stub if not installed |
 | google-antigravity | https://antigravity.google/product/antigravity-cli | executive | agent-runtime, interactive-cli, runtime-discovered workflows | `shutil.which("agy")` plus `agy --version` and `agy --help` diagnostics | primary Google agent runtime |
-| cursor | https://www.cursor.com | manager | ui, editor, frontend, component, style | not checkable via PATH | always available |
+| cursor | https://www.cursor.com | manager | ui, editor, frontend, component, style | not checkable via PATH | integration stub only |
 | context7 | https://github.com/upstash/context7 | manager | docs, search, mcp, library-context | not checkable via PATH | always available |
 | github-cli | https://github.com/cli/cli | manager | pr-create, issue-link, branch, review | `shutil.which("gh")` | stub if not installed |
 | obsidian | https://obsidian.md | manager | notes, knowledge-base, export, search | `/Applications/Obsidian.app` exists | available if installed |
 
-Legacy aliases `gemini-cli`, `gemini_cli`, `google-gemini-cli`, `legacy-gemini-cli`, and `antigravity-cli` resolve to `google-antigravity` with a deprecation warning. Gemini remains valid as a model-family name, for example `gemini-pro`, but Gemini CLI is no longer the canonical Google runtime.
+Legacy aliases `gemini-cli`, `gemini_cli`, `google-gemini-cli`, and
+`antigravity-cli` resolve to `google-antigravity` with a deprecation warning.
+Gemini remains valid as a model-family name, for example `gemini-pro`, but
+Gemini CLI is no longer the canonical Google runtime.
 
 Use `opencobalt doctor antigravity` to inspect local `agy` behavior. OpenCobalt checks PATH, version, help output, and runtime-discovered evidence for non-interactive mode, model selection, plugins, sandboxing, and other capabilities. Unknown Antigravity features are reported as `unknown`, not guessed.
 
 ## Adding a new integration
+
+Do not use this checklist to add an execution adapter. Runtime adapters must
+follow `docs/ADAPTER_RECEIPT_NORMALIZATION.md`.
 
 1. Create a file in `src/opencobalt/integrations/` that subclasses `BaseIntegration`:
 

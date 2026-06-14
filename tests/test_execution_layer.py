@@ -29,6 +29,7 @@ from opencobalt.execution import (
     max_risk,
     verify_artifact,
 )
+from opencobalt.execution.models import NormalizedInvocation, RuntimeCapabilitySnapshot
 
 
 def _engine(tmp_path: Path) -> ExecutionEngine:
@@ -203,6 +204,50 @@ class TestAdapters:
         with pytest.raises(KeyError, match="unknown runtime"):
             get_adapter("skynet")
 
+    @pytest.mark.parametrize(
+        ("adapter", "runtime_id", "path"),
+        [
+            (NoopAdapter(), "noop", "/bin/echo"),
+            (OllamaAdapter(), "ollama", "/usr/local/bin/ollama"),
+            (
+                AntigravityAdapter(capabilities=_agy_caps()),
+                "google-antigravity",
+                "/usr/local/bin/agy",
+            ),
+        ],
+    )
+    def test_capability_snapshot_generated_for_runtime_adapters(
+        self, adapter, runtime_id, path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: path if command == adapter.executable else None,
+        )
+        snapshot = adapter.discover_capabilities()
+        assert snapshot.adapter_id == runtime_id
+        assert snapshot.adapter_name == adapter.display_name
+        assert snapshot.executable_path == path
+        assert snapshot.available is True
+        assert snapshot.supports_dry_run is True
+        assert snapshot.supports_noninteractive is True
+        assert snapshot.snapshot_hash
+        assert snapshot.verifiability_level in ("full", "partial")
+
+    def test_unavailable_adapter_snapshot_is_not_crashing(self, monkeypatch):
+        monkeypatch.setattr("opencobalt.execution.adapters.shutil.which", lambda command: None)
+        snapshot = OllamaAdapter().discover_capabilities()
+        assert snapshot.adapter_id == "ollama"
+        assert snapshot.available is False
+        assert snapshot.executable_path is None
+        assert snapshot.verifiability_level == "unavailable"
+        assert snapshot.requires_credentials is True
+
+    def test_legacy_runtime_aliases_resolve_to_canonical_antigravity_adapter(self):
+        assert get_adapter("antigravity-cli").runtime_id == "google-antigravity"
+        for alias in ("gemini-cli", "gemini_cli", "google-gemini-cli"):
+            with pytest.warns(DeprecationWarning, match="Gemini CLI integration is legacy"):
+                assert get_adapter(alias).runtime_id == "google-antigravity"
+
     def test_noop_adapter_builds_echo(self):
         assert NoopAdapter().build_command("hello") == ["echo", "hello"]
 
@@ -253,6 +298,49 @@ class TestAdapters:
         assert not adapter.supports_non_interactive()
         with pytest.raises(ValueError):
             adapter.build_command("hello")
+
+
+class TestNormalizedModels:
+    def test_invocation_hash_is_stable_for_equivalent_invocation(self):
+        first = NormalizedInvocation(
+            adapter_id="noop",
+            command_argv=["echo", "hello"],
+            cwd="/tmp/project",
+            environment_policy="inherited_redacted",
+            expected_artifacts=["stdout", "stderr"],
+            risk_level="green",
+            dry_run=True,
+            timeout_seconds=10,
+        ).with_hash()
+        second = NormalizedInvocation(
+            adapter_id="noop",
+            command_argv=["echo", "hello"],
+            cwd="/tmp/project",
+            environment_policy="inherited_redacted",
+            expected_artifacts=["stdout", "stderr"],
+            risk_level="green",
+            dry_run=True,
+            timeout_seconds=10,
+        ).with_hash()
+        assert first.invocation_id != second.invocation_id
+        assert first.invocation_hash == second.invocation_hash
+
+    def test_capability_snapshot_hash_changes_when_capabilities_change(self):
+        base = RuntimeCapabilitySnapshot(
+            adapter_id="noop",
+            adapter_name="Noop",
+            available=True,
+            capabilities=["echo_only"],
+            supported_artifact_types=["stdout"],
+            supports_dry_run=True,
+            supports_noninteractive=True,
+            supports_json_output=False,
+            requires_network=False,
+            requires_credentials=False,
+            max_safe_risk="yellow",
+        ).with_hash()
+        changed = base.model_copy(update={"capabilities": ["echo_only", "json_output"]}).with_hash()
+        assert base.snapshot_hash != changed.snapshot_hash
 
 
 # ── Artifacts ─────────────────────────────────────────────────────────────────
@@ -353,6 +441,77 @@ class TestExecutionEngine:
     def test_receipt_stores_capabilities_snapshot(self, tmp_path):
         outcome = _engine(tmp_path).run_task("hello", runtime="noop", execute=True)
         assert outcome.receipt.capabilities_snapshot.get("echo_only", {}).get("supported")
+
+    def test_receipt_includes_normalized_adapter_metadata(self, tmp_path):
+        engine = _engine(tmp_path)
+        outcome = engine.run_task("hello", runtime="noop", execute=True)
+        receipt = engine.store.get_receipt(outcome.receipt.receipt_id)
+        assert receipt is not None
+        assert receipt.adapter_id == "noop"
+        assert receipt.capability_snapshot_hash
+        assert receipt.normalized_invocation is not None
+        assert receipt.normalized_invocation.adapter_id == "noop"
+        assert receipt.normalized_invocation.invocation_hash
+        assert receipt.normalized_receipt is not None
+        assert receipt.normalized_receipt.adapter_id == "noop"
+        assert receipt.normalized_receipt.capability_snapshot_hash == (
+            receipt.capability_snapshot_hash
+        )
+        assert receipt.normalized_receipt.artifact_hashes
+        assert receipt.normalized_receipt.event_count > 0
+        assert receipt.normalized_receipt.verification_status == "verified"
+
+    def test_normalized_receipt_does_not_persist_secret_task_or_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-envsecret123456789")
+        secret = "sk-tasksecret123456789"
+        engine = _engine(tmp_path)
+        outcome = engine.run_task(
+            f"echo rotate api key {secret}",
+            runtime="noop",
+            execute=True,
+            approved=True,
+        )
+        raw_db = (tmp_path / "ledger.db").read_bytes()
+        raw_events = (tmp_path / "events.jsonl").read_text(encoding="utf-8")
+        assert b"sk-tasksecret123456789" not in raw_db
+        assert b"sk-envsecret123456789" not in raw_db
+        assert "sk-tasksecret123456789" not in raw_events
+        assert "sk-envsecret123456789" not in raw_events
+        receipt = engine.store.get_receipt(outcome.receipt.receipt_id)
+        assert receipt is not None
+        assert "<redacted>" in receipt.task
+        assert receipt.normalized_invocation is not None
+        assert receipt.normalized_invocation.environment_policy == "inherited_redacted"
+
+    def test_unavailable_known_runtime_records_receipt_without_spawning(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("opencobalt.execution.adapters.shutil.which", lambda command: None)
+
+        def explode(*args, **kwargs):
+            raise AssertionError("unavailable runtime must not start a subprocess")
+
+        monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", explode)
+        engine = _engine(tmp_path)
+        outcome = engine.run_task("hello", runtime="ollama", execute=True)
+        assert outcome.result is None
+        receipt = engine.store.get_receipt(outcome.receipt.receipt_id)
+        assert receipt is not None
+        assert receipt.adapter_id == "ollama"
+        assert receipt.capabilities_snapshot["normalized"]["available"] is False
+        assert receipt.normalized_receipt is not None
+        assert receipt.normalized_receipt.status == "skipped"
+        assert receipt.normalized_receipt.verifiability_level == "unavailable"
+
+    def test_receipt_verify_validates_normalized_integrity(self, tmp_path):
+        engine = _engine(tmp_path)
+        outcome = engine.run_task("hello", runtime="noop", execute=True)
+        assert engine.verify_receipt(outcome.receipt.receipt_id) == "verified"
+        receipt = engine.store.get_receipt(outcome.receipt.receipt_id)
+        assert receipt is not None and receipt.normalized_invocation is not None
+        receipt.normalized_invocation.invocation_hash = "bad"
+        engine.store.save_receipt(receipt)
+        assert engine.verify_receipt(outcome.receipt.receipt_id) == "failed"
 
     def test_red_task_blocked_without_approval(self, tmp_path, monkeypatch):
         def explode(*args, **kwargs):

@@ -6,6 +6,8 @@ full evidence chain: plan -> step -> result -> artifact -> receipt.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -16,6 +18,14 @@ RiskLevel = Literal["green", "yellow", "red", "black"]
 StepStatus = Literal["pending", "running", "succeeded", "failed", "skipped"]
 ExecutionStatus = Literal["succeeded", "failed", "timeout", "not_executed"]
 VerificationStatus = Literal["unverified", "verified", "failed", "partial"]
+VerifiabilityLevel = Literal[
+    "full",
+    "partial",
+    "dry_run_only",
+    "unavailable",
+    "untrusted",
+]
+EnvironmentPolicy = Literal["minimal", "inherited_redacted", "none"]
 
 ARTIFACT_TYPES = {
     "plan",
@@ -39,6 +49,112 @@ def _now() -> datetime:
 
 def _uid() -> str:
     return str(uuid.uuid4())
+
+
+def _stable_hash(payload: dict[str, Any] | list[Any]) -> str:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class RuntimeCapabilitySnapshot(BaseModel):
+    """Normalized, descriptive capability evidence for one runtime adapter."""
+
+    adapter_id: str
+    adapter_name: str
+    adapter_version: str | None = None
+    executable_path: str | None = None
+    available: bool = False
+    capabilities: list[str] = Field(default_factory=list)
+    supported_artifact_types: list[str] = Field(default_factory=list)
+    supports_dry_run: bool = True
+    supports_noninteractive: bool = False
+    supports_json_output: bool = False
+    requires_network: bool = False
+    requires_credentials: bool = True
+    max_safe_risk: RiskLevel = "green"
+    limitations: list[str] = Field(default_factory=list)
+    discovered_at: datetime = Field(default_factory=_now)
+    snapshot_hash: str = ""
+    verifiability_level: VerifiabilityLevel = "untrusted"
+    capability_details: dict[str, Any] = Field(default_factory=dict)
+
+    def with_hash(self) -> "RuntimeCapabilitySnapshot":
+        payload = self.model_dump(
+            mode="json",
+            exclude={"snapshot_hash", "discovered_at"},
+        )
+        return self.model_copy(update={"snapshot_hash": _stable_hash(payload)})
+
+
+class NormalizedInvocation(BaseModel):
+    """The bounded command/action OpenCobalt intends to run."""
+
+    invocation_id: str = Field(default_factory=_uid)
+    adapter_id: str
+    mission_id: str | None = None
+    approval_id: str | None = None
+    mission_step_id: str | None = None
+    approval_step_id: str | None = None
+    command_argv: list[str] = Field(default_factory=list)
+    structured_action: dict[str, Any] = Field(default_factory=dict)
+    cwd: str | None = None
+    environment_policy: EnvironmentPolicy = "inherited_redacted"
+    expected_artifacts: list[str] = Field(default_factory=list)
+    risk_level: RiskLevel = "green"
+    dry_run: bool = True
+    timeout_seconds: int = 120
+    created_at: datetime = Field(default_factory=_now)
+    invocation_hash: str = ""
+
+    def with_hash(self) -> "NormalizedInvocation":
+        payload = self.model_dump(
+            mode="json",
+            exclude={"invocation_id", "created_at", "invocation_hash"},
+        )
+        return self.model_copy(update={"invocation_hash": _stable_hash(payload)})
+
+
+class AdapterExecutionEvent(BaseModel):
+    """Receipt-local view of one execution event."""
+
+    event_id: str = Field(default_factory=_uid)
+    invocation_id: str
+    adapter_id: str
+    event_type: str
+    message: str
+    payload_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=_now)
+
+
+class NormalizedAdapterReceipt(BaseModel):
+    """Canonical adapter receipt view stored alongside legacy WorkReceipt fields."""
+
+    receipt_id: str
+    invocation_id: str
+    adapter_id: str
+    mission_id: str | None = None
+    approval_id: str | None = None
+    mission_step_id: str | None = None
+    approval_step_id: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    exit_code: int | None = None
+    status: str = "skipped"
+    risk_level: RiskLevel = "green"
+    command_hash: str = ""
+    plan_hash: str = ""
+    capability_snapshot_hash: str = ""
+    artifact_hashes: dict[str, str] = Field(default_factory=dict)
+    event_count: int = 0
+    verification_status: VerificationStatus = "unverified"
+    limitations: list[str] = Field(default_factory=list)
+    provenance_refs: list[str] = Field(default_factory=list)
+    verifiability_level: VerifiabilityLevel = "dry_run_only"
 
 
 class ExecutionStep(BaseModel):
@@ -115,4 +231,11 @@ class WorkReceipt(BaseModel):
     command_plan: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
     verification_status: VerificationStatus = "unverified"
+    adapter_id: str | None = None
+    capability_snapshot_hash: str | None = None
+    normalized_invocation: NormalizedInvocation | None = None
+    normalized_receipt: NormalizedAdapterReceipt | None = None
+    adapter_events: list[AdapterExecutionEvent] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    provenance_refs: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_now)

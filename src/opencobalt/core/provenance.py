@@ -594,6 +594,14 @@ class ProvenanceBuilder:
                     "verification_status": receipt.verification_status,
                     "risk_level": receipt.risk_level,
                     "task": receipt.task[:70],
+                    "adapter_id": receipt.adapter_id or receipt.selected_runtime,
+                    "capability_snapshot_hash": receipt.capability_snapshot_hash,
+                    "verifiability_level": (
+                        receipt.normalized_receipt.verifiability_level
+                        if receipt.normalized_receipt
+                        else None
+                    ),
+                    "artifact_count": len(receipt.artifact_ids),
                 },
             )
         )
@@ -651,6 +659,8 @@ def render_trace_lines(trace: ProvenanceTrace) -> list[str]:
             "goal_class", "track_type", "candidate_type", "status", "score_total",
             "risk_level", "approval_state", "state", "dry_run",
             "verification_status", "source_type", "strength",
+            "adapter_id", "capability_snapshot_hash", "verifiability_level",
+            "artifact_count",
         ):
             value = node.data.get(key)
             if value is None:

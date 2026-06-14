@@ -15,6 +15,7 @@ Usage:
   opencobalt run TASK [--runtime R] [--execute] [--yes]
   opencobalt receipts list|inspect|verify
   opencobalt artifacts attach|verify|list
+  opencobalt adapters list|inspect
   opencobalt verify
   opencobalt export
   opencobalt doctor
@@ -111,6 +112,9 @@ app.add_typer(artifacts_app, name="artifacts")
 
 plans_app = typer.Typer(help="Stored execution plan commands (list, inspect, execute).")
 app.add_typer(plans_app, name="plans")
+
+adapters_app = typer.Typer(help="Runtime adapter contract commands.")
+app.add_typer(adapters_app, name="adapters")
 
 opportunities_app = typer.Typer(
     help="Autonomous opportunity engine (brainstorm, score, report, plan)."
@@ -1771,6 +1775,72 @@ def integrations_check() -> None:
     console.print(f"  [dim]{len(active)} active  {len(inactive)} not installed[/dim]\n")
 
 
+@adapters_app.command("list")
+def adapters_list() -> None:
+    """List execution runtime adapters and their normalized contract status."""
+    from .execution import available_runtimes, get_adapter
+
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+    table.add_column("Adapter", style=f"{_COBALT}")
+    table.add_column("Available")
+    table.add_column("Verifiability")
+    table.add_column("Max risk")
+    table.add_column("Capabilities", style="dim")
+    for runtime_id in available_runtimes():
+        adapter = get_adapter(runtime_id)
+        snapshot = adapter.discover_capabilities()
+        available = _dot(snapshot.available, warn=not snapshot.available)
+        table.add_row(
+            snapshot.adapter_id,
+            available,
+            snapshot.verifiability_level,
+            _risk_str(snapshot.max_safe_risk),
+            ", ".join(snapshot.capabilities[:5]) or "--",
+        )
+    console.print()
+    console.print(table)
+    console.print(f"  [dim]Adapter ids:[/dim] {', '.join(available_runtimes())}")
+    console.print("  [dim]Inspect: opencobalt adapters inspect <adapter_id>[/dim]\n")
+
+
+@adapters_app.command("inspect")
+def adapters_inspect(
+    adapter_id: str = typer.Argument(..., help="Adapter id or supported alias"),
+) -> None:
+    """Show one runtime adapter capability snapshot."""
+    from .execution import get_adapter
+
+    try:
+        adapter = get_adapter(adapter_id)
+    except KeyError as exc:
+        err.print(f"  [red]{exc.args[0]}[/red]")
+        raise typer.Exit(1) from None
+    snapshot = adapter.discover_capabilities()
+    console.print(f"\n  [bold]Adapter[/bold] {snapshot.adapter_id}")
+    console.print(f"  [dim]Name:[/dim] {snapshot.adapter_name}")
+    console.print(f"  [dim]Executable:[/dim] {snapshot.executable_path or adapter.executable}")
+    console.print(f"  [dim]Available:[/dim] {'yes' if snapshot.available else 'no'}")
+    console.print(f"  [dim]snapshot hash:[/dim] {snapshot.snapshot_hash}")
+    console.print(f"  [dim]Verifiability:[/dim] {snapshot.verifiability_level}")
+    console.print(f"  [dim]Requires network:[/dim] {'yes' if snapshot.requires_network else 'no'}")
+    console.print(
+        f"  [dim]Requires credentials:[/dim] "
+        f"{'yes' if snapshot.requires_credentials else 'no'}"
+    )
+    console.print(f"  [dim]Max safe risk:[/dim] {_risk_str(snapshot.max_safe_risk)}")
+    if snapshot.capabilities:
+        console.print("  [dim]Capabilities:[/dim]")
+        for capability in snapshot.capabilities:
+            detail = snapshot.capability_details.get(capability, {})
+            source = detail.get("source") if isinstance(detail, dict) else "static"
+            console.print(f"    {capability}  [dim]{source}[/dim]")
+    if snapshot.limitations:
+        console.print("  [dim]Limitations:[/dim]")
+        for limitation in snapshot.limitations:
+            console.print(f"    {limitation}")
+    console.print("")
+
+
 # ── UI command ────────────────────────────────────────────────────────────────
 
 @app.command("ui")
@@ -3047,6 +3117,50 @@ def _risk_str(level: str) -> str:
     return f"[{color}]{level}[/{color}]"
 
 
+def _receipt_adapter_id(receipt) -> str:
+    return receipt.adapter_id or receipt.selected_runtime
+
+
+def _capability_names_for_receipt(receipt) -> list[str]:
+    from .execution.normalization import legacy_capability_names
+
+    normalized = receipt.capabilities_snapshot.get("normalized")
+    if isinstance(normalized, dict):
+        caps = normalized.get("capabilities")
+        return list(caps) if isinstance(caps, list) else []
+    return legacy_capability_names(receipt.capabilities_snapshot)
+
+
+def _print_receipt_adapter_section(receipt) -> None:
+    adapter_id = _receipt_adapter_id(receipt)
+    console.print(f"  [dim]Adapter id:[/dim] {adapter_id}")
+    caps = _capability_names_for_receipt(receipt)
+    if receipt.capability_snapshot_hash:
+        console.print(
+            f"  [dim]Capability snapshot:[/dim] {receipt.capability_snapshot_hash[:16]}..."
+        )
+    else:
+        console.print(
+            "  [dim]Capability snapshot:[/dim] legacy-compatible "
+            f"({', '.join(caps) if caps else 'no normalized hash'})"
+        )
+    if caps:
+        console.print(f"  [dim]Capabilities:[/dim] {', '.join(caps[:8])}")
+    if receipt.normalized_invocation is not None:
+        invocation = receipt.normalized_invocation
+        console.print(f"  [dim]Invocation hash:[/dim] {invocation.invocation_hash[:16]}...")
+        console.print(f"  [dim]Environment:[/dim] {invocation.environment_policy}")
+    if receipt.normalized_receipt is not None:
+        normalized = receipt.normalized_receipt
+        console.print(f"  [dim]Verifiability:[/dim] {normalized.verifiability_level}")
+        console.print(f"  [dim]Events:[/dim] {normalized.event_count}")
+        console.print(f"  [dim]Artifact hashes:[/dim] {len(normalized.artifact_hashes)}")
+        if normalized.limitations:
+            console.print(
+                f"  [dim]Limitations:[/dim] {'; '.join(normalized.limitations[:4])}"
+            )
+
+
 @app.command("run")
 def run_task(
     task: str = typer.Argument(..., help="Task to plan and optionally execute"),
@@ -3168,7 +3282,7 @@ def plans_list(
             plan.runtime,
             _risk_str(plan.risk_level),
             "dry-run" if plan.dry_run else "execute",
-            plan.task[:60],
+            _redact_execution_text(plan.task)[:60],
         )
     console.print()
     console.print(table)
@@ -3305,10 +3419,10 @@ def receipts_list(
     for receipt in receipts:
         table.add_row(
             receipt.receipt_id[:12],
-            receipt.selected_runtime,
+            _receipt_adapter_id(receipt),
             _risk_str(receipt.risk_level),
             receipt.verification_status,
-            receipt.task[:60],
+            _redact_execution_text(receipt.task)[:60],
         )
     console.print()
     console.print(table)
@@ -3338,6 +3452,7 @@ def receipts_inspect(
     console.print(f"\n  [bold]Receipt[/bold] {receipt.receipt_id}")
     console.print(f"  [dim]Task:[/dim] {_redact_execution_text(receipt.task)}")
     console.print(f"  [dim]Runtime:[/dim] {receipt.selected_runtime}")
+    _print_receipt_adapter_section(receipt)
     if receipt.route_reason:
         console.print(f"  [dim]Route reason:[/dim] {receipt.route_reason}")
     console.print(

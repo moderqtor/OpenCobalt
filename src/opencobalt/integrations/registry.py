@@ -45,12 +45,12 @@ def list_integrations() -> list[IntegrationProfile]:
     return [integration.profile() for integration in REGISTRY.values()]
 
 
-def get_integration(name: str) -> BaseIntegration | None:
-    """Return the integration with the given name, or None if not found."""
+def resolve_integration_name(name: str) -> str | None:
+    """Return the canonical integration name, warning for deprecated aliases."""
     if name in REGISTRY:
-        return REGISTRY[name]
+        return name
     if name in _ALIASES:
-        return REGISTRY.get(_ALIASES[name])
+        return _ALIASES[name]
     if name in _DEPRECATED_ALIASES:
         canonical = _DEPRECATED_ALIASES[name]
         warnings.warn(
@@ -58,5 +58,11 @@ def get_integration(name: str) -> BaseIntegration | None:
             DeprecationWarning,
             stacklevel=2,
         )
-        return REGISTRY.get(canonical)
+        return canonical
     return None
+
+
+def get_integration(name: str) -> BaseIntegration | None:
+    """Return the integration with the given name, or None if not found."""
+    canonical = resolve_integration_name(name)
+    return REGISTRY.get(canonical) if canonical else None

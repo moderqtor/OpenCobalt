@@ -23,6 +23,8 @@ remains the only approval authority and the execution policy gate remains
 the only execution authority. Mission steps are durable mirrors of
 approval steps that carry the linkage (mission step -> approval step ->
 execution plan -> receipt) so a mission can be read end to end.
+Missions remain adapter-agnostic: adapter-specific behavior belongs in the
+execution adapter and normalized receipt contract, not in mission logic.
 
 ## Statuses
 

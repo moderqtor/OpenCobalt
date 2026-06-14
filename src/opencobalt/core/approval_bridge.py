@@ -703,6 +703,8 @@ class ApprovalBridge:
             runtime=runtime,
             execute=execute,
             approved=approved,
+            approval_id=request.request_id,
+            approval_step_id=step.step_id,
         )
         step.execution_plan_id = outcome.plan.plan_id
         step.receipt_id = outcome.receipt.receipt_id

@@ -23,6 +23,21 @@ Types: `plan`, `command_output`, `stdout`, `stderr`, `report`,
 `inspection_report`, `diff`, `test_output`, `log`, `screenshot`,
 `browser_recording`, `unknown`. Unrecognized types normalize to `unknown`.
 
+`task_list` is not an execution receipt artifact type. If it appears in older
+planning or convergence wording, treat it as a planning concept until the
+execution model adds it explicitly.
+
+## Normalization rules
+
+- Artifact type aliases must normalize before receipt creation.
+- Unknown artifact types become `unknown`.
+- Receipts store artifact ids and hashes, not artifact file contents.
+- Normalized adapter receipts include an `artifact_hashes` map keyed by artifact
+  id, so receipt verification can compare normalized metadata with the artifact
+  table.
+- Hashes prove integrity only. They do not prove semantic correctness, safety,
+  or absence of sensitive runtime output.
+
 ## Hashing
 
 SHA-256 over streamed file bytes (1 MiB chunks, large files are never loaded
@@ -55,3 +70,6 @@ opencobalt artifacts list [--type TYPE] [--plan PLAN_ID] [--limit N]
   push.
 - Receipts store paths, not file contents. Deleting an artifact file makes
   its receipt fail verification by design.
+- Adapter Receipt Normalization v1 enriches receipts with artifact hash maps,
+  event counts, and provenance references. It does not add a second artifact
+  store.

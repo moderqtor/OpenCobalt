@@ -41,6 +41,35 @@ All code lives in `src/opencobalt/execution/`:
 | `store.py` | SQLite persistence in `.opencobalt/ledger.db` |
 | `engine.py` | `ExecutionEngine`: the full slice plus structured event emission |
 
+## Adapter Receipt Normalization v1
+
+V1 formalizes the receipt contract every execution adapter must satisfy. It does
+not add Cursor support. It makes the existing `noop`, `ollama`, and
+`google-antigravity` adapters emit normalized metadata through the existing
+receipt store.
+
+The normalized contract records:
+
+- `RuntimeCapabilitySnapshot`: adapter id, name, executable path, availability,
+  capability evidence, artifact types, network and credential requirements,
+  limitations, verifiability level, and snapshot hash.
+- `NormalizedInvocation`: stable invocation hash, canonical adapter id, redacted
+  argv or structured action, cwd, environment policy, expected artifacts, risk,
+  dry-run flag, and timeout.
+- `AdapterExecutionEvent`: receipt-local view of execution events emitted by the
+  existing event stream.
+- `NormalizedAdapterReceipt`: invocation id, adapter id, command hash, plan hash,
+  capability snapshot hash, artifact hashes, event count, verification status,
+  limitations, and provenance references.
+
+`WorkReceipt` remains the durable receipt model. V1 adds normalized metadata to
+that model and the `work_receipts` table through additive columns, so older
+receipt rows still load.
+
+Adapter verifiability levels are `full`, `partial`, `dry_run_only`,
+`unavailable`, and `untrusted`. Weak adapters are marked limited rather than
+trusted.
+
 ## Policy gate
 
 Risk is classified by deterministic keyword matching (no LLM):
@@ -60,8 +89,8 @@ metadata, and the adapter's own view.
 
 ## Runtime adapters
 
-An adapter never executes anything. It detects the runtime, reports a
-capability snapshot, and builds a default-safe argv:
+An adapter never executes work directly. It detects the runtime, reports a
+normalized capability snapshot, and builds a default-safe argv:
 
 - `google-antigravity`: limited to the discovered non-interactive `--print`
   mode. `--model` and `--sandbox` are included only when discovered in local
@@ -70,6 +99,10 @@ capability snapshot, and builds a default-safe argv:
   If `--print` was not discovered, command construction fails cleanly.
 - `ollama`: one-shot `ollama run <model> <prompt>` (default model `llama3`).
 - `noop`: echoes the task. Exists for tests and pipeline verification.
+
+Missing executables produce unavailable capability snapshots and skipped
+receipts. They do not crash normal adapter list, adapter inspect, receipt list,
+or receipt inspect commands.
 
 ## Process runner
 
@@ -84,8 +117,9 @@ capability snapshot, and builds a default-safe argv:
 ## Receipts and verification
 
 A `WorkReceipt` records: the task, selected runtime, route reason, risk
-level, approval requirement, the runtime capability snapshot, the exact
-command argv, and the IDs of all hashed output artifacts.
+level, approval requirement, the runtime capability snapshot, the command
+plan, the normalized invocation, the normalized adapter receipt, and the IDs
+of all hashed output artifacts.
 
 `opencobalt receipts verify <id>` recomputes the SHA-256 of every referenced
 artifact. Statuses: `unverified` (nothing attached, e.g. dry-run),
@@ -163,3 +197,5 @@ model behavior.
   SQLite internals remain unknown and are not assumed.
 - Verification is hash-only. Semantic verification (did the output answer
   the task) belongs to a later milestone.
+- Cursor Runtime Adapter v0 is future work. It must use Adapter Receipt
+  Normalization v1 before it can execute anything under OpenCobalt.

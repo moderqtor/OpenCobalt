@@ -1,0 +1,144 @@
+# Adapter Receipt Normalization v1
+
+Adapter Receipt Normalization v1 defines the minimum contract for any runtime
+adapter that wants to execute work under OpenCobalt.
+
+Adding a runtime is not adding a thin wrapper around a tool command. It is adding
+a verifiable worker type with declared capabilities, a bounded invocation, policy
+gating, captured events, hashed artifacts, a normalized work receipt, provenance
+links, and later outcome feedback.
+
+## Contract
+
+Every execution adapter must support this loop:
+
+```
+capability discovery
+  -> normalized invocation plan
+  -> policy boundary
+  -> execution event stream
+  -> artifact capture
+  -> normalized work receipt
+  -> verification
+  -> provenance edge
+  -> outcome feedback
+```
+
+The execution layer owns this contract. Integrations can say that a tool exists,
+but runtime adapters must produce receipt evidence.
+
+## RuntimeCapabilitySnapshot
+
+Each adapter emits a normalized capability snapshot:
+
+- `adapter_id`, `adapter_name`, and optional `adapter_version`
+- `executable_path` and `available`
+- supported capability names plus raw descriptive capability evidence
+- supported artifact types
+- dry-run, non-interactive, and JSON-output support flags
+- `requires_network` and `requires_credentials`
+- `max_safe_risk`
+- limitations and a stable `snapshot_hash`
+- adapter verifiability level
+
+Capability snapshots are descriptive, not permissive. Unknown capability evidence
+does not authorize execution. Missing executables produce unavailable snapshots
+instead of crashing adapter inspection.
+
+## NormalizedInvocation
+
+Each receipt stores the bounded invocation OpenCobalt intended to run:
+
+- stable `invocation_hash`
+- canonical adapter id
+- optional approval and mission linkage
+- redacted argv or structured action
+- cwd
+- environment policy, such as `inherited_redacted`
+- expected artifact types
+- risk level, dry-run flag, and timeout
+
+OpenCobalt never stores raw environment variables in invocation metadata.
+
+## NormalizedAdapterReceipt
+
+The existing `WorkReceipt` remains the durable receipt record. V1 enriches it
+with normalized metadata rather than replacing it.
+
+Mandatory normalized receipt fields include:
+
+- receipt id and invocation id
+- adapter id
+- optional mission, approval, mission step, and approval step references
+- start and finish timestamps when execution occurred
+- exit code and status
+- risk level
+- command hash and plan hash
+- capability snapshot hash
+- artifact hashes
+- event count
+- verification status
+- limitations
+- provenance references
+- verifiability level
+
+`verification_status` remains hash verification only: `unverified`, `verified`,
+`partial`, or `failed`.
+
+## Verifiability Levels
+
+Adapters and receipts use explicit confidence levels:
+
+- `full`: capability snapshot, invocation hash, receipt, artifact hashes, and event stream exist.
+- `partial`: receipt and invocation metadata exist, but artifact capture or runtime evidence is limited.
+- `dry_run_only`: only a bounded plan and receipt were created.
+- `unavailable`: runtime was discovered as missing or unusable.
+- `untrusted`: the adapter cannot produce enough normalized evidence.
+
+Weak or unverifiable adapters are marked limited, not trusted.
+
+## Current Adapters
+
+Adapter Receipt Normalization v1 covers the existing execution adapters:
+
+- `noop`: test and pipeline adapter, full verifiability when executed.
+- `ollama`: local model runtime, unavailable when the executable is missing.
+- `google-antigravity`: canonical Antigravity runtime id, with legacy Gemini CLI
+  aliases resolved to the canonical adapter. Unknown runtime capabilities remain
+  unknown.
+
+Cursor is not implemented in this branch.
+
+## CLI
+
+```
+opencobalt adapters list
+opencobalt adapters inspect ADAPTER_ID
+opencobalt receipts inspect RECEIPT_ID
+opencobalt receipts verify RECEIPT_ID
+```
+
+`receipts inspect` shows the normalized adapter id, capability snapshot hash,
+invocation hash, environment policy, verifiability level, event count, and
+artifact hash count.
+
+## Safety Boundaries
+
+- No raw environment dumps.
+- No credential storage.
+- No private keys, seed phrases, API keys, cookies, or tokens in receipt metadata.
+- Missing runtime executables create skipped, auditable receipts instead of
+  starting a subprocess.
+- Policy gates remain unchanged: dry-run by default, green/yellow need
+  `--execute`, red needs `--execute --yes`, black is blocked.
+- No background daemon, network fetcher, deploy path, publish path, spend path,
+  auto-merge, or push behavior is introduced.
+
+## Next Branch
+
+The next adapter branch should be `cursor-runtime-adapter-v0`.
+
+Cursor Runtime Adapter v0 must use this contract from the start: capability
+discovery, normalized receipts, artifact capture, policy boundary, provenance
+edge, and tests. A branch that only opens Cursor, writes a stub string, or adds a
+registry checkbox is rejected wrapperware.

@@ -14,6 +14,7 @@
 
 | Prefix / shape | Object |
 |----------------|--------|
+| `mis-` / `mstp-` | mission / mission step |
 | `orun-` | opportunity run (anchors on its goal) |
 | `goal-` | opportunity goal |
 | `otrk-` | opportunity track |
@@ -44,6 +45,11 @@ receipt --informed--> outcome (feeds back into the track)
 A receipt produced by an approval step climbs back to the full opportunity
 chain. A standalone receipt (from `opencobalt run`) traces execution-side
 only: plan, receipt, artifacts.
+
+Adapter Receipt Normalization v1 enriches receipt nodes with adapter id,
+capability snapshot hash, artifact count, and verifiability level. It does
+not add a graph database, mission-specific provenance path, or separate
+receipt graph.
 
 Tracing is read-only. It never executes anything and never mutates state.
 

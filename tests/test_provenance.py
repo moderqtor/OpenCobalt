@@ -115,6 +115,11 @@ class TestBuilder:
         assert trace is not None
         assert trace.focus_kind == "receipt"
         assert {"goal", "track", "approval", "receipt", "artifact"} <= _kinds(trace)
+        receipt_node = trace.get_node(env["receipt_id"])
+        assert receipt_node is not None
+        assert receipt_node.data["adapter_id"] == "noop"
+        assert receipt_node.data["capability_snapshot_hash"]
+        assert receipt_node.data["verifiability_level"] in ("full", "partial")
 
     def test_trace_outcome(self, env):
         trace = env["builder"].trace(env["outcome_id"])
@@ -154,6 +159,9 @@ class TestBuilder:
         assert trace.focus_kind == "receipt"
         assert {"exec_plan", "receipt", "artifact"} <= _kinds(trace)
         assert "goal" not in _kinds(trace)
+        receipt_node = trace.get_node(outcome.receipt.receipt_id)
+        assert receipt_node is not None
+        assert receipt_node.data["adapter_id"] == "noop"
 
     def test_unknown_id_returns_none(self, env):
         assert env["builder"].trace("zzz-doesnotexist") is None
@@ -222,6 +230,8 @@ class TestWhyCommand:
         assert "kind: receipt" in result.output
         assert "produced" in result.output
         assert "verification_status" in result.output
+        assert "adapter_id=noop" in result.output
+        assert "capability_snapshot_hash=" in result.output
 
     def test_why_unknown_fails(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
