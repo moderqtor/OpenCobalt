@@ -265,6 +265,28 @@ that does not change the local-first default.
 - Cloud mode, force, browser automation, MCP auto-approval, login, logout,
   deploy, publish, spend, message, and API-key paths are not enabled.
 
+### Phase 24: Claude Code Runtime Adapter v0
+
+- Claude Code is an execution runtime only through the normalized adapter
+  receipt contract. It appears in `opencobalt adapters list` and
+  `opencobalt adapters inspect claude-code`.
+- Capability discovery checks a real PATH executable, then local
+  `claude --version` and `claude --help` evidence before claiming runtime
+  support.
+- Safe execution is limited to `claude --print --output-format text
+  --permission-mode plan` through `ExecutionEngine`, with policy gates,
+  stdout/stderr artifact capture, hash verification, normalized receipts,
+  provenance metadata, and outcome-ready receipt ids.
+- Claude Code remains partial, not full, because credentials, account state,
+  network behavior, model behavior, and internal permission enforcement live
+  outside OpenCobalt. If safe headless invocation is absent, support is partial
+  and discovery-only.
+- Dangerous permission bypass, unrestricted tools, credential, auth, token,
+  browser-control, deploy, publish, spend, message, and MCP auto-approval paths
+  are not enabled.
+- Keep validating this adapter against local `claude --help` evidence as the
+  Claude Code CLI evolves.
+
 ## In Progress / Next
 
 Direction note: OpenCobalt is a trust, control, provenance, and
@@ -277,18 +299,14 @@ provenance edges does not ship.
 
 ### Adapter and evidence loops
 
-- claude-code-runtime-adapter-v0: add Claude Code as a receipt-backed runtime
-  with explicit permission mode capture, bounded invocation, artifacts, and
-  provenance.
 - codex-runtime-adapter-v0: add Codex CLI as a receipt-backed runtime with
   branch, diff, test, and PR artifact capture where locally supported.
 - adapter-routing-from-outcomes-v1: start selecting runtimes from receipt
   outcomes and verification history, not just deterministic keyword scores.
-- future-runtime-adapters: every future adapter (`claude-code`, `codex-cli`,
-  `google-antigravity`, `aider`, `continue`, `ollama`, `noop`, and Cursor)
-  must satisfy the normalized receipt contract before it can execute work.
-  Legacy Gemini CLI names remain aliases to `google-antigravity`, not a new
-  adapter family.
+- future-runtime-adapters: every future adapter (`codex-cli`, `aider`,
+  `continue`, and additional local runtimes) must satisfy the normalized
+  receipt contract before it can execute work. Legacy Gemini CLI names remain
+  aliases to `google-antigravity`, not a new adapter family.
 - web-research-evidence-collector-v0: a live fetcher for the existing
   `EvidenceCollector` protocol. Explicit configuration required, off by
   default, every fetch logged as evidence with source and strength, no

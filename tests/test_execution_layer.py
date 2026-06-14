@@ -14,6 +14,7 @@ import pytest
 
 from opencobalt.execution import (
     AntigravityAdapter,
+    ClaudeCodeAdapter,
     CommandOptions,
     CursorAdapter,
     ExecutionEngine,
@@ -77,6 +78,57 @@ def _fake_cursor_app(tmp_path: Path) -> tuple[Path, Path]:
     binary.write_text("#!/bin/sh\nexit 0\n")
     binary.chmod(0o755)
     return app, binary
+
+
+def _claude_help() -> str:
+    return """
+Usage: claude [options] [command] [prompt]
+
+Claude Code - starts an interactive session by default, use -p/--print for
+non-interactive output
+
+Options:
+  --allow-dangerously-skip-permissions  Enable bypassing all permission checks as an option
+  --dangerously-skip-permissions        Bypass all permission checks.
+  --allowedTools, --allowed-tools <tools...>
+      Comma or space-separated list of tool names to allow.
+  --disallowedTools, --disallowed-tools <tools...>
+      Comma or space-separated list of tool names to deny.
+  --mcp-config <configs...>             Load MCP servers from JSON files or strings.
+  --strict-mcp-config                   Only use MCP servers from --mcp-config.
+  --max-budget-usd <amount>             Maximum dollar amount to spend on API calls.
+  --no-chrome                           Disable Claude in Chrome integration
+  --no-session-persistence              Disable session persistence.
+  --output-format <format>              Output format (only works with --print): text, json, stream-json
+  --permission-mode <mode>              Permission mode to use (choices: acceptEdits, auto, bypassPermissions, default, dontAsk, plan)
+  -p, --print                           Print response and exit.
+  --safe-mode                           Start with customizations disabled.
+  --bare                                Minimal mode.
+  --tools <tools...>                    Specify the list of available tools.
+  -v, --version                         Output the version number
+
+Commands:
+  auth                                  Manage authentication
+  doctor                                Check health
+  mcp                                   Configure and manage MCP servers
+"""
+
+
+def _claude_help_without_plan_mode() -> str:
+    return """
+Usage: claude [options] [command] [prompt]
+Options:
+  -p, --print                           Print response and exit.
+  --output-format <format>              Output format (only works with --print): text, json
+  --dangerously-skip-permissions        Bypass all permission checks.
+"""
+
+
+def _fake_claude_binary(tmp_path: Path) -> Path:
+    binary = tmp_path / "claude"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    return binary
 
 
 # ── Policy ────────────────────────────────────────────────────────────────────
@@ -225,7 +277,7 @@ class TestProcessRunner:
 
 class TestAdapters:
     def test_registry_knows_v0_runtimes(self):
-        assert {"cursor", "google-antigravity", "ollama", "noop"} <= set(
+        assert {"claude-code", "cursor", "google-antigravity", "ollama", "noop"} <= set(
             available_runtimes()
         )
 
@@ -310,6 +362,165 @@ class TestAdapters:
         assert snapshot.capability_details["credential_auth"]["advertised_by_cursor"] is True
         assert snapshot.capability_details["credential_auth"]["stored_by_opencobalt"] is False
         assert any("cloud mode is not enabled" in item for item in snapshot.limitations)
+
+    def test_claude_absent_snapshot_is_unavailable(self, monkeypatch):
+        monkeypatch.setattr("opencobalt.execution.adapters.shutil.which", lambda command: None)
+        adapter = ClaudeCodeAdapter(help_text="", version_text="")
+
+        snapshot = adapter.discover_capabilities()
+
+        assert snapshot.adapter_id == "claude-code"
+        assert snapshot.available is False
+        assert snapshot.executable_path is None
+        assert snapshot.supports_noninteractive is False
+        assert snapshot.verifiability_level == "unavailable"
+        assert "Claude executable not found: claude" in snapshot.limitations
+
+    def test_claude_fake_help_snapshot_is_partial_and_bounded(
+        self, tmp_path, monkeypatch
+    ):
+        fake_claude = _fake_claude_binary(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_claude) if command == "claude" else None,
+        )
+        adapter = ClaudeCodeAdapter(
+            help_text=_claude_help(),
+            version_text="2.1.176 (Claude Code)",
+        )
+
+        snapshot = adapter.discover_capabilities()
+
+        assert snapshot.adapter_id == "claude-code"
+        assert snapshot.adapter_name == "Claude Code"
+        assert snapshot.executable_path == str(fake_claude)
+        assert snapshot.available is True
+        assert snapshot.adapter_version == "2.1.176 (Claude Code)"
+        assert snapshot.supports_noninteractive is True
+        assert snapshot.requires_network is True
+        assert snapshot.requires_credentials is True
+        assert snapshot.verifiability_level == "partial"
+        assert "path_binary" in snapshot.capabilities
+        assert "non_interactive_print" in snapshot.capabilities
+        assert "text_output" in snapshot.capabilities
+        assert "plan_permission_mode" in snapshot.capabilities
+        assert "safe_mode" in snapshot.capabilities
+        assert "no_session_persistence" in snapshot.capabilities
+        assert "dangerous_permission_bypass" not in snapshot.capabilities
+        assert snapshot.capability_details["dangerous_permission_bypass"][
+            "advertised_by_claude"
+        ] is True
+        assert snapshot.capability_details["dangerous_permission_bypass"][
+            "enabled_by_opencobalt"
+        ] is False
+        assert snapshot.capability_details["credential_auth"]["stored_by_opencobalt"] is False
+        assert any("dangerous permission bypass modes are not used" in item for item in snapshot.limitations)
+        assert snapshot.snapshot_hash
+
+    def test_claude_builds_safe_print_plan_command(self, tmp_path, monkeypatch):
+        fake_claude = _fake_claude_binary(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_claude) if command == "claude" else None,
+        )
+        adapter = ClaudeCodeAdapter(
+            help_text=_claude_help(),
+            version_text="2.1.176 (Claude Code)",
+        )
+
+        argv = adapter.build_command("review repository state")
+
+        assert argv == [
+            str(fake_claude),
+            "--print",
+            "--output-format",
+            "text",
+            "--permission-mode",
+            "plan",
+            "--no-session-persistence",
+            "--safe-mode",
+            "--no-chrome",
+            "--strict-mcp-config",
+            "--mcp-config",
+            "{}",
+            "OpenCobalt read-only planning request:\nreview repository state",
+        ]
+        joined = " ".join(argv)
+        assert "--dangerously-skip-permissions" not in joined
+        assert "--allow-dangerously-skip-permissions" not in joined
+        assert "--allowedTools" not in joined
+        assert "--disallowedTools" not in joined
+        assert "--max-budget-usd" not in joined
+
+    def test_claude_safe_flags_only_when_help_advertises_them(
+        self, tmp_path, monkeypatch
+    ):
+        fake_claude = _fake_claude_binary(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_claude) if command == "claude" else None,
+        )
+        adapter = ClaudeCodeAdapter(
+            help_text="""
+Usage: claude [options] [prompt]
+Options:
+  -p, --print                           Print response and exit.
+  --output-format <format>              Output format: text
+  --permission-mode <mode>              Permission mode choices: plan
+""",
+            version_text="2.1.176 (Claude Code)",
+        )
+
+        argv = adapter.build_command("summarize")
+
+        assert argv == [
+            str(fake_claude),
+            "--print",
+            "--output-format",
+            "text",
+            "--permission-mode",
+            "plan",
+            "OpenCobalt read-only planning request:\nsummarize",
+        ]
+
+    def test_claude_missing_plan_mode_is_discovery_only(self, tmp_path, monkeypatch):
+        fake_claude = _fake_claude_binary(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_claude) if command == "claude" else None,
+        )
+        adapter = ClaudeCodeAdapter(
+            help_text=_claude_help_without_plan_mode(),
+            version_text="2.1.176 (Claude Code)",
+        )
+
+        snapshot = adapter.discover_capabilities()
+
+        assert snapshot.available is True
+        assert snapshot.supports_noninteractive is False
+        assert snapshot.verifiability_level == "partial"
+        assert "safe Claude Code --print plan mode was not discovered" in snapshot.limitations
+        with pytest.raises(ValueError, match="safe Claude Code --print plan mode"):
+            adapter.build_command("summarize")
+
+    def test_claude_rejects_dangerous_or_mutating_options(self, tmp_path, monkeypatch):
+        fake_claude = _fake_claude_binary(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_claude) if command == "claude" else None,
+        )
+        adapter = ClaudeCodeAdapter(
+            help_text=_claude_help(),
+            version_text="2.1.176 (Claude Code)",
+        )
+
+        with pytest.raises(ValueError, match="unsafe permission bypass"):
+            adapter.build_command(
+                "summarize",
+                CommandOptions(dangerously_skip_permissions=True),
+            )
+        with pytest.raises(ValueError, match="sandbox mode"):
+            adapter.build_command("summarize", CommandOptions(sandbox=True))
 
     def test_cursor_builds_read_only_agent_print_command(self, tmp_path, monkeypatch):
         app, binary = _fake_cursor_app(tmp_path)
@@ -766,6 +977,127 @@ class TestExecutionEngine:
         receipt_node = trace.get_node(outcome.receipt.receipt_id)
         assert receipt_node is not None
         assert receipt_node.data["adapter_id"] == "cursor"
+        assert receipt_node.data["capability_snapshot_hash"]
+        assert receipt_node.data["verifiability_level"] == "partial"
+        assert receipt_node.data["artifact_count"] == len(outcome.receipt.artifact_ids)
+
+    def test_claude_unavailable_records_receipt_without_spawning(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("opencobalt.execution.adapters.shutil.which", lambda command: None)
+
+        def explode(*args, **kwargs):
+            raise AssertionError("missing claude must not start a subprocess")
+
+        monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", explode)
+        engine = _engine(tmp_path)
+        adapter = ClaudeCodeAdapter(help_text="", version_text="")
+
+        outcome = engine.run_task(
+            "summarize repository", runtime="claude-code", execute=True, adapter=adapter
+        )
+
+        assert not outcome.executed
+        assert outcome.result is None
+        receipt = engine.store.get_receipt(outcome.receipt.receipt_id)
+        assert receipt is not None
+        assert receipt.adapter_id == "claude-code"
+        assert receipt.command_plan == []
+        assert receipt.capabilities_snapshot["normalized"]["available"] is False
+        assert receipt.normalized_receipt is not None
+        assert receipt.normalized_receipt.status == "skipped"
+        assert receipt.normalized_receipt.verifiability_level == "unavailable"
+        assert "runtime unavailable: claude-code" in receipt.limitations
+
+    def test_claude_execute_uses_engine_and_normalized_receipts(
+        self, tmp_path, monkeypatch
+    ):
+        fake_claude = _fake_claude_binary(tmp_path)
+
+        def fake_run(argv, **kwargs):
+            assert argv == [
+                str(fake_claude),
+                "--print",
+                "--output-format",
+                "text",
+                "--permission-mode",
+                "plan",
+                "--no-session-persistence",
+                "--safe-mode",
+                "--no-chrome",
+                "--strict-mcp-config",
+                "--mcp-config",
+                "{}",
+                "OpenCobalt read-only planning request:\nsummarize repository",
+            ]
+            kwargs["stdout"].write("Claude Code planning output")
+            return subprocess.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_claude) if command == "claude" else None,
+        )
+        monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", fake_run)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-testsecret123456789")
+        engine = _engine(tmp_path)
+        adapter = ClaudeCodeAdapter(
+            help_text=_claude_help(),
+            version_text="2.1.176 (Claude Code)",
+        )
+
+        outcome = engine.run_task(
+            "summarize repository", runtime="claude-code", execute=True, adapter=adapter
+        )
+
+        assert outcome.executed
+        assert outcome.receipt.verification_status == "verified"
+        assert outcome.receipt.adapter_id == "claude-code"
+        assert outcome.receipt.capability_snapshot_hash
+        assert outcome.receipt.normalized_invocation is not None
+        assert outcome.receipt.normalized_invocation.adapter_id == "claude-code"
+        assert outcome.receipt.normalized_invocation.environment_policy == "inherited_redacted"
+        assert outcome.receipt.normalized_receipt is not None
+        assert outcome.receipt.normalized_receipt.adapter_id == "claude-code"
+        assert outcome.receipt.normalized_receipt.event_count > 0
+        assert outcome.receipt.normalized_receipt.artifact_hashes
+        assert outcome.receipt.normalized_receipt.verification_status == "verified"
+        assert outcome.receipt.normalized_receipt.verifiability_level == "partial"
+        receipt_blob = repr(outcome.receipt.model_dump(mode="json"))
+        assert "sk-ant-testsecret123456789" not in receipt_blob
+        assert engine.verify_receipt(outcome.receipt.receipt_id) == "verified"
+
+    def test_claude_receipt_provenance_includes_adapter_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        from opencobalt.core.provenance import ProvenanceBuilder
+
+        fake_claude = _fake_claude_binary(tmp_path)
+
+        def fake_run(argv, **kwargs):
+            assert argv[0] == str(fake_claude)
+            kwargs["stdout"].write("Claude Code planning output")
+            return subprocess.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_claude) if command == "claude" else None,
+        )
+        monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", fake_run)
+        engine = _engine(tmp_path)
+        adapter = ClaudeCodeAdapter(
+            help_text=_claude_help(),
+            version_text="2.1.176 (Claude Code)",
+        )
+        outcome = engine.run_task(
+            "summarize repository", runtime="claude-code", execute=True, adapter=adapter
+        )
+
+        trace = ProvenanceBuilder(tmp_path / "ledger.db").trace(outcome.receipt.receipt_id)
+
+        assert trace is not None
+        receipt_node = trace.get_node(outcome.receipt.receipt_id)
+        assert receipt_node is not None
+        assert receipt_node.data["adapter_id"] == "claude-code"
         assert receipt_node.data["capability_snapshot_hash"]
         assert receipt_node.data["verifiability_level"] == "partial"
         assert receipt_node.data["artifact_count"] == len(outcome.receipt.artifact_ids)

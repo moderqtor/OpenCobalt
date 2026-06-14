@@ -6,6 +6,7 @@ action leaves a verifiable receipt: plan, command, output artifacts, hashes.
 
 from .adapters import (
     AntigravityAdapter,
+    ClaudeCodeAdapter,
     CommandOptions,
     CursorAdapter,
     NoopAdapter,
@@ -37,6 +38,7 @@ __all__ = [
     "ARTIFACT_TYPES",
     "AdapterExecutionEvent",
     "AntigravityAdapter",
+    "ClaudeCodeAdapter",
     "CommandOptions",
     "CursorAdapter",
     "ExecutionArtifact",
