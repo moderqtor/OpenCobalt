@@ -2,6 +2,7 @@ import pytest
 
 from opencobalt.integrations import REGISTRY, get_integration, list_integrations
 from opencobalt.integrations.aider_integration import AiderIntegration
+from opencobalt.integrations.cursor_integration import CursorIntegration
 from opencobalt.integrations.ollama_integration import OllamaIntegration
 
 
@@ -49,6 +50,20 @@ def test_ollama_install_check_returns_bool():
     integration = OllamaIntegration()
     result = integration.install_check()
     assert isinstance(result, bool)
+
+
+def test_cursor_integration_remains_editor_awareness_not_runtime_claim(monkeypatch):
+    monkeypatch.setattr("opencobalt.integrations.cursor_integration.shutil.which", lambda command: None)
+    monkeypatch.setattr(
+        "opencobalt.integrations.cursor_integration._default_app_paths",
+        lambda: (),
+    )
+    integration = CursorIntegration()
+
+    assert integration.install_check() is False
+    assert integration.integration_status() == "stub"
+    assert "runtime adapter" in integration.invoke("plan UI work")
+    assert "stub" in integration.invoke("plan UI work")
 
 
 def test_list_integrations_returns_canonical_profiles():

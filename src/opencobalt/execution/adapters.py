@@ -7,9 +7,12 @@ task. Adapters never execute anything themselves.
 
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from opencobalt.integrations.antigravity_integration import (
@@ -141,6 +144,259 @@ class AntigravityAdapter(RuntimeAdapter):
         )
 
 
+_CURSOR_BUNDLED_CLI = Path("Contents") / "Resources" / "app" / "bin" / "cursor"
+_CURSOR_HELP_TIMEOUT_SECONDS = 5
+
+
+def _default_cursor_app_paths() -> tuple[Path, ...]:
+    return (
+        Path("/Applications/Cursor.app"),
+        Path.home() / "Applications" / "Cursor.app",
+    )
+
+
+def _is_executable(path: str | Path | None) -> bool:
+    if path is None:
+        return False
+    candidate = Path(path)
+    return candidate.is_file() and os.access(candidate, os.X_OK)
+
+
+class CursorAdapter(RuntimeAdapter):
+    """Cursor Agent CLI. Limited to read-only plan mode when locally discovered."""
+
+    runtime_id = "cursor"
+    display_name = "Cursor Agent"
+    executable = "cursor"
+    requires_network = True
+    requires_credentials = True
+    max_safe_risk = "green"
+    verifiability_level = "partial"
+    supports_json_output = True
+
+    def __init__(
+        self,
+        *,
+        app_paths: tuple[str | Path, ...] | None = None,
+        help_text: str | None = None,
+    ) -> None:
+        self._app_paths = tuple(Path(path) for path in app_paths) if app_paths is not None else (
+            _default_cursor_app_paths()
+        )
+        self._help_text = help_text
+        self._capabilities: dict[str, Any] | None = None
+
+    def _path_binary(self) -> str | None:
+        found = shutil.which(self.executable)
+        return found if _is_executable(found) else None
+
+    def _existing_app_paths(self) -> list[Path]:
+        return [path for path in self._app_paths if path.exists()]
+
+    def _bundled_cli(self) -> str | None:
+        for app_path in self._existing_app_paths():
+            candidate = app_path / _CURSOR_BUNDLED_CLI
+            if _is_executable(candidate):
+                return str(candidate)
+        return None
+
+    def _execution_cli(self) -> str | None:
+        return self._path_binary() or self._bundled_cli()
+
+    def _display_path(self) -> str | None:
+        path_binary = self._path_binary()
+        if path_binary:
+            return path_binary
+        apps = self._existing_app_paths()
+        if apps:
+            return str(apps[0])
+        return None
+
+    def _agent_help(self) -> str:
+        if self._help_text is not None:
+            return self._help_text
+        executable = self._execution_cli()
+        if executable is None:
+            return ""
+        try:
+            result = subprocess.run(
+                [executable, "agent", "--help"],
+                capture_output=True,
+                text=True,
+                timeout=_CURSOR_HELP_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            return ""
+        return "\n".join(part for part in (result.stdout, result.stderr) if part)
+
+    def capabilities(self) -> dict[str, Any]:
+        if self._capabilities is not None:
+            return self._capabilities
+
+        path_binary = self._path_binary()
+        app_paths = self._existing_app_paths()
+        bundled_cli = self._bundled_cli()
+        executable = path_binary or bundled_cli
+        help_text = self._agent_help() if executable else ""
+        has_agent = "cursor agent" in help_text or "Start the Cursor Agent" in help_text
+        has_print = "--print" in help_text
+        has_mode = "--mode" in help_text and "plan" in help_text and "read-only" in help_text
+        has_output_format = "--output-format" in help_text
+        has_json = "json" in help_text and has_output_format
+        has_sandbox = "--sandbox" in help_text
+        has_model = "--model" in help_text
+
+        self._capabilities = {
+            "macos_app": {
+                "supported": bool(app_paths),
+                "source": "filesystem",
+                "path": str(app_paths[0]) if app_paths else None,
+            },
+            "path_binary": {
+                "supported": path_binary is not None,
+                "source": "PATH",
+                "path": path_binary,
+            },
+            "bundled_cli": {
+                "supported": bundled_cli is not None,
+                "source": "app_bundle",
+                "path": bundled_cli,
+            },
+            "agent_subcommand": {
+                "supported": has_agent,
+                "source": "cursor agent --help" if help_text else "unknown",
+            },
+            "non_interactive_print": {
+                "supported": has_print,
+                "source": "cursor agent --help" if help_text else "unknown",
+            },
+            "read_only_plan_mode": {
+                "supported": has_mode,
+                "source": "cursor agent --help" if help_text else "unknown",
+            },
+            "text_output": {
+                "supported": has_output_format,
+                "source": "cursor agent --help" if help_text else "unknown",
+            },
+            "json_output": {
+                "supported": has_json,
+                "source": "cursor agent --help" if help_text else "unknown",
+            },
+            "sandbox_flag": {
+                "supported": has_sandbox,
+                "source": "cursor agent --help" if help_text else "unknown",
+            },
+            "model_selection": {
+                "supported": has_model,
+                "source": "cursor agent --help" if help_text else "unknown",
+            },
+            "cloud_mode": {
+                "supported": "--cloud" in help_text,
+                "source": "cursor agent --help" if help_text else "unknown",
+                "enabled_by_opencobalt": False,
+            },
+            "credential_auth": {
+                "supported": "--api-key" in help_text or "CURSOR_API_KEY" in help_text,
+                "source": "cursor agent --help" if help_text else "unknown",
+                "stored_by_opencobalt": False,
+            },
+        }
+        return self._capabilities
+
+    def discover_capabilities(self) -> RuntimeCapabilitySnapshot:
+        raw = self.capabilities()
+        available = self._display_path() is not None
+        supports_noninteractive = self.supports_non_interactive()
+        limitations: list[str] = []
+
+        if not available:
+            limitations.append("Cursor app or cursor executable not found")
+        elif raw["bundled_cli"]["supported"] is False and raw["path_binary"]["supported"] is False:
+            limitations.append("Cursor app detected, but no executable agent CLI was found")
+        if available and not supports_noninteractive:
+            limitations.append("receipt-compatible cursor agent --print plan mode not discovered")
+        if available:
+            limitations.extend(
+                [
+                    "execution is limited to cursor agent --print --mode plan",
+                    "cloud mode is not enabled by OpenCobalt",
+                    "force, browser, MCP auto-approval, login, logout, and API-key flags are not used",
+                    "Cursor credentials and account state remain outside OpenCobalt",
+                ]
+            )
+
+        if not available:
+            level = "unavailable"
+        elif supports_noninteractive:
+            level = "partial"
+        elif raw["macos_app"]["supported"] is True:
+            level = "partial"
+        else:
+            level = "untrusted"
+
+        return RuntimeCapabilitySnapshot(
+            adapter_id=self.runtime_id,
+            adapter_name=self.display_name,
+            executable_path=self._display_path(),
+            available=available,
+            capabilities=_supported_capability_names(raw),
+            supported_artifact_types=list(self.supported_artifact_types),
+            supports_dry_run=True,
+            supports_noninteractive=supports_noninteractive,
+            supports_json_output=bool(raw["json_output"]["supported"]),
+            requires_network=True,
+            requires_credentials=True,
+            max_safe_risk=self.max_safe_risk if available else "green",
+            limitations=limitations,
+            verifiability_level=level,  # type: ignore[arg-type]
+            capability_details=raw,
+        ).with_hash()
+
+    def supports_non_interactive(self) -> bool:
+        caps = self.capabilities()
+        return bool(
+            self._execution_cli()
+            and caps.get("agent_subcommand", {}).get("supported") is True
+            and caps.get("non_interactive_print", {}).get("supported") is True
+            and caps.get("read_only_plan_mode", {}).get("supported") is True
+        )
+
+    def default_timeout_seconds(self) -> int:
+        return 600
+
+    def build_command(self, task: str, options: CommandOptions | None = None) -> list[str]:
+        opts = options or CommandOptions()
+        if opts.dangerously_skip_permissions or opts.allow_dangerously_skip_permissions:
+            raise ValueError("Cursor adapter does not support unsafe permission bypass")
+        executable = self._execution_cli()
+        if executable is None:
+            raise ValueError("Cursor executable not found")
+        if not self.supports_non_interactive():
+            raise ValueError("Cursor agent --print plan mode was not discovered")
+        caps = self.capabilities()
+        argv = [
+            executable,
+            "agent",
+            "--print",
+            "--mode",
+            "plan",
+            "--output-format",
+            "text",
+        ]
+        if opts.sandbox:
+            if caps.get("sandbox_flag", {}).get("supported") is not True:
+                raise ValueError("Cursor sandbox flag was not discovered")
+            argv.extend(["--sandbox", "enabled"])
+        if opts.model:
+            if caps.get("model_selection", {}).get("supported") is not True:
+                raise ValueError("Cursor model selection was not discovered")
+            argv.extend(["--model", opts.model])
+        argv.append("--")
+        argv.append(task)
+        return argv
+
+
 class OllamaAdapter(RuntimeAdapter):
     """Local Ollama models. One-shot prompt via `ollama run`."""
 
@@ -201,6 +457,7 @@ class NoopAdapter(RuntimeAdapter):
 
 _ADAPTERS: dict[str, type[RuntimeAdapter]] = {
     AntigravityAdapter.runtime_id: AntigravityAdapter,
+    CursorAdapter.runtime_id: CursorAdapter,
     OllamaAdapter.runtime_id: OllamaAdapter,
     NoopAdapter.runtime_id: NoopAdapter,
 }

@@ -247,6 +247,24 @@ that does not change the local-first default.
 - Missing runtimes are unavailable, skipped, and auditable. Weak or
   unverifiable adapters are marked limited, not trusted.
 
+### Phase 23: Cursor Runtime Adapter v0
+
+- Cursor is an execution runtime only through the normalized adapter receipt
+  contract. It appears in `opencobalt adapters list` and
+  `opencobalt adapters inspect cursor`.
+- Capability discovery checks real PATH executables and common macOS
+  `Cursor.app` locations. It inspects `cursor agent --help` before claiming
+  non-interactive support.
+- Safe execution is limited to `cursor agent --print --mode plan
+  --output-format text -- "task"` through `ExecutionEngine`, with policy gates,
+  stdout/stderr artifact capture, hash verification, normalized receipts,
+  provenance metadata, and outcome-ready receipt ids.
+- Cursor remains partial, not full, because Cursor credentials, account state,
+  network behavior, and read-only enforcement live outside OpenCobalt. If the
+  local agent CLI is absent, Cursor is unavailable or discovery-only.
+- Cloud mode, force, browser automation, MCP auto-approval, login, logout,
+  deploy, publish, spend, message, and API-key paths are not enabled.
+
 ## In Progress / Next
 
 Direction note: OpenCobalt is a trust, control, provenance, and
@@ -259,11 +277,13 @@ provenance edges does not ship.
 
 ### Adapter and evidence loops
 
-- cursor-runtime-adapter-v0: the next adapter branch after Adapter Receipt
-  Normalization v1. Cursor must run behind the existing policy gate and ship
-  with capability discovery, normalized receipts, artifact capture, provenance
-  edges, outcome feedback, and tests. It is not a shallow editor wrapper and
-  not a registry checkbox.
+- claude-code-runtime-adapter-v0: add Claude Code as a receipt-backed runtime
+  with explicit permission mode capture, bounded invocation, artifacts, and
+  provenance.
+- codex-runtime-adapter-v0: add Codex CLI as a receipt-backed runtime with
+  branch, diff, test, and PR artifact capture where locally supported.
+- adapter-routing-from-outcomes-v1: start selecting runtimes from receipt
+  outcomes and verification history, not just deterministic keyword scores.
 - future-runtime-adapters: every future adapter (`claude-code`, `codex-cli`,
   `google-antigravity`, `aider`, `continue`, `ollama`, `noop`, and Cursor)
   must satisfy the normalized receipt contract before it can execute work.

@@ -13,6 +13,12 @@ This is a local-first AI orchestration and memory control plane built for a publ
 
 Please complete the following audit and write your findings to docs/audits/002-external-audit.md:
 
+Context Sentinel: when producing any final report for Colin, begin with
+"Colin, COBALT-SENTINEL: receipts-first." Then state current branch, base
+branch or main SHA if known, test baseline, whether worktree is clean, and
+whether anything was pushed or merged. If you cannot determine a fact, say so.
+Do not invent repository state.
+
 1. PUBLIC SAFETY SCAN
    Run: opencobalt public-check
    Also run: find . -name '.env' -not -name '.env.example'
@@ -80,6 +86,12 @@ USC undergraduate with an Applied Analytics minor who builds AI-native tooling.
 
 Read every file in the repository. Then answer the following questions in a single
 structured report. Write your report to docs/audits/002-external-audit.md.
+
+Context Sentinel: when producing any final report for Colin, begin with
+"Colin, COBALT-SENTINEL: receipts-first." Then state current branch, base
+branch or main SHA if known, test baseline, whether worktree is clean, and
+whether anything was pushed or merged. If you cannot determine a fact, say so.
+Do not invent repository state.
 
 SECTION 1: WHAT THIS PROJECT CLAIMS TO BE
 Summarize in 2-3 sentences what OpenCobalt is, based on the README and docs.

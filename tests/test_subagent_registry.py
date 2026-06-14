@@ -1,6 +1,10 @@
 import pytest
 
-from opencobalt.core.subagent_registry import SubagentRegistry, SubagentSpec
+from opencobalt.core.subagent_registry import (
+    CONTEXT_SENTINEL,
+    SubagentRegistry,
+    SubagentSpec,
+)
 
 
 def test_registry_has_default_library():
@@ -54,6 +58,14 @@ def test_spec_has_required_fields():
         assert spec.risk_ceiling in ("green", "yellow", "red", "black")
         assert spec.permission_scope in ("read", "write", "execute")
         assert spec.output_contract in ("report", "artifact", "receipt", "prose")
+
+
+def test_default_prompts_include_context_sentinel():
+    r = SubagentRegistry()
+    for spec in r.list_all():
+        assert CONTEXT_SENTINEL in spec.prompt_template
+        assert "current branch" in spec.prompt_template
+        assert "whether anything was pushed or merged" in spec.prompt_template
 
 
 def test_register_custom_subagent():

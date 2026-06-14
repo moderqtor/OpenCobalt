@@ -14,6 +14,28 @@ from dataclasses import dataclass, field
 RISK_LEVELS = ("green", "yellow", "red", "black")
 PERMISSION_SCOPES = ("read", "write", "execute")
 OUTPUT_CONTRACTS = ("report", "artifact", "receipt", "prose")
+CONTEXT_SENTINEL = "Colin, COBALT-SENTINEL: receipts-first."
+CONTEXT_SENTINEL_INSTRUCTIONS = (
+    "When producing a final report for Colin, begin with:\n"
+    f'"{CONTEXT_SENTINEL}"\n\n'
+    "Then state:\n"
+    "- current branch\n"
+    "- base branch or main SHA if known\n"
+    "- test baseline\n"
+    "- whether worktree is clean\n"
+    "- whether anything was pushed or merged\n\n"
+    "If you cannot determine these facts, say so explicitly. Do not invent "
+    "repository state. If the sentinel is missing, stale, or paired with "
+    "incorrect repo state, assume context has degraded and pause for re-grounding."
+)
+
+
+def with_context_sentinel(prompt: str) -> str:
+    return f"{prompt}\n\n{CONTEXT_SENTINEL_INSTRUCTIONS}"
+
+
+def _prompt(prompt: str) -> str:
+    return with_context_sentinel(prompt)
 
 
 @dataclass
@@ -37,7 +59,7 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="claude-code",
         task_types=["impl"],
-        prompt_template="Implement the following task precisely and completely: {task}",
+        prompt_template=_prompt("Implement the following task precisely and completely: {task}"),
         capabilities=["code-edit", "tests"],
         risk_ceiling="yellow",
         permission_scope="write",
@@ -49,7 +71,7 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="manager",
         tool="codex-cli",
         task_types=["tests"],
-        prompt_template="Write comprehensive pytest tests for: {task}",
+        prompt_template=_prompt("Write comprehensive pytest tests for: {task}"),
         capabilities=["tests"],
         risk_ceiling="yellow",
         permission_scope="write",
@@ -61,7 +83,7 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="manager",
         tool="codex-cli",
         task_types=["docs"],
-        prompt_template="Write clear, concise documentation for: {task}",
+        prompt_template=_prompt("Write clear, concise documentation for: {task}"),
         capabilities=["docs"],
         risk_ceiling="yellow",
         permission_scope="write",
@@ -73,7 +95,9 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="claude-code",
         task_types=["review"],
-        prompt_template="Review the following for security and correctness issues: {task}",
+        prompt_template=_prompt(
+            "Review the following for security and correctness issues: {task}"
+        ),
         capabilities=["security", "review"],
         risk_ceiling="green",
         permission_scope="read",
@@ -85,7 +109,9 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="google-antigravity",
         task_types=["analyze"],
-        prompt_template="Analyze the following thoroughly across all relevant files: {task}",
+        prompt_template=_prompt(
+            "Analyze the following thoroughly across all relevant files: {task}"
+        ),
         capabilities=["analysis"],
         risk_ceiling="green",
         permission_scope="read",
@@ -97,7 +123,7 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="worker",
         tool="ollama",
         task_types=["summarize"],
-        prompt_template="Summarize the following concisely: {task}",
+        prompt_template=_prompt("Summarize the following concisely: {task}"),
         capabilities=["summarization"],
         risk_ceiling="green",
         permission_scope="read",
@@ -109,7 +135,7 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="claude-code",
         task_types=["architecture"],
-        prompt_template="Design the architecture and decomposition for: {task}",
+        prompt_template=_prompt("Design the architecture and decomposition for: {task}"),
         capabilities=["architecture", "planning"],
         risk_ceiling="green",
         permission_scope="read",
@@ -121,7 +147,9 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="manager",
         tool="codex-cli",
         task_types=["ui-review"],
-        prompt_template="Critique the following UI work against the design reference: {task}",
+        prompt_template=_prompt(
+            "Critique the following UI work against the design reference: {task}"
+        ),
         capabilities=["design-review"],
         risk_ceiling="green",
         permission_scope="read",
@@ -133,7 +161,7 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="manager",
         tool="codex-cli",
         task_types=["refactor"],
-        prompt_template="Refactor for clarity without changing behavior: {task}",
+        prompt_template=_prompt("Refactor for clarity without changing behavior: {task}"),
         capabilities=["code-edit"],
         risk_ceiling="yellow",
         permission_scope="write",
@@ -145,7 +173,7 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="manager",
         tool="codex-cli",
         task_types=["integration"],
-        prompt_template="Verify integration points and contracts for: {task}",
+        prompt_template=_prompt("Verify integration points and contracts for: {task}"),
         capabilities=["tests", "analysis"],
         risk_ceiling="yellow",
         permission_scope="read",
@@ -157,7 +185,7 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="worker",
         tool="ollama",
         task_types=["cost"],
-        prompt_template="Analyze cost and routing efficiency for: {task}",
+        prompt_template=_prompt("Analyze cost and routing efficiency for: {task}"),
         capabilities=["analysis"],
         risk_ceiling="green",
         permission_scope="read",
@@ -169,7 +197,7 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="manager",
         tool="codex-cli",
         task_types=["receipts"],
-        prompt_template="Verify receipts and artifact hashes for: {task}",
+        prompt_template=_prompt("Verify receipts and artifact hashes for: {task}"),
         capabilities=["verification"],
         risk_ceiling="green",
         permission_scope="read",
@@ -181,7 +209,7 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="claude-code",
         task_types=["policy"],
-        prompt_template="Audit policy gates and risk classification for: {task}",
+        prompt_template=_prompt("Audit policy gates and risk classification for: {task}"),
         capabilities=["security", "review"],
         risk_ceiling="green",
         permission_scope="read",
@@ -193,7 +221,7 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="claude-code",
         task_types=["design-review"],
-        prompt_template="Review the design and API surface of: {task}",
+        prompt_template=_prompt("Review the design and API surface of: {task}"),
         capabilities=["design-review", "review"],
         risk_ceiling="green",
         permission_scope="read",
@@ -205,7 +233,7 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="gemini-cli",
         task_types=["research"],
-        prompt_template="Research options and prior art for: {task}",
+        prompt_template=_prompt("Research options and prior art for: {task}"),
         capabilities=["research"],
         risk_ceiling="green",
         permission_scope="read",
@@ -217,7 +245,7 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="manager",
         tool="codex-cli",
         task_types=["benchmark"],
-        prompt_template="Run benchmarks and record scores for: {task}",
+        prompt_template=_prompt("Run benchmarks and record scores for: {task}"),
         capabilities=["benchmark"],
         risk_ceiling="yellow",
         permission_scope="execute",
@@ -229,7 +257,9 @@ _DEFAULT_SPECS: list[SubagentSpec] = [
         tier="manager",
         tool="codex-cli",
         task_types=["triage"],
-        prompt_template="Triage the failure and identify the root cause of: {task}",
+        prompt_template=_prompt(
+            "Triage the failure and identify the root cause of: {task}"
+        ),
         capabilities=["analysis", "triage"],
         risk_ceiling="green",
         permission_scope="read",

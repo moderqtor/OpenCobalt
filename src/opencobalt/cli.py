@@ -1767,7 +1767,14 @@ def integrations_check() -> None:
             inactive.append(name)
 
     for name in sorted(active):
-        console.print(f"  {_dot(True)}  {name}")
+        if name == "cursor":
+            console.print(
+                f"  {_dot(True)}  {name}"
+                " [dim](editor installed; runtime evidence: "
+                "opencobalt adapters inspect cursor)[/dim]"
+            )
+        else:
+            console.print(f"  {_dot(True)}  {name}")
     for name in sorted(inactive):
         console.print(f"  {_dot(False, warn=True)}  [dim]{name}[/dim]")
 
@@ -1826,6 +1833,10 @@ def adapters_inspect(
     console.print(
         f"  [dim]Requires credentials:[/dim] "
         f"{'yes' if snapshot.requires_credentials else 'no'}"
+    )
+    console.print(
+        f"  [dim]Artifact support:[/dim] "
+        f"{', '.join(snapshot.supported_artifact_types) or '--'}"
     )
     console.print(f"  [dim]Max safe risk:[/dim] {_risk_str(snapshot.max_safe_risk)}")
     if snapshot.capabilities:
@@ -3164,7 +3175,11 @@ def _print_receipt_adapter_section(receipt) -> None:
 @app.command("run")
 def run_task(
     task: str = typer.Argument(..., help="Task to plan and optionally execute"),
-    runtime: str | None = typer.Option(None, "--runtime", help="Runtime id (google-antigravity, ollama, noop). Routed if omitted."),
+    runtime: str | None = typer.Option(
+        None,
+        "--runtime",
+        help="Runtime id (cursor, google-antigravity, ollama, noop). Routed if omitted.",
+    ),
     model: str | None = typer.Option(None, "--model", help="Model to request, if the runtime supports selection"),
     execute: bool = typer.Option(False, "--execute", help="Actually run the command (default is dry-run)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Plan only; never start a subprocess (default behavior)"),

@@ -30,7 +30,7 @@ from opencobalt.execution.policy import classify_risk, max_risk
 
 from .delegation import DelegationPlan
 from .events import append_event, make_event
-from .subagent_registry import SubagentRegistry, SubagentSpec
+from .subagent_registry import SubagentRegistry, SubagentSpec, with_context_sentinel
 
 GOAL_CLASSES = (
     "product",
@@ -767,7 +767,9 @@ _OPPORTUNITY_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="claude-code",
         task_types=["strategy"],
-        prompt_template="Own this opportunity track end to end: {task}",
+        prompt_template=with_context_sentinel(
+            "Own this opportunity track end to end: {task}"
+        ),
         capabilities=["planning"],
         risk_ceiling="yellow",
         permission_scope="read",
@@ -779,7 +781,7 @@ _OPPORTUNITY_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="gemini-cli",
         task_types=["research"],
-        prompt_template="Gather local evidence for: {task}",
+        prompt_template=with_context_sentinel("Gather local evidence for: {task}"),
         capabilities=["research"],
         risk_ceiling="green",
         permission_scope="read",
@@ -791,7 +793,7 @@ _OPPORTUNITY_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="claude-code",
         task_types=["impl"],
-        prompt_template="Implement, within policy bounds: {task}",
+        prompt_template=with_context_sentinel("Implement, within policy bounds: {task}"),
         capabilities=["code-edit"],
         risk_ceiling="yellow",
         permission_scope="write",
@@ -803,7 +805,7 @@ _OPPORTUNITY_SPECS: list[SubagentSpec] = [
         tier="manager",
         tool="codex-cli",
         task_types=["tests"],
-        prompt_template="Write pytest coverage for: {task}",
+        prompt_template=with_context_sentinel("Write pytest coverage for: {task}"),
         capabilities=["tests"],
         risk_ceiling="yellow",
         permission_scope="write",
@@ -815,7 +817,9 @@ _OPPORTUNITY_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="claude-code",
         task_types=["security"],
-        prompt_template="Audit, within authorized local scope: {task}",
+        prompt_template=with_context_sentinel(
+            "Audit, within authorized local scope: {task}"
+        ),
         capabilities=["security", "review"],
         risk_ceiling="green",
         permission_scope="read",
@@ -827,7 +831,7 @@ _OPPORTUNITY_SPECS: list[SubagentSpec] = [
         tier="manager",
         tool="codex-cli",
         task_types=["docs"],
-        prompt_template="Draft or edit documentation for: {task}",
+        prompt_template=with_context_sentinel("Draft or edit documentation for: {task}"),
         capabilities=["docs"],
         risk_ceiling="yellow",
         permission_scope="write",

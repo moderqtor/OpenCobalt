@@ -44,7 +44,7 @@ from .opportunity_engine import (
     opportunity_registry,
     score_track,
 )
-from .subagent_registry import SubagentRegistry, SubagentSpec
+from .subagent_registry import SubagentRegistry, SubagentSpec, with_context_sentinel
 
 EVOLVE_STATUS = (
     "proposed",
@@ -602,7 +602,7 @@ _EVOLVE_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="claude-code",
         task_types=["strategy"],
-        prompt_template="Own this evolve mission: {task}",
+        prompt_template=with_context_sentinel("Own this evolve mission: {task}"),
         capabilities=["planning"],
         risk_ceiling="yellow",
         permission_scope="read",
@@ -614,7 +614,7 @@ _EVOLVE_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="gemini-cli",
         task_types=["research"],
-        prompt_template="Map the repo for: {task}",
+        prompt_template=with_context_sentinel("Map the repo for: {task}"),
         capabilities=["research"],
         risk_ceiling="green",
         permission_scope="read",
@@ -626,7 +626,7 @@ _EVOLVE_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="claude-code",
         task_types=["review"],
-        prompt_template="Critique roadmap proposals for: {task}",
+        prompt_template=with_context_sentinel("Critique roadmap proposals for: {task}"),
         capabilities=["review"],
         risk_ceiling="green",
         permission_scope="read",
@@ -638,7 +638,9 @@ _EVOLVE_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="claude-code",
         task_types=["impl"],
-        prompt_template="Plan implementation, within policy bounds: {task}",
+        prompt_template=with_context_sentinel(
+            "Plan implementation, within policy bounds: {task}"
+        ),
         capabilities=["planning"],
         risk_ceiling="yellow",
         permission_scope="read",
@@ -650,7 +652,7 @@ _EVOLVE_SPECS: list[SubagentSpec] = [
         tier="manager",
         tool="codex-cli",
         task_types=["tests"],
-        prompt_template="Find test gaps for: {task}",
+        prompt_template=with_context_sentinel("Find test gaps for: {task}"),
         capabilities=["tests"],
         risk_ceiling="green",
         permission_scope="read",
@@ -662,7 +664,9 @@ _EVOLVE_SPECS: list[SubagentSpec] = [
         tier="executive",
         tool="claude-code",
         task_types=["security"],
-        prompt_template="Audit safety impact, authorized local scope: {task}",
+        prompt_template=with_context_sentinel(
+            "Audit safety impact, authorized local scope: {task}"
+        ),
         capabilities=["security", "review"],
         risk_ceiling="green",
         permission_scope="read",
@@ -674,7 +678,7 @@ _EVOLVE_SPECS: list[SubagentSpec] = [
         tier="manager",
         tool="codex-cli",
         task_types=["docs"],
-        prompt_template="Design the demo for: {task}",
+        prompt_template=with_context_sentinel("Design the demo for: {task}"),
         capabilities=["docs"],
         risk_ceiling="green",
         permission_scope="read",
