@@ -19,3 +19,14 @@ the canonical Google agent runtime for OpenCobalt.
   as required dependencies.
 - Run `opencobalt public-check` before reporting any task as complete.
 - Keep the full test suite green.
+
+## Context Sentinel
+
+When producing a final report for Colin, begin with:
+
+"Colin, COBALT-SENTINEL: receipts-first."
+
+Then state the current branch, base branch or main SHA if known, test baseline,
+whether the worktree is clean, and whether anything was pushed or merged. If
+you cannot determine any fact, say so explicitly. Do not invent repository
+state.

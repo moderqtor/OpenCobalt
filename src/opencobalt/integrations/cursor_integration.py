@@ -2,22 +2,37 @@
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 from .base_integration import BaseIntegration
+
+
+def _default_app_paths() -> tuple[Path, ...]:
+    return (
+        Path("/Applications/Cursor.app"),
+        Path.home() / "Applications" / "Cursor.app",
+    )
 
 
 class CursorIntegration(BaseIntegration):
     name = "cursor"
-    description = "AI-native code editor (UI, frontend, editor workflows)"
+    description = (
+        "AI-native code editor awareness. Runtime execution requires the "
+        "separate receipt-backed cursor adapter."
+    )
     source_url = "https://www.cursor.com"
     tier = "manager"
-    capabilities = ["ui", "editor", "frontend", "component", "style"]
+    capabilities = ["ui", "editor", "frontend", "component", "style", "adapter-aware"]
 
     def install_check(self) -> bool:
-        # Cursor does not expose a PATH binary; detection is OS-specific.
-        return False
-
-    def integration_status(self) -> str:
-        return "available"
+        return shutil.which("cursor") is not None or any(
+            path.exists() for path in _default_app_paths()
+        )
 
     def invoke(self, task: str) -> str:
-        return f"cursor -- open project and use AI panel for: {task[:60]} (stub)"
+        return (
+            "cursor integration stub. Runtime execution is only supported through "
+            "the receipt-backed runtime adapter if `opencobalt adapters inspect "
+            f"cursor` discovers a safe local surface: {task[:60]}"
+        )

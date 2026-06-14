@@ -106,8 +106,11 @@ Adapter Receipt Normalization v1 covers the existing execution adapters:
 - `google-antigravity`: canonical Antigravity runtime id, with legacy Gemini CLI
   aliases resolved to the canonical adapter. Unknown runtime capabilities remain
   unknown.
-
-Cursor is not implemented in this branch.
+- `cursor`: Cursor Agent runtime id. Discovery checks a real `cursor`
+  executable on PATH and common macOS `Cursor.app` locations. Execution is
+  only available when local help proves `cursor agent --print --mode plan`
+  exists. Receipts are partial because Cursor's account, model service, and
+  read-only enforcement live outside OpenCobalt.
 
 ## CLI
 
@@ -134,11 +137,41 @@ artifact hash count.
 - No background daemon, network fetcher, deploy path, publish path, spend path,
   auto-merge, or push behavior is introduced.
 
+## Cursor Runtime Adapter v0
+
+Cursor is a runtime adapter only through the normalized receipt contract. The
+integration registry can report that the editor is installed, but runtime
+support is determined by:
+
+```
+opencobalt adapters inspect cursor
+```
+
+Discovery is conservative:
+
+- `unavailable`: no Cursor app and no real `cursor` executable were found.
+- `partial`: Cursor is installed, or `cursor agent --print --mode plan` was
+  discovered, but runtime trust is limited.
+- `untrusted`: a local Cursor surface exists but cannot produce a
+  receipt-compatible non-interactive plan command.
+
+The only command OpenCobalt builds in v0 is:
+
+```
+cursor agent --print --mode plan --output-format text -- "task"
+```
+
+Optional `--model` and `--sandbox enabled` flags are included only when local
+help output advertises them. OpenCobalt never adds Cursor `--cloud`, `--force`,
+`--browser`, `--approve-mcps`, `login`, `logout`, or `--api-key` flags.
+
+Cursor execution still flows through `ExecutionEngine`: deterministic risk
+classification, dry-run default, policy gate, captured stdout/stderr artifacts,
+hash verification, normalized receipt metadata, and provenance references.
+
 ## Next Branch
 
-The next adapter branch should be `cursor-runtime-adapter-v0`.
-
-Cursor Runtime Adapter v0 must use this contract from the start: capability
-discovery, normalized receipts, artifact capture, policy boundary, provenance
-edge, and tests. A branch that only opens Cursor, writes a stub string, or adds a
-registry checkbox is rejected wrapperware.
+After Cursor Runtime Adapter v0, the next adapter branches should add
+receipt-backed Claude Code and Codex CLI runtime adapters, then outcome-weighted
+adapter routing. Long-running mission execution should wait until those
+runtime receipts are in place.

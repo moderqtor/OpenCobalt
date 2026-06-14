@@ -35,7 +35,7 @@ All code lives in `src/opencobalt/execution/`:
 |--------|----------------|
 | `models.py` | `ExecutionPlan`, `ExecutionStep`, `ExecutionResult`, `ExecutionArtifact`, `WorkReceipt` (Pydantic) |
 | `policy.py` | Deterministic risk classification and the execution gate |
-| `adapters.py` | `RuntimeAdapter` protocol plus `google-antigravity`, `ollama`, `noop` adapters |
+| `adapters.py` | `RuntimeAdapter` protocol plus `cursor`, `google-antigravity`, `ollama`, `noop` adapters |
 | `runner.py` | Safe subprocess runner (argv lists, no shell, timeouts, output spill) |
 | `artifacts.py` | Streaming SHA-256 hashing, attach, verify |
 | `store.py` | SQLite persistence in `.opencobalt/ledger.db` |
@@ -44,9 +44,8 @@ All code lives in `src/opencobalt/execution/`:
 ## Adapter Receipt Normalization v1
 
 V1 formalizes the receipt contract every execution adapter must satisfy. It does
-not add Cursor support. It makes the existing `noop`, `ollama`, and
-`google-antigravity` adapters emit normalized metadata through the existing
-receipt store.
+adds the contract used by `cursor`, `noop`, `ollama`, and `google-antigravity`
+adapters through the existing receipt store.
 
 The normalized contract records:
 
@@ -97,6 +96,12 @@ normalized capability snapshot, and builds a default-safe argv:
   `agy --help`. `--dangerously-skip-permissions` is never added by default;
   the explicit unsafe override emits a RuntimeWarning and a policy event.
   If `--print` was not discovered, command construction fails cleanly.
+- `cursor`: limited to discovered `cursor agent --print --mode plan`
+  read-only planning. PATH binaries and common macOS `Cursor.app` locations
+  are discovered without launching the editor. `--model` and
+  `--sandbox enabled` are included only when local help advertises them.
+  Cloud mode, force, browser automation, MCP auto-approval, login, logout,
+  and API-key flags are never used.
 - `ollama`: one-shot `ollama run <model> <prompt>` (default model `llama3`).
 - `noop`: echoes the task. Exists for tests and pipeline verification.
 
@@ -197,5 +202,9 @@ model behavior.
   SQLite internals remain unknown and are not assumed.
 - Verification is hash-only. Semantic verification (did the output answer
   the task) belongs to a later milestone.
-- Cursor Runtime Adapter v0 is future work. It must use Adapter Receipt
-  Normalization v1 before it can execute anything under OpenCobalt.
+- Cursor Runtime Adapter v0 is partial when `cursor agent --print --mode plan`
+  is locally discovered. It is unavailable when Cursor is absent and untrusted
+  when only unverifiable local surfaces are present.
+- Cursor receipts verify captured stdout/stderr artifacts, not Cursor account
+  state or semantic correctness. Cursor credentials, cookies, tokens, and
+  project auth are never stored by OpenCobalt.

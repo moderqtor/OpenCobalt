@@ -98,6 +98,8 @@ opencobalt plans execute     replay a stored plan through the policy gate
 opencobalt receipts list     list work receipts
 opencobalt receipts inspect  show one receipt's evidence chain
 opencobalt receipts verify   recompute artifact hashes for a receipt
+opencobalt adapters list     list runtime adapter capability snapshots
+opencobalt adapters inspect  inspect one runtime adapter
 opencobalt artifacts attach  hash and record a local file as an artifact
 opencobalt artifacts verify  recompute one artifact's hash
 opencobalt artifacts list    list execution artifacts
@@ -137,7 +139,8 @@ opencobalt ui                open the React dashboard
 
 ## What NOT to do
 
-- Do not break existing passing tests. The baseline is 947 tests (as of Phase 21 Mission State Machine v1).
+- Do not break existing passing tests. The baseline is 965 tests, 1 warning
+  (as of Phase 22 Adapter Receipt Normalization v1).
 - Do not push to GitHub without explicit instruction.
 - Do not change the SQLite schema without adding migration logic.
 - Do not add Postgres, Redis, Qdrant, or any server-side store as a required dependency.
@@ -155,12 +158,33 @@ opencobalt ui                open the React dashboard
 | Integration | Tier | Status |
 |-------------|------|--------|
 | claude-code | executive | active if `claude` on PATH |
-| gemini-cli | executive | active if `gemini` on PATH |
+| google-antigravity | executive | active if `agy` on PATH |
 | codex-cli | manager | active if `codex` on PATH |
-| cursor | manager | available (GUI app) |
+| cursor | manager | active if `cursor` on PATH or Cursor.app is present; runtime execution requires `opencobalt adapters inspect cursor` evidence |
 | context7 | manager | available (MCP server) |
 | aider | worker | active if `aider` on PATH |
 | ollama | worker | active if ollama running |
+
+---
+
+## Context Sentinel
+
+When producing a final report for Colin, begin with:
+
+"Colin, COBALT-SENTINEL: receipts-first."
+
+Then state:
+- current branch
+- base branch or main SHA if known
+- test baseline
+- whether worktree is clean
+- whether anything was pushed or merged
+
+If you cannot determine these facts, say so explicitly. Do not invent repository
+state.
+
+The sentinel is not decorative. If it is missing, stale, or paired with
+incorrect repo state, assume context has degraded and pause for re-grounding.
 
 ---
 

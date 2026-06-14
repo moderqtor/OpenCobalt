@@ -27,7 +27,7 @@ entry is not runtime adapter support.
 | ollama | https://github.com/ollama/ollama | worker | local inference | `subprocess.run(["ollama", "list"])` returns 0 | stub if not installed |
 | claude-code | https://github.com/anthropics/claude-code | executive | architecture, code, review, debug, security | `shutil.which("claude")` | stub if not installed |
 | google-antigravity | https://antigravity.google/product/antigravity-cli | executive | agent-runtime, interactive-cli, runtime-discovered workflows | `shutil.which("agy")` plus `agy --version` and `agy --help` diagnostics | primary Google agent runtime |
-| cursor | https://www.cursor.com | manager | ui, editor, frontend, component, style | not checkable via PATH | integration stub only |
+| cursor | https://www.cursor.com | manager | ui, editor, frontend, component, style, adapter-aware | `shutil.which("cursor")` or common macOS `Cursor.app` paths | editor awareness only; runtime support comes from `opencobalt adapters inspect cursor` |
 | context7 | https://github.com/upstash/context7 | manager | docs, search, mcp, library-context | not checkable via PATH | always available |
 | github-cli | https://github.com/cli/cli | manager | pr-create, issue-link, branch, review | `shutil.which("gh")` | stub if not installed |
 | obsidian | https://obsidian.md | manager | notes, knowledge-base, export, search | `/Applications/Obsidian.app` exists | available if installed |
@@ -38,6 +38,13 @@ Gemini remains valid as a model-family name, for example `gemini-pro`, but
 Gemini CLI is no longer the canonical Google runtime.
 
 Use `opencobalt doctor antigravity` to inspect local `agy` behavior. OpenCobalt checks PATH, version, help output, and runtime-discovered evidence for non-interactive mode, model selection, plugins, sandboxing, and other capabilities. Unknown Antigravity features are reported as `unknown`, not guessed.
+
+Use `opencobalt adapters inspect cursor` to inspect Cursor runtime evidence.
+The integration check can say the editor is installed, but it does not prove
+receipt-backed execution. Cursor runtime support requires the execution adapter
+to discover `cursor agent --print --mode plan` locally. If that surface is
+missing, Cursor is discovery-only or unavailable and must not produce fake
+successful receipts.
 
 ## Adding a new integration
 

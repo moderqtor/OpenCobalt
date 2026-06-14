@@ -15,6 +15,7 @@ import pytest
 from opencobalt.execution import (
     AntigravityAdapter,
     CommandOptions,
+    CursorAdapter,
     ExecutionEngine,
     ExecutionStore,
     NoopAdapter,
@@ -50,6 +51,32 @@ def _agy_caps(**overrides) -> dict:
     }
     caps.update(overrides)
     return caps
+
+
+def _cursor_agent_help() -> str:
+    return """
+Usage: cursor agent [options] [prompt...]
+
+Options:
+  -p, --print                  Print responses to console (for scripts or non-interactive use).
+  --output-format <format>     Output format (only works with --print): text | json | stream-json
+  --mode <mode>                Start in the given execution mode. plan: read-only/planning
+                               (analyze, propose plans, no edits). ask: Q&A style.
+  --plan                       Start in plan mode (shorthand for --mode=plan).
+  --model <model>              Model to use.
+  --sandbox <mode>             Explicitly enable or disable sandbox mode.
+  --cloud                      Start in cloud mode.
+  --api-key <key>              API key for authentication (can also use CURSOR_API_KEY env var)
+"""
+
+
+def _fake_cursor_app(tmp_path: Path) -> tuple[Path, Path]:
+    app = tmp_path / "Cursor.app"
+    binary = app / "Contents" / "Resources" / "app" / "bin" / "cursor"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    return app, binary
 
 
 # ── Policy ────────────────────────────────────────────────────────────────────
@@ -198,7 +225,9 @@ class TestProcessRunner:
 
 class TestAdapters:
     def test_registry_knows_v0_runtimes(self):
-        assert {"google-antigravity", "ollama", "noop"} <= set(available_runtimes())
+        assert {"cursor", "google-antigravity", "ollama", "noop"} <= set(
+            available_runtimes()
+        )
 
     def test_unknown_runtime_fails_cleanly(self):
         with pytest.raises(KeyError, match="unknown runtime"):
@@ -241,6 +270,71 @@ class TestAdapters:
         assert snapshot.executable_path is None
         assert snapshot.verifiability_level == "unavailable"
         assert snapshot.requires_credentials is True
+
+    def test_cursor_absent_snapshot_is_unavailable(self, monkeypatch):
+        monkeypatch.setattr("opencobalt.execution.adapters.shutil.which", lambda command: None)
+        adapter = CursorAdapter(app_paths=())
+
+        snapshot = adapter.discover_capabilities()
+
+        assert snapshot.adapter_id == "cursor"
+        assert snapshot.available is False
+        assert snapshot.executable_path is None
+        assert snapshot.supports_noninteractive is False
+        assert snapshot.verifiability_level == "unavailable"
+        assert "Cursor app or cursor executable not found" in snapshot.limitations
+
+    def test_cursor_discovered_from_macos_app_path_is_partial(
+        self, tmp_path, monkeypatch
+    ):
+        app, _binary = _fake_cursor_app(tmp_path)
+        monkeypatch.setattr("opencobalt.execution.adapters.shutil.which", lambda command: None)
+
+        adapter = CursorAdapter(app_paths=(app,), help_text=_cursor_agent_help())
+        snapshot = adapter.discover_capabilities()
+
+        assert snapshot.adapter_id == "cursor"
+        assert snapshot.available is True
+        assert snapshot.executable_path == str(app)
+        assert snapshot.supports_noninteractive is True
+        assert snapshot.requires_network is True
+        assert snapshot.requires_credentials is True
+        assert snapshot.verifiability_level == "partial"
+        assert "macos_app" in snapshot.capabilities
+        assert "non_interactive_print" in snapshot.capabilities
+        assert "read_only_plan_mode" in snapshot.capabilities
+        assert "cloud_mode" not in snapshot.capabilities
+        assert "credential_auth" not in snapshot.capabilities
+        assert snapshot.capability_details["cloud_mode"]["advertised_by_cursor"] is True
+        assert snapshot.capability_details["cloud_mode"]["enabled_by_opencobalt"] is False
+        assert snapshot.capability_details["credential_auth"]["advertised_by_cursor"] is True
+        assert snapshot.capability_details["credential_auth"]["stored_by_opencobalt"] is False
+        assert any("cloud mode is not enabled" in item for item in snapshot.limitations)
+
+    def test_cursor_builds_read_only_agent_print_command(self, tmp_path, monkeypatch):
+        app, binary = _fake_cursor_app(tmp_path)
+        monkeypatch.setattr("opencobalt.execution.adapters.shutil.which", lambda command: None)
+        adapter = CursorAdapter(app_paths=(app,), help_text=_cursor_agent_help())
+
+        argv = adapter.build_command(
+            "review the current file", CommandOptions(model="gpt-5", sandbox=True)
+        )
+
+        assert argv == [
+            str(binary),
+            "agent",
+            "--print",
+            "--mode",
+            "plan",
+            "--output-format",
+            "text",
+            "--sandbox",
+            "enabled",
+            "--model",
+            "gpt-5",
+            "--",
+            "review the current file",
+        ]
 
     def test_legacy_runtime_aliases_resolve_to_canonical_antigravity_adapter(self):
         assert get_adapter("antigravity-cli").runtime_id == "google-antigravity"
@@ -503,6 +597,33 @@ class TestExecutionEngine:
         assert receipt.normalized_receipt.status == "skipped"
         assert receipt.normalized_receipt.verifiability_level == "unavailable"
 
+    def test_unavailable_cursor_records_receipt_without_spawning(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("opencobalt.execution.adapters.shutil.which", lambda command: None)
+
+        def explode(*args, **kwargs):
+            raise AssertionError("unavailable Cursor must not start a subprocess")
+
+        monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", explode)
+        engine = _engine(tmp_path)
+        adapter = CursorAdapter(app_paths=())
+        outcome = engine.run_task("plan UI fixes", runtime="cursor", execute=True, adapter=adapter)
+
+        assert outcome.result is None
+        receipt = engine.store.get_receipt(outcome.receipt.receipt_id)
+        assert receipt is not None
+        assert receipt.adapter_id == "cursor"
+        assert receipt.command_plan == []
+        assert receipt.capabilities_snapshot["normalized"]["available"] is False
+        assert receipt.normalized_invocation is not None
+        assert receipt.normalized_invocation.adapter_id == "cursor"
+        assert receipt.normalized_invocation.environment_policy == "inherited_redacted"
+        assert receipt.normalized_receipt is not None
+        assert receipt.normalized_receipt.status == "skipped"
+        assert receipt.normalized_receipt.verifiability_level == "unavailable"
+        assert "runtime unavailable: cursor" in receipt.limitations
+
     def test_receipt_verify_validates_normalized_integrity(self, tmp_path):
         engine = _engine(tmp_path)
         outcome = engine.run_task("hello", runtime="noop", execute=True)
@@ -578,6 +699,76 @@ class TestExecutionEngine:
         assert outcome.receipt.capabilities_snapshot["normalized"]["available"] is True
         assert outcome.receipt.normalized_receipt is not None
         assert outcome.receipt.normalized_receipt.verifiability_level == "partial"
+
+    def test_cursor_execute_uses_engine_and_normalized_receipts(
+        self, tmp_path, monkeypatch
+    ):
+        app, binary = _fake_cursor_app(tmp_path)
+
+        def fake_run(argv, **kwargs):
+            assert argv == [
+                str(binary),
+                "agent",
+                "--print",
+                "--mode",
+                "plan",
+                "--output-format",
+                "text",
+                "--",
+                "plan UI fixes",
+            ]
+            kwargs["stdout"].write("Cursor plan output")
+            return subprocess.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr("opencobalt.execution.adapters.shutil.which", lambda command: None)
+        monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", fake_run)
+        engine = _engine(tmp_path)
+        adapter = CursorAdapter(app_paths=(app,), help_text=_cursor_agent_help())
+
+        outcome = engine.run_task("plan UI fixes", runtime="cursor", execute=True, adapter=adapter)
+
+        assert outcome.executed
+        assert outcome.receipt.verification_status == "verified"
+        assert outcome.receipt.adapter_id == "cursor"
+        assert outcome.receipt.capability_snapshot_hash
+        assert outcome.receipt.normalized_invocation is not None
+        assert outcome.receipt.normalized_invocation.adapter_id == "cursor"
+        assert outcome.receipt.normalized_invocation.invocation_hash
+        assert outcome.receipt.normalized_receipt is not None
+        assert outcome.receipt.normalized_receipt.adapter_id == "cursor"
+        assert outcome.receipt.normalized_receipt.event_count > 0
+        assert outcome.receipt.normalized_receipt.artifact_hashes
+        assert outcome.receipt.normalized_receipt.verification_status == "verified"
+        assert outcome.receipt.normalized_receipt.verifiability_level == "partial"
+        assert engine.verify_receipt(outcome.receipt.receipt_id) == "verified"
+
+    def test_cursor_receipt_provenance_includes_adapter_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        from opencobalt.core.provenance import ProvenanceBuilder
+
+        app, binary = _fake_cursor_app(tmp_path)
+
+        def fake_run(argv, **kwargs):
+            assert argv[0] == str(binary)
+            kwargs["stdout"].write("Cursor plan output")
+            return subprocess.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr("opencobalt.execution.adapters.shutil.which", lambda command: None)
+        monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", fake_run)
+        engine = _engine(tmp_path)
+        adapter = CursorAdapter(app_paths=(app,), help_text=_cursor_agent_help())
+        outcome = engine.run_task("plan UI fixes", runtime="cursor", execute=True, adapter=adapter)
+
+        trace = ProvenanceBuilder(tmp_path / "ledger.db").trace(outcome.receipt.receipt_id)
+
+        assert trace is not None
+        receipt_node = trace.get_node(outcome.receipt.receipt_id)
+        assert receipt_node is not None
+        assert receipt_node.data["adapter_id"] == "cursor"
+        assert receipt_node.data["capability_snapshot_hash"]
+        assert receipt_node.data["verifiability_level"] == "partial"
+        assert receipt_node.data["artifact_count"] == len(outcome.receipt.artifact_ids)
 
     def test_antigravity_missing_executable_stays_unavailable_even_with_caps(
         self, tmp_path, monkeypatch

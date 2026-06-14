@@ -140,6 +140,27 @@ class TestDoctorAntigravity:
         assert "runtime_discovered" in plain
 
 
+class TestIntegrationsCheck:
+    def test_cursor_check_does_not_claim_runtime_execution(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.integrations.cursor_integration.CursorIntegration.install_check",
+            lambda self: True,
+        )
+
+        result = _invoke("integrations", "check")
+        plain = _plain(result.output)
+
+        assert result.exit_code == 0, _debug(result)
+        assert "cursor" in plain
+        assert (
+            "runtime evidence: opencobalt adapters inspect cursor"
+            in plain.replace("\n", "")
+        )
+
+
 # ── route command ─────────────────────────────────────────────────────────────
 
 class TestRoute:

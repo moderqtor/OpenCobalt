@@ -31,6 +31,21 @@ def _receipt_id(output: str) -> str:
     return match.group(1)
 
 
+def _cursor_agent_help() -> str:
+    return """
+Usage: cursor agent [options] [prompt...]
+
+Options:
+  -p, --print                  Print responses to console (for scripts or non-interactive use).
+  --output-format <format>     Output format (only works with --print): text | json | stream-json
+  --mode <mode>                Start in the given execution mode. plan: read-only/planning.
+  --model <model>              Model to use.
+  --sandbox <mode>             Explicitly enable or disable sandbox mode.
+  --cloud                      Start in cloud mode.
+  --api-key <key>              API key for authentication (can also use CURSOR_API_KEY env var)
+"""
+
+
 class TestRunCommand:
     def test_dry_run_produces_plan_without_subprocess(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -212,6 +227,7 @@ class TestAdapterCommands:
         monkeypatch.chdir(tmp_path)
         result = _invoke("adapters", "list")
         assert result.exit_code == 0, result.output
+        assert "cursor" in result.output
         assert "noop" in result.output
         assert "google-antigravity" in result.output
         assert "Verifiability" in result.output
@@ -223,6 +239,39 @@ class TestAdapterCommands:
         assert "Adapter" in result.output
         assert "snapshot hash" in result.output
         assert "echo_only" in result.output
+
+    def test_adapters_inspect_cursor_shows_capability_limits(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        fake_cursor = tmp_path / "cursor"
+        fake_cursor.write_text("#!/bin/sh\nexit 0\n")
+        fake_cursor.chmod(0o755)
+
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_cursor) if command == "cursor" else None,
+        )
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.subprocess.run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 0, stdout=_cursor_agent_help(), stderr=""
+            ),
+        )
+
+        result = _invoke("adapters", "inspect", "cursor")
+
+        assert result.exit_code == 0, result.output
+        assert "Adapter cursor" in result.output
+        assert str(fake_cursor) in result.output.replace("\n", "")
+        assert "Available: yes" in result.output
+        assert "Requires network: yes" in result.output
+        assert "Requires credentials: yes" in result.output
+        assert "Artifact support:" in result.output
+        assert "stdout, stderr" in result.output
+        assert "non_interactive_print" in result.output
+        assert "read_only_plan_mode" in result.output
+        assert "cloud mode is not enabled" in result.output
 
 
 class TestArtifactsCommands:
