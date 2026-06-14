@@ -558,6 +558,10 @@ class TestExecutionEngine:
             kwargs["stdout"].write("agent reply")
             return subprocess.CompletedProcess(argv, 0)
 
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: "/usr/local/bin/agy" if command == "agy" else None,
+        )
         monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", fake_run)
         engine = _engine(tmp_path)
         adapter = AntigravityAdapter(capabilities=_agy_caps())
@@ -569,6 +573,37 @@ class TestExecutionEngine:
         assert "agent reply" in outcome.result.stdout_preview
         assert outcome.receipt.verification_status == "verified"
         assert "--dangerously-skip-permissions" not in outcome.receipt.command_plan
+        assert outcome.receipt.adapter_id == "google-antigravity"
+        assert outcome.receipt.capability_snapshot_hash
+        assert outcome.receipt.capabilities_snapshot["normalized"]["available"] is True
+        assert outcome.receipt.normalized_receipt is not None
+        assert outcome.receipt.normalized_receipt.verifiability_level == "partial"
+
+    def test_antigravity_missing_executable_stays_unavailable_even_with_caps(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("opencobalt.execution.adapters.shutil.which", lambda command: None)
+
+        def explode(*args, **kwargs):
+            raise AssertionError("missing agy must not start a subprocess")
+
+        monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", explode)
+        engine = _engine(tmp_path)
+        adapter = AntigravityAdapter(capabilities=_agy_caps())
+        outcome = engine.run_task(
+            "hello", runtime="google-antigravity", execute=True, adapter=adapter
+        )
+        assert not outcome.executed
+        assert outcome.result is None
+        receipt = engine.store.get_receipt(outcome.receipt.receipt_id)
+        assert receipt is not None
+        assert receipt.adapter_id == "google-antigravity"
+        assert receipt.command_plan == []
+        assert receipt.capabilities_snapshot["normalized"]["available"] is False
+        assert receipt.normalized_receipt is not None
+        assert receipt.normalized_receipt.status == "skipped"
+        assert receipt.normalized_receipt.verifiability_level == "unavailable"
+        assert "runtime unavailable: google-antigravity" in receipt.limitations
 
     def test_events_are_emitted_and_persisted(self, tmp_path):
         engine = _engine(tmp_path)

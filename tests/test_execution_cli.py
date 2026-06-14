@@ -54,6 +54,10 @@ class TestRunCommand:
         monkeypatch.setattr(
             AntigravityAdapter, "capabilities", lambda self: caps
         )
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: "/usr/local/bin/agy" if command == "agy" else None,
+        )
         result = _invoke("run", "hello", "--runtime", "google-antigravity", "--dry-run")
         assert result.exit_code == 0
         assert "agy --print hello" in result.output
