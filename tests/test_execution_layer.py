@@ -15,6 +15,7 @@ import pytest
 from opencobalt.execution import (
     AntigravityAdapter,
     ClaudeCodeAdapter,
+    CodexCliAdapter,
     CommandOptions,
     CursorAdapter,
     ExecutionEngine,
@@ -126,6 +127,76 @@ Options:
 
 def _fake_claude_binary(tmp_path: Path) -> Path:
     binary = tmp_path / "claude"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o755)
+    return binary
+
+
+def _codex_help() -> str:
+    return """
+Codex CLI
+
+Usage: codex [OPTIONS] [PROMPT]
+       codex [OPTIONS] <COMMAND> [ARGS]
+
+Commands:
+  exec            Run Codex non-interactively [aliases: e]
+  review          Run a code review non-interactively
+  login           Manage login
+  logout          Remove stored authentication credentials
+  mcp             Manage external MCP servers for Codex
+  app-server      [experimental] Run the app server or related tooling
+  remote-control  [experimental] Manage the app-server daemon with remote control enabled
+  apply           Apply the latest diff produced by Codex agent
+  cloud           [EXPERIMENTAL] Browse tasks from Codex Cloud and apply changes locally
+
+Options:
+  -s, --sandbox <SANDBOX_MODE>          [possible values: read-only, workspace-write, danger-full-access]
+      --dangerously-bypass-approvals-and-sandbox
+      --dangerously-bypass-hook-trust
+  -a, --ask-for-approval <APPROVAL_POLICY>
+          Possible values: untrusted, on-failure, on-request, never
+      --search
+"""
+
+
+def _codex_exec_help() -> str:
+    return """
+Run Codex non-interactively
+
+Usage: codex exec [OPTIONS] [PROMPT]
+
+Options:
+  -s, --sandbox <SANDBOX_MODE>          [possible values: read-only, workspace-write, danger-full-access]
+      --dangerously-bypass-approvals-and-sandbox
+      --dangerously-bypass-hook-trust
+      --ephemeral
+      --ignore-user-config
+      --output-schema <FILE>
+      --color <COLOR>                  [possible values: always, never, auto]
+      --json                           Print events to stdout as JSONL
+  -o, --output-last-message <FILE>
+"""
+
+
+def _codex_help_without_safe_exec() -> str:
+    return """
+Codex CLI
+
+Usage: codex [OPTIONS] [PROMPT]
+       codex [OPTIONS] <COMMAND> [ARGS]
+
+Commands:
+  exec            Run Codex non-interactively
+
+Options:
+  -s, --sandbox <SANDBOX_MODE>          [possible values: workspace-write, danger-full-access]
+      --dangerously-bypass-approvals-and-sandbox
+"""
+
+
+def _fake_codex_binary(tmp_path: Path) -> Path:
+    binary = tmp_path / "codex"
     binary.write_text("#!/bin/sh\nexit 0\n")
     binary.chmod(0o755)
     return binary
@@ -277,9 +348,14 @@ class TestProcessRunner:
 
 class TestAdapters:
     def test_registry_knows_v0_runtimes(self):
-        assert {"claude-code", "cursor", "google-antigravity", "ollama", "noop"} <= set(
-            available_runtimes()
-        )
+        assert {
+            "claude-code",
+            "codex-cli",
+            "cursor",
+            "google-antigravity",
+            "ollama",
+            "noop",
+        } <= set(available_runtimes())
 
     def test_unknown_runtime_fails_cleanly(self):
         with pytest.raises(KeyError, match="unknown runtime"):
@@ -521,6 +597,177 @@ Options:
             )
         with pytest.raises(ValueError, match="sandbox mode"):
             adapter.build_command("summarize", CommandOptions(sandbox=True))
+
+    def test_codex_absent_snapshot_is_unavailable(self, monkeypatch):
+        monkeypatch.setattr("opencobalt.execution.adapters.shutil.which", lambda command: None)
+        adapter = CodexCliAdapter(help_text="", exec_help_text="", version_text="")
+
+        snapshot = adapter.discover_capabilities()
+
+        assert snapshot.adapter_id == "codex-cli"
+        assert snapshot.available is False
+        assert snapshot.executable_path is None
+        assert snapshot.supports_noninteractive is False
+        assert snapshot.verifiability_level == "unavailable"
+        assert "Codex executable not found: codex" in snapshot.limitations
+
+    def test_codex_fake_help_snapshot_is_partial_and_bounded(
+        self, tmp_path, monkeypatch
+    ):
+        fake_codex = _fake_codex_binary(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_codex) if command == "codex" else None,
+        )
+        adapter = CodexCliAdapter(
+            help_text=_codex_help(),
+            exec_help_text=_codex_exec_help(),
+            version_text="codex-cli 0.139.0",
+        )
+
+        snapshot = adapter.discover_capabilities()
+
+        assert snapshot.adapter_id == "codex-cli"
+        assert snapshot.adapter_name == "Codex CLI"
+        assert snapshot.adapter_version == "codex-cli 0.139.0"
+        assert snapshot.executable_path == str(fake_codex)
+        assert snapshot.available is True
+        assert snapshot.supports_noninteractive is True
+        assert snapshot.supports_json_output is True
+        assert snapshot.requires_network is True
+        assert snapshot.requires_credentials is True
+        assert snapshot.verifiability_level == "partial"
+        assert "path_binary" in snapshot.capabilities
+        assert "exec_subcommand" in snapshot.capabilities
+        assert "read_only_sandbox" in snapshot.capabilities
+        assert "approval_never" in snapshot.capabilities
+        assert "json_events" in snapshot.capabilities
+        assert "dangerous_permission_bypass" not in snapshot.capabilities
+        assert snapshot.capability_details["dangerous_permission_bypass"][
+            "advertised_by_codex"
+        ] is True
+        assert snapshot.capability_details["dangerous_permission_bypass"][
+            "enabled_by_opencobalt"
+        ] is False
+        assert snapshot.capability_details["credential_auth"]["stored_by_opencobalt"] is False
+        assert any("dangerous permission bypass modes are not used" in item for item in snapshot.limitations)
+        assert snapshot.snapshot_hash
+
+    def test_codex_builds_safe_exec_planning_command(self, tmp_path, monkeypatch):
+        fake_codex = _fake_codex_binary(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_codex) if command == "codex" else None,
+        )
+        adapter = CodexCliAdapter(
+            help_text=_codex_help(),
+            exec_help_text=_codex_exec_help(),
+            version_text="codex-cli 0.139.0",
+        )
+
+        argv = adapter.build_command("review repository state")
+
+        assert argv == [
+            str(fake_codex),
+            "--sandbox",
+            "read-only",
+            "--ask-for-approval",
+            "never",
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--color",
+            "never",
+            "OpenCobalt read-only planning request:\nreview repository state",
+        ]
+        joined = " ".join(argv)
+        assert "--dangerously-bypass-approvals-and-sandbox" not in joined
+        assert "--dangerously-bypass-hook-trust" not in joined
+        assert "--search" not in joined
+        assert "login" not in argv
+        assert "logout" not in argv
+        assert "mcp" not in argv
+        assert "app-server" not in argv
+        assert "remote-control" not in argv
+        assert "apply" not in argv
+        assert "cloud" not in argv
+
+    def test_codex_safe_optional_flags_only_when_help_advertises_them(
+        self, tmp_path, monkeypatch
+    ):
+        fake_codex = _fake_codex_binary(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_codex) if command == "codex" else None,
+        )
+        adapter = CodexCliAdapter(
+            help_text=_codex_help(),
+            exec_help_text="""
+Run Codex non-interactively
+Usage: codex exec [OPTIONS] [PROMPT]
+Options:
+  --json                           Print events to stdout as JSONL
+""",
+            version_text="codex-cli 0.139.0",
+        )
+
+        argv = adapter.build_command("summarize")
+
+        assert argv == [
+            str(fake_codex),
+            "--sandbox",
+            "read-only",
+            "--ask-for-approval",
+            "never",
+            "exec",
+            "--json",
+            "OpenCobalt read-only planning request:\nsummarize",
+        ]
+
+    def test_codex_missing_safe_flags_is_discovery_only(self, tmp_path, monkeypatch):
+        fake_codex = _fake_codex_binary(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_codex) if command == "codex" else None,
+        )
+        adapter = CodexCliAdapter(
+            help_text=_codex_help_without_safe_exec(),
+            exec_help_text="Run Codex non-interactively",
+            version_text="codex-cli 0.139.0",
+        )
+
+        snapshot = adapter.discover_capabilities()
+
+        assert snapshot.available is True
+        assert snapshot.supports_noninteractive is False
+        assert snapshot.verifiability_level == "partial"
+        assert "safe codex exec read-only invocation was not discovered" in snapshot.limitations
+        with pytest.raises(ValueError, match="safe codex exec read-only invocation"):
+            adapter.build_command("summarize")
+
+    def test_codex_rejects_dangerous_or_mutating_options(self, tmp_path, monkeypatch):
+        fake_codex = _fake_codex_binary(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_codex) if command == "codex" else None,
+        )
+        adapter = CodexCliAdapter(
+            help_text=_codex_help(),
+            exec_help_text=_codex_exec_help(),
+            version_text="codex-cli 0.139.0",
+        )
+
+        with pytest.raises(ValueError, match="unsafe permission bypass"):
+            adapter.build_command(
+                "summarize",
+                CommandOptions(dangerously_skip_permissions=True),
+            )
+        with pytest.raises(ValueError, match="unsafe permission bypass"):
+            adapter.build_command(
+                "summarize",
+                CommandOptions(allow_dangerously_skip_permissions=True),
+            )
 
     def test_cursor_builds_read_only_agent_print_command(self, tmp_path, monkeypatch):
         app, binary = _fake_cursor_app(tmp_path)
@@ -1098,6 +1345,128 @@ class TestExecutionEngine:
         receipt_node = trace.get_node(outcome.receipt.receipt_id)
         assert receipt_node is not None
         assert receipt_node.data["adapter_id"] == "claude-code"
+        assert receipt_node.data["capability_snapshot_hash"]
+        assert receipt_node.data["verifiability_level"] == "partial"
+        assert receipt_node.data["artifact_count"] == len(outcome.receipt.artifact_ids)
+
+    def test_codex_unavailable_records_receipt_without_spawning(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("opencobalt.execution.adapters.shutil.which", lambda command: None)
+
+        def explode(*args, **kwargs):
+            raise AssertionError("missing codex must not start a subprocess")
+
+        monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", explode)
+        engine = _engine(tmp_path)
+        adapter = CodexCliAdapter(help_text="", exec_help_text="", version_text="")
+
+        outcome = engine.run_task(
+            "summarize repository", runtime="codex-cli", execute=True, adapter=adapter
+        )
+
+        assert not outcome.executed
+        assert outcome.result is None
+        receipt = engine.store.get_receipt(outcome.receipt.receipt_id)
+        assert receipt is not None
+        assert receipt.adapter_id == "codex-cli"
+        assert receipt.command_plan == []
+        assert receipt.capabilities_snapshot["normalized"]["available"] is False
+        assert receipt.normalized_receipt is not None
+        assert receipt.normalized_receipt.status == "skipped"
+        assert receipt.normalized_receipt.verifiability_level == "unavailable"
+        assert "runtime unavailable: codex-cli" in receipt.limitations
+
+    def test_codex_execute_uses_engine_and_normalized_receipts(
+        self, tmp_path, monkeypatch
+    ):
+        fake_codex = _fake_codex_binary(tmp_path)
+
+        def fake_run(argv, **kwargs):
+            assert argv == [
+                str(fake_codex),
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "exec",
+                "--json",
+                "--ephemeral",
+                "--ignore-user-config",
+                "--color",
+                "never",
+                "OpenCobalt read-only planning request:\nsummarize repository",
+            ]
+            kwargs["stdout"].write('{"type":"message","content":"Codex planning output"}\n')
+            return subprocess.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_codex) if command == "codex" else None,
+        )
+        monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", fake_run)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openaitestsecret123456789")
+        engine = _engine(tmp_path)
+        adapter = CodexCliAdapter(
+            help_text=_codex_help(),
+            exec_help_text=_codex_exec_help(),
+            version_text="codex-cli 0.139.0",
+        )
+
+        outcome = engine.run_task(
+            "summarize repository", runtime="codex-cli", execute=True, adapter=adapter
+        )
+
+        assert outcome.executed
+        assert outcome.receipt.verification_status == "verified"
+        assert outcome.receipt.adapter_id == "codex-cli"
+        assert outcome.receipt.capability_snapshot_hash
+        assert outcome.receipt.normalized_invocation is not None
+        assert outcome.receipt.normalized_invocation.adapter_id == "codex-cli"
+        assert outcome.receipt.normalized_invocation.environment_policy == "inherited_redacted"
+        assert outcome.receipt.normalized_receipt is not None
+        assert outcome.receipt.normalized_receipt.adapter_id == "codex-cli"
+        assert outcome.receipt.normalized_receipt.event_count > 0
+        assert outcome.receipt.normalized_receipt.artifact_hashes
+        assert outcome.receipt.normalized_receipt.verification_status == "verified"
+        assert outcome.receipt.normalized_receipt.verifiability_level == "partial"
+        receipt_blob = repr(outcome.receipt.model_dump(mode="json"))
+        assert "sk-openaitestsecret123456789" not in receipt_blob
+        assert engine.verify_receipt(outcome.receipt.receipt_id) == "verified"
+
+    def test_codex_receipt_provenance_includes_adapter_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        from opencobalt.core.provenance import ProvenanceBuilder
+
+        fake_codex = _fake_codex_binary(tmp_path)
+
+        def fake_run(argv, **kwargs):
+            assert argv[0] == str(fake_codex)
+            kwargs["stdout"].write("Codex planning output")
+            return subprocess.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_codex) if command == "codex" else None,
+        )
+        monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", fake_run)
+        engine = _engine(tmp_path)
+        adapter = CodexCliAdapter(
+            help_text=_codex_help(),
+            exec_help_text=_codex_exec_help(),
+            version_text="codex-cli 0.139.0",
+        )
+        outcome = engine.run_task(
+            "summarize repository", runtime="codex-cli", execute=True, adapter=adapter
+        )
+
+        trace = ProvenanceBuilder(tmp_path / "ledger.db").trace(outcome.receipt.receipt_id)
+
+        assert trace is not None
+        receipt_node = trace.get_node(outcome.receipt.receipt_id)
+        assert receipt_node is not None
+        assert receipt_node.data["adapter_id"] == "codex-cli"
         assert receipt_node.data["capability_snapshot_hash"]
         assert receipt_node.data["verifiability_level"] == "partial"
         assert receipt_node.data["artifact_count"] == len(outcome.receipt.artifact_ids)

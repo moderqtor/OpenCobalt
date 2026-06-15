@@ -147,6 +147,7 @@ class AntigravityAdapter(RuntimeAdapter):
 _CURSOR_BUNDLED_CLI = Path("Contents") / "Resources" / "app" / "bin" / "cursor"
 _CURSOR_HELP_TIMEOUT_SECONDS = 5
 _CLAUDE_HELP_TIMEOUT_SECONDS = 5
+_CODEX_HELP_TIMEOUT_SECONDS = 5
 
 
 def _default_cursor_app_paths() -> tuple[Path, ...]:
@@ -683,6 +684,300 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         return argv
 
 
+class CodexCliAdapter(RuntimeAdapter):
+    """Codex CLI. Limited to local help-proven read-only exec mode."""
+
+    runtime_id = "codex-cli"
+    display_name = "Codex CLI"
+    executable = "codex"
+    requires_network = True
+    requires_credentials = True
+    max_safe_risk = "green"
+    verifiability_level = "partial"
+    supports_json_output = True
+
+    def __init__(
+        self,
+        *,
+        help_text: str | None = None,
+        exec_help_text: str | None = None,
+        version_text: str | None = None,
+    ) -> None:
+        self._help_text = help_text
+        self._exec_help_text = exec_help_text
+        self._version_text = version_text
+        self._capabilities: dict[str, Any] | None = None
+
+    def _path_binary(self) -> str | None:
+        found = shutil.which(self.executable)
+        return found if _is_executable(found) else None
+
+    def _help(self) -> str:
+        if self._help_text is not None:
+            return self._help_text
+        executable = self._path_binary()
+        if executable is None:
+            return ""
+        try:
+            result = subprocess.run(
+                [executable, "--help"],
+                capture_output=True,
+                text=True,
+                timeout=_CODEX_HELP_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            return ""
+        return "\n".join(part for part in (result.stdout, result.stderr) if part)
+
+    def _exec_help(self) -> str:
+        if self._exec_help_text is not None:
+            return self._exec_help_text
+        executable = self._path_binary()
+        if executable is None:
+            return ""
+        try:
+            result = subprocess.run(
+                [executable, "exec", "--help"],
+                capture_output=True,
+                text=True,
+                timeout=_CODEX_HELP_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            return ""
+        return "\n".join(part for part in (result.stdout, result.stderr) if part)
+
+    def _version(self) -> str | None:
+        if self._version_text is not None:
+            return self._version_text or None
+        executable = self._path_binary()
+        if executable is None:
+            return None
+        try:
+            result = subprocess.run(
+                [executable, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=_CODEX_HELP_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            return None
+        output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+        return output or None
+
+    def capabilities(self) -> dict[str, Any]:
+        if self._capabilities is not None:
+            return self._capabilities
+
+        path_binary = self._path_binary()
+        help_text = self._help() if path_binary else ""
+        exec_help = self._exec_help() if path_binary else ""
+        version = self._version() if path_binary else None
+        combined_help = f"{help_text}\n{exec_help}"
+        has_exec = "Run Codex non-interactively" in combined_help or "\n  exec" in help_text
+        has_read_only_sandbox = "--sandbox" in combined_help and "read-only" in combined_help
+        has_approval_never = "--ask-for-approval" in help_text and "never" in help_text
+        has_json = "--json" in exec_help
+        has_ephemeral = "--ephemeral" in exec_help
+        has_ignore_user_config = "--ignore-user-config" in exec_help
+        has_color_never = "--color" in exec_help and "never" in exec_help
+        has_model = "--model" in combined_help
+
+        self._capabilities = {
+            "path_binary": {
+                "supported": path_binary is not None,
+                "source": "PATH",
+                "path": path_binary,
+            },
+            "version": {
+                "supported": version is not None,
+                "source": "codex --version" if version else "unknown",
+                "value": version,
+            },
+            "help_output": {
+                "supported": bool(help_text),
+                "source": "codex --help" if help_text else "unknown",
+            },
+            "exec_help_output": {
+                "supported": bool(exec_help),
+                "source": "codex exec --help" if exec_help else "unknown",
+            },
+            "exec_subcommand": {
+                "supported": has_exec,
+                "source": "codex --help/codex exec --help" if combined_help.strip() else "unknown",
+            },
+            "read_only_sandbox": {
+                "supported": has_read_only_sandbox,
+                "source": "codex --help/codex exec --help" if combined_help.strip() else "unknown",
+            },
+            "approval_never": {
+                "supported": has_approval_never,
+                "source": "codex --help" if help_text else "unknown",
+            },
+            "json_events": {
+                "supported": has_json,
+                "source": "codex exec --help" if exec_help else "unknown",
+            },
+            "ephemeral_session": {
+                "supported": has_ephemeral,
+                "source": "codex exec --help" if exec_help else "unknown",
+            },
+            "ignore_user_config": {
+                "supported": has_ignore_user_config,
+                "source": "codex exec --help" if exec_help else "unknown",
+            },
+            "color_never": {
+                "supported": has_color_never,
+                "source": "codex exec --help" if exec_help else "unknown",
+            },
+            "model_selection": {
+                "supported": has_model,
+                "source": "codex --help/codex exec --help" if combined_help.strip() else "unknown",
+            },
+            "dangerous_permission_bypass": {
+                "supported": False,
+                "source": "codex --help/codex exec --help" if combined_help.strip() else "unknown",
+                "advertised_by_codex": "--dangerously-bypass-approvals-and-sandbox" in combined_help
+                or "--dangerously-bypass-hook-trust" in combined_help
+                or "danger-full-access" in combined_help,
+                "enabled_by_opencobalt": False,
+            },
+            "credential_auth": {
+                "supported": False,
+                "source": "codex --help" if help_text else "unknown",
+                "advertised_by_codex": "login" in help_text
+                or "logout" in help_text
+                or "auth" in help_text
+                or "OPENAI_API_KEY" in combined_help,
+                "stored_by_opencobalt": False,
+            },
+            "mcp_management": {
+                "supported": False,
+                "source": "codex --help" if help_text else "unknown",
+                "advertised_by_codex": " mcp " in f" {help_text} " or "MCP" in combined_help,
+                "enabled_by_opencobalt": False,
+            },
+            "network_search": {
+                "supported": False,
+                "source": "codex --help" if help_text else "unknown",
+                "advertised_by_codex": "--search" in help_text,
+                "enabled_by_opencobalt": False,
+            },
+            "remote_or_daemon": {
+                "supported": False,
+                "source": "codex --help" if help_text else "unknown",
+                "advertised_by_codex": "app-server" in help_text
+                or "remote-control" in help_text
+                or "exec-server" in help_text
+                or "mcp-server" in help_text,
+                "enabled_by_opencobalt": False,
+            },
+            "repo_mutation_paths": {
+                "supported": False,
+                "source": "codex --help" if help_text else "unknown",
+                "advertised_by_codex": "apply" in help_text
+                or "cloud" in help_text
+                or "update" in help_text,
+                "enabled_by_opencobalt": False,
+            },
+        }
+        return self._capabilities
+
+    def discover_capabilities(self) -> RuntimeCapabilitySnapshot:
+        raw = self.capabilities()
+        executable = raw["path_binary"]["path"]
+        available = executable is not None
+        supports_noninteractive = self.supports_non_interactive()
+        limitations: list[str] = []
+
+        if not available:
+            limitations.append("Codex executable not found: codex")
+        elif not raw["help_output"]["supported"]:
+            limitations.append(
+                "Codex help output not discovered; runtime support is discovery-only"
+            )
+        if available and not supports_noninteractive:
+            limitations.append("safe codex exec read-only invocation was not discovered")
+        if available:
+            limitations.extend(
+                [
+                    "execution is limited to codex exec with sandbox read-only and approval policy never",
+                    "Codex may require network and credentials outside OpenCobalt",
+                    "OpenCobalt policy gates remain authoritative",
+                    "dangerous permission bypass modes are not used",
+                    "credential, login, logout, MCP management, browser/app-server, remote-control, cloud/apply/update, deploy, publish, spend, message, and web search paths are not used",
+                ]
+            )
+
+        return RuntimeCapabilitySnapshot(
+            adapter_id=self.runtime_id,
+            adapter_name=self.display_name,
+            adapter_version=raw["version"]["value"],
+            executable_path=executable,
+            available=available,
+            capabilities=_supported_capability_names(raw),
+            supported_artifact_types=list(self.supported_artifact_types),
+            supports_dry_run=True,
+            supports_noninteractive=supports_noninteractive,
+            supports_json_output=bool(raw["json_events"]["supported"]),
+            requires_network=True,
+            requires_credentials=True,
+            max_safe_risk=self.max_safe_risk if available else "green",
+            limitations=limitations,
+            verifiability_level="partial" if available else "unavailable",
+            capability_details=raw,
+        ).with_hash()
+
+    def supports_non_interactive(self) -> bool:
+        caps = self.capabilities()
+        return bool(
+            caps.get("path_binary", {}).get("supported") is True
+            and caps.get("exec_subcommand", {}).get("supported") is True
+            and caps.get("read_only_sandbox", {}).get("supported") is True
+            and caps.get("approval_never", {}).get("supported") is True
+        )
+
+    def default_timeout_seconds(self) -> int:
+        return 600
+
+    def build_command(self, task: str, options: CommandOptions | None = None) -> list[str]:
+        opts = options or CommandOptions()
+        if opts.dangerously_skip_permissions or opts.allow_dangerously_skip_permissions:
+            raise ValueError("Codex CLI adapter does not support unsafe permission bypass")
+        executable = self._path_binary()
+        if executable is None:
+            raise ValueError("Codex executable not found")
+        if not self.supports_non_interactive():
+            raise ValueError("safe codex exec read-only invocation was not discovered")
+        caps = self.capabilities()
+        argv = [executable]
+        if opts.model:
+            if caps.get("model_selection", {}).get("supported") is not True:
+                raise ValueError("Codex model selection was not discovered")
+            argv.extend(["--model", opts.model])
+        argv.extend(
+            [
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "exec",
+            ]
+        )
+        if caps.get("json_events", {}).get("supported") is True:
+            argv.append("--json")
+        if caps.get("ephemeral_session", {}).get("supported") is True:
+            argv.append("--ephemeral")
+        if caps.get("ignore_user_config", {}).get("supported") is True:
+            argv.append("--ignore-user-config")
+        if caps.get("color_never", {}).get("supported") is True:
+            argv.extend(["--color", "never"])
+        argv.append(f"OpenCobalt read-only planning request:\n{task}")
+        return argv
+
+
 class OllamaAdapter(RuntimeAdapter):
     """Local Ollama models. One-shot prompt via `ollama run`."""
 
@@ -744,6 +1039,7 @@ class NoopAdapter(RuntimeAdapter):
 _ADAPTERS: dict[str, type[RuntimeAdapter]] = {
     AntigravityAdapter.runtime_id: AntigravityAdapter,
     ClaudeCodeAdapter.runtime_id: ClaudeCodeAdapter,
+    CodexCliAdapter.runtime_id: CodexCliAdapter,
     CursorAdapter.runtime_id: CursorAdapter,
     OllamaAdapter.runtime_id: OllamaAdapter,
     NoopAdapter.runtime_id: NoopAdapter,

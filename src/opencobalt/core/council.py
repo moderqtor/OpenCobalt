@@ -51,17 +51,24 @@ class CouncilSession:
 
 _BINARY_CMDS: dict[str, list[str]] = {
     "claude": ["claude", "--print"],
-    "codex": ["codex", "exec"],
     "antigravity": [],
     "ollama": [],  # filled dynamically
 }
 
-# Autonomous (yolo) mode flags — bypass all approval prompts for maximum throughput
+# Legacy council subprocesses must not bypass runtime adapter policy gates.
 _AUTONOMOUS_FLAGS: dict[str, list[str]] = {
     "claude": ["--dangerously-skip-permissions"],
-    "codex": ["--dangerously-bypass-approvals-and-sandbox", "-s", "danger-full-access"],
     "antigravity": [],
     "ollama": [],
+}
+
+_CODEX_DIRECT_BLOCKED_MESSAGE = (
+    "Codex CLI is only available through receipt-backed ExecutionEngine. "
+    "Use `opencobalt run ... --runtime codex-cli --dry-run`."
+)
+_DIRECT_SUBPROCESS_BLOCKED: dict[str, str] = {
+    "codex": _CODEX_DIRECT_BLOCKED_MESSAGE,
+    "codex-cli": _CODEX_DIRECT_BLOCKED_MESSAGE,
 }
 
 _INSTALL_HINTS: dict[str, str] = {
@@ -143,6 +150,8 @@ def _antigravity_cmd() -> list[str]:
 
 
 def _cmd_for(model: str, autonomous: bool = False) -> list[str]:
+    if model in _DIRECT_SUBPROCESS_BLOCKED:
+        return []
     if model == "ollama":
         return _ollama_cmd()
     if model in {"antigravity", "google-antigravity", "gemini"}:
@@ -152,12 +161,15 @@ def _cmd_for(model: str, autonomous: bool = False) -> list[str]:
         # Insert autonomy flags after the binary, before the subcommand
         flags = _AUTONOMOUS_FLAGS.get(model, [])
         if flags:
-            # For codex: ["codex", "exec", flags...] → keep exec, add flags
             if len(base) > 1:
                 base = [base[0]] + flags + base[1:]
             else:
                 base = base + flags
     return base
+
+
+def _blocked_direct_subprocess_message(model: str) -> str | None:
+    return _DIRECT_SUBPROCESS_BLOCKED.get(model)
 
 
 def _build_prompt(task: str, intent: str, task_type: str) -> str:
@@ -184,6 +196,8 @@ def consult_subprocess(
     intent="implement"   -- full autonomous implementation (600s timeout)
     autonomous=True      -- bypass all approval prompts (yolo mode)
     """
+    if blocked_message := _blocked_direct_subprocess_message(model):
+        return blocked_message
     cmd = _cmd_for(model, autonomous=(autonomous and intent == "implement"))
     binary = cmd[0] if cmd else model
 
@@ -222,6 +236,9 @@ def stream_subprocess(
     Yields each line as it arrives. Returns full output on completion.
     autonomous=True bypasses all approval prompts.
     """
+    if blocked_message := _blocked_direct_subprocess_message(model):
+        yield f"{blocked_message}\n"
+        return ""
     cmd = _cmd_for(model, autonomous=(autonomous and intent == "implement"))
     binary = cmd[0] if cmd else model
 

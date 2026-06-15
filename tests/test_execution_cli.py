@@ -67,6 +67,51 @@ Options:
 """
 
 
+def _codex_help() -> str:
+    return """
+Codex CLI
+
+Usage: codex [OPTIONS] [PROMPT]
+       codex [OPTIONS] <COMMAND> [ARGS]
+
+Commands:
+  exec            Run Codex non-interactively [aliases: e]
+  review          Run a code review non-interactively
+  login           Manage login
+  logout          Remove stored authentication credentials
+  mcp             Manage external MCP servers for Codex
+  app-server      [experimental] Run the app server or related tooling
+  remote-control  [experimental] Manage the app-server daemon with remote control enabled
+  apply           Apply the latest diff produced by Codex agent
+  cloud           [EXPERIMENTAL] Browse tasks from Codex Cloud and apply changes locally
+
+Options:
+  -s, --sandbox <SANDBOX_MODE>          [possible values: read-only, workspace-write, danger-full-access]
+      --dangerously-bypass-approvals-and-sandbox
+      --dangerously-bypass-hook-trust
+  -a, --ask-for-approval <APPROVAL_POLICY>
+          Possible values: untrusted, on-failure, on-request, never
+      --search
+"""
+
+
+def _codex_exec_help() -> str:
+    return """
+Run Codex non-interactively
+
+Usage: codex exec [OPTIONS] [PROMPT]
+
+Options:
+  -s, --sandbox <SANDBOX_MODE>          [possible values: read-only, workspace-write, danger-full-access]
+      --dangerously-bypass-approvals-and-sandbox
+      --dangerously-bypass-hook-trust
+      --ephemeral
+      --ignore-user-config
+      --color <COLOR>                  [possible values: always, never, auto]
+      --json                           Print events to stdout as JSONL
+"""
+
+
 class TestRunCommand:
     def test_dry_run_produces_plan_without_subprocess(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -249,6 +294,7 @@ class TestAdapterCommands:
         result = _invoke("adapters", "list")
         assert result.exit_code == 0, result.output
         assert "claude-code" in result.output
+        assert "codex-cli" in result.output
         assert "cursor" in result.output
         assert "noop" in result.output
         assert "google-antigravity" in result.output
@@ -336,6 +382,47 @@ class TestAdapterCommands:
         assert "plan_permission_mode" in result.output
         assert "dangerous permission bypass modes are not used" in result.output
 
+    def test_adapters_inspect_codex_shows_partial_runtime_limits(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        fake_codex = tmp_path / "codex"
+        fake_codex.write_text("#!/bin/sh\nexit 0\n")
+        fake_codex.chmod(0o755)
+
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_codex) if command == "codex" else None,
+        )
+
+        def fake_help(args, **kwargs):
+            if "--version" in args:
+                stdout = "codex-cli 0.139.0"
+            elif "exec" in args and "--help" in args:
+                stdout = _codex_exec_help()
+            else:
+                stdout = _codex_help()
+            return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr("opencobalt.execution.adapters.subprocess.run", fake_help)
+
+        result = _invoke("adapters", "inspect", "codex-cli")
+
+        assert result.exit_code == 0, result.output
+        assert "Adapter codex-cli" in result.output
+        assert str(fake_codex) in result.output.replace("\n", "")
+        assert "Available: yes" in result.output
+        assert "Capability level: partial" in result.output
+        assert "Requires network: yes" in result.output
+        assert "Requires credentials: yes" in result.output
+        assert "Artifact support:" in result.output
+        assert "stdout, stderr" in result.output
+        assert "exec_subcommand" in result.output
+        assert "read_only_sandbox" in result.output
+        assert "approval_never" in result.output
+        assert "json_events" in result.output
+        assert "dangerous permission bypass modes are not used" in result.output
+
     def test_integrations_check_claude_does_not_overclaim_runtime_support(
         self, tmp_path, monkeypatch
     ):
@@ -353,13 +440,31 @@ class TestAdapterCommands:
         assert "runtime evidence: opencobalt adapters inspect claude-code" in flat_output
         assert "receipt-backed execution ready" not in result.output
 
-    def test_run_help_lists_claude_code_runtime(self, tmp_path, monkeypatch):
+    def test_integrations_check_codex_does_not_overclaim_runtime_support(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.integrations.codex_cli_integration.shutil.which",
+            lambda command: "/usr/local/bin/codex" if command == "codex" else None,
+        )
+
+        result = _invoke("integrations", "check")
+
+        assert result.exit_code == 0, result.output
+        assert "codex-cli" in result.output
+        flat_output = re.sub(r"\s+", " ", result.output)
+        assert "runtime evidence: opencobalt adapters inspect codex-cli" in flat_output
+        assert "receipt-backed execution ready" not in result.output
+
+    def test_run_help_lists_receipt_backed_runtimes(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
 
         result = _invoke("run", "--help")
 
         assert result.exit_code == 0, result.output
         assert "claude-code" in result.output
+        assert "codex-cli" in result.output
 
 
 class TestArtifactsCommands:

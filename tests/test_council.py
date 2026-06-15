@@ -100,3 +100,61 @@ def test_consult_subprocess_graceful_when_binary_missing(
     monkeypatch.setattr(shutil, "which", lambda x: None)
     result = consult_subprocess("some task", model="claude")
     assert "not found" in result.lower() or "unavailable" in result.lower()
+
+
+def test_codex_consult_subprocess_is_blocked_outside_execution_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import shutil
+    import subprocess
+
+    from opencobalt.core.council import consult_subprocess
+
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda command: "/usr/local/bin/codex" if command == "codex" else None,
+    )
+
+    def explode(*args, **kwargs):
+        raise AssertionError("direct codex subprocess must not run")
+
+    monkeypatch.setattr(subprocess, "run", explode)
+
+    result = consult_subprocess("modify files", model="codex", intent="implement")
+
+    assert "ExecutionEngine" in result
+    assert "opencobalt run" in result
+
+
+def test_codex_stream_subprocess_is_blocked_outside_execution_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import shutil
+    import subprocess
+
+    from opencobalt.core.council import stream_subprocess
+
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda command: "/usr/local/bin/codex" if command == "codex" else None,
+    )
+
+    def explode(*args, **kwargs):
+        raise AssertionError("direct codex subprocess must not run")
+
+    monkeypatch.setattr(subprocess, "Popen", explode)
+
+    output = "".join(stream_subprocess("modify files", model="codex"))
+
+    assert "ExecutionEngine" in output
+    assert "opencobalt run" in output
+
+
+def test_codex_legacy_council_has_no_direct_command_or_bypass_flags() -> None:
+    from opencobalt.core.council import _cmd_for
+
+    argv = _cmd_for("codex", autonomous=True)
+
+    assert argv == []

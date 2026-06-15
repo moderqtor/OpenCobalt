@@ -112,6 +112,13 @@ Adapter Receipt Normalization v1 covers the existing execution adapters:
   `--output-format text`, and `--permission-mode plan`. Receipts are partial
   because Claude account state, network model behavior, and internal permission
   enforcement live outside OpenCobalt.
+- `codex-cli`: Codex CLI runtime id. Discovery checks a real `codex`
+  executable on PATH plus local `codex --version`, `codex --help`, and
+  `codex exec --help` evidence. Execution is available only when local help
+  proves non-interactive `exec`, `--sandbox read-only`, and
+  `--ask-for-approval never`. Receipts are partial because Codex account state,
+  network model behavior, and internal permission enforcement live outside
+  OpenCobalt.
 - `cursor`: Cursor Agent runtime id. Discovery checks a real `cursor`
   executable on PATH and common macOS `Cursor.app` locations. Execution is
   only available when local help proves `cursor agent --print --mode plan`
@@ -211,9 +218,47 @@ classification, dry-run default, policy gate, captured stdout/stderr artifacts,
 hash verification, normalized receipt metadata, and provenance references.
 OpenCobalt does not rely on Claude Code's internal permission system alone.
 
+## Codex Runtime Adapter v0
+
+Codex CLI is a runtime adapter only through the normalized receipt contract.
+The integration registry can report that `codex` is installed, but runtime
+support is determined by:
+
+```
+opencobalt adapters inspect codex-cli
+```
+
+Discovery is conservative:
+
+- `unavailable`: no `codex` executable was found.
+- `partial`: `codex` is installed or local help/version evidence was
+  discovered. If safe headless invocation is not proven, support is
+  discovery-only.
+- `full`: not claimed in v0.
+
+The only command OpenCobalt builds in v0 is a read-only planning prompt through
+local help-proven exec mode:
+
+```
+codex --sandbox read-only --ask-for-approval never exec \
+  [--json] [--ephemeral] [--ignore-user-config] [--color never] \
+  "OpenCobalt read-only planning request:
+TASK"
+```
+
+Optional `--model` is included only when local help advertises it. OpenCobalt
+never adds dangerous approval/sandbox bypass flags, danger-full-access sandbox,
+credential/auth/login/logout paths, MCP management, app-server, remote-control,
+mcp-server, exec-server, apply, cloud, update, browser-control, deploy, publish,
+spend, message, or web search paths.
+
+Codex execution still flows through `ExecutionEngine`: deterministic risk
+classification, dry-run default, policy gate, captured stdout/stderr artifacts,
+hash verification, normalized receipt metadata, and provenance references.
+OpenCobalt does not rely on Codex internal permissioning alone.
+
 ## Next Branch
 
-After Claude Code Runtime Adapter v0, the next adapter branch should add
-receipt-backed Codex CLI support, then outcome-weighted adapter routing.
-Long-running mission execution should wait until those runtime receipts are in
-place.
+After Codex Runtime Adapter v0, the next adapter branch should add
+outcome-weighted adapter routing. Long-running mission execution should wait
+until runtime receipts and outcome signals are in place.

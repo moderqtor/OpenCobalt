@@ -12,6 +12,7 @@ from .aider_integration import AiderIntegration
 from .antigravity_integration import AntigravityIntegration
 from .base_integration import BaseIntegration, IntegrationProfile
 from .claude_code_integration import ClaudeCodeIntegration
+from .codex_cli_integration import CodexCliIntegration
 from .context7_integration import Context7Integration
 from .cursor_integration import CursorIntegration
 from .github_integration import GitHubIntegration
@@ -21,6 +22,7 @@ from .ollama_integration import OllamaIntegration
 REGISTRY: dict[str, BaseIntegration] = {
     "aider": AiderIntegration(),
     "claude-code": ClaudeCodeIntegration(),
+    "codex-cli": CodexCliIntegration(),
     "context7": Context7Integration(),
     "cursor": CursorIntegration(),
     "github-cli": GitHubIntegration(),

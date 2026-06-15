@@ -287,6 +287,29 @@ that does not change the local-first default.
 - Keep validating this adapter against local `claude --help` evidence as the
   Claude Code CLI evolves.
 
+### Phase 25: Codex Runtime Adapter v0
+
+- Codex CLI is an execution runtime only through the normalized adapter receipt
+  contract. It appears in `opencobalt adapters list` and
+  `opencobalt adapters inspect codex-cli`.
+- Capability discovery checks a real PATH executable, then local
+  `codex --version`, `codex --help`, and `codex exec --help` evidence before
+  claiming runtime support.
+- Safe execution is limited to `codex --sandbox read-only
+  --ask-for-approval never exec` through `ExecutionEngine`, with policy gates,
+  stdout/stderr artifact capture, hash verification, normalized receipts,
+  provenance metadata, and outcome-ready receipt ids.
+- Codex remains partial, not full, because credentials, account state, network
+  behavior, model behavior, and internal permission enforcement live outside
+  OpenCobalt. If safe headless invocation is absent, support is partial and
+  discovery-only.
+- Dangerous approval/sandbox bypass, danger-full-access sandbox, credential,
+  auth, token, login, logout, MCP management, app-server, remote-control, cloud,
+  apply, update, browser-control, deploy, publish, spend, message, and web
+  search paths are not enabled.
+- Keep validating this adapter against local `codex --help` and
+  `codex exec --help` evidence as the Codex CLI evolves.
+
 ## In Progress / Next
 
 Direction note: OpenCobalt is a trust, control, provenance, and
@@ -299,8 +322,6 @@ provenance edges does not ship.
 
 ### Adapter and evidence loops
 
-- codex-runtime-adapter-v0: add Codex CLI as a receipt-backed runtime with
-  branch, diff, test, and PR artifact capture where locally supported.
 - adapter-routing-from-outcomes-v1: start selecting runtimes from receipt
   outcomes and verification history, not just deterministic keyword scores.
 - future-runtime-adapters: every future adapter (`codex-cli`, `aider`,
