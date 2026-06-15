@@ -139,7 +139,7 @@ opencobalt ui                open the React dashboard
 
 ## What NOT to do
 
-- Do not break existing passing tests. The baseline is 1000 tests, 1 warning
+- Do not break existing passing tests. The baseline is 1003 tests, 1 warning
   (as of Phase 25 Codex Runtime Adapter v0).
 - Do not push to GitHub without explicit instruction.
 - Do not change the SQLite schema without adding migration logic.

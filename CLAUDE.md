@@ -20,7 +20,7 @@ tiered model policy, working commands, and what not to do).
 
 **Testing:**
 - Always run `python3 -m pytest -q` after any code change.
-- Baseline: 1000 passing tests, 1 warning (after Phase 25 Codex Runtime
+- Baseline: 1003 passing tests, 1 warning (after Phase 25 Codex Runtime
   Adapter v0). All must stay green.
 - New code requires new tests. Use `tmp_path` from pytest fixtures for SQLite isolation.
 

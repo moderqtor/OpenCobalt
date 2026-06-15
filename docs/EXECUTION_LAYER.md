@@ -115,7 +115,8 @@ normalized capability snapshot, and builds a default-safe argv:
   danger-full-access sandbox, credential/auth/login/logout paths, MCP
   management, app-server, remote-control, mcp-server, exec-server, apply, cloud,
   update, browser-control, deploy, publish, spend, message, and web search paths
-  are never used.
+  are never used. Legacy council subprocess helpers block Codex directly and
+  point operators back to `opencobalt run --runtime codex-cli`.
 - `ollama`: one-shot `ollama run <model> <prompt>` (default model `llama3`).
 - `noop`: echoes the task. Exists for tests and pipeline verification.
 

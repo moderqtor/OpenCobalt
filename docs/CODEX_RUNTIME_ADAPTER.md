@@ -98,6 +98,10 @@ Codex receipts include `adapter_id: codex-cli`, capability snapshot hash,
 invocation hash, environment policy, risk level, event count, artifact hashes,
 verification status, limitations, and provenance references.
 
+Legacy council subprocess helpers do not execute Codex directly. They return a
+blocked message that points operators back to `opencobalt run --runtime
+codex-cli`, preserving the receipt and policy boundary.
+
 ## CLI Behavior
 
 `opencobalt adapters list` shows Codex CLI with local availability and the
