@@ -1773,6 +1773,12 @@ def integrations_check() -> None:
                 " [dim](installed; runtime evidence: "
                 "opencobalt adapters inspect claude-code)[/dim]"
             )
+        elif name == "codex-cli":
+            console.print(
+                f"  {_dot(True)}  {name}"
+                " [dim](installed; runtime evidence: "
+                "opencobalt adapters inspect codex-cli)[/dim]"
+            )
         elif name == "cursor":
             console.print(
                 f"  {_dot(True)}  {name}"
@@ -3186,7 +3192,7 @@ def run_task(
         None,
         "--runtime",
         help=(
-            "Runtime id (claude-code, cursor, google-antigravity, ollama, noop). "
+            "Runtime id (claude-code, codex-cli, cursor, google-antigravity, ollama, noop). "
             "Routed if omitted."
         ),
     ),

@@ -35,7 +35,7 @@ All code lives in `src/opencobalt/execution/`:
 |--------|----------------|
 | `models.py` | `ExecutionPlan`, `ExecutionStep`, `ExecutionResult`, `ExecutionArtifact`, `WorkReceipt` (Pydantic) |
 | `policy.py` | Deterministic risk classification and the execution gate |
-| `adapters.py` | `RuntimeAdapter` protocol plus `claude-code`, `cursor`, `google-antigravity`, `ollama`, `noop` adapters |
+| `adapters.py` | `RuntimeAdapter` protocol plus `claude-code`, `codex-cli`, `cursor`, `google-antigravity`, `ollama`, `noop` adapters |
 | `runner.py` | Safe subprocess runner (argv lists, no shell, timeouts, output spill) |
 | `artifacts.py` | Streaming SHA-256 hashing, attach, verify |
 | `store.py` | SQLite persistence in `.opencobalt/ledger.db` |
@@ -108,6 +108,14 @@ normalized capability snapshot, and builds a default-safe argv:
   when local help advertises them. Dangerous permission bypass, unrestricted
   tools, auth, token, browser-control, deploy, publish, spend, message, and MCP
   auto-approval paths are never used.
+- `codex-cli`: limited to discovered `codex exec` with `--sandbox read-only`
+  and `--ask-for-approval never`. `--json`, `--ephemeral`,
+  `--ignore-user-config`, `--color never`, and `--model` are included only when
+  local help advertises them. Dangerous approval/sandbox bypass,
+  danger-full-access sandbox, credential/auth/login/logout paths, MCP
+  management, app-server, remote-control, mcp-server, exec-server, apply, cloud,
+  update, browser-control, deploy, publish, spend, message, and web search paths
+  are never used.
 - `ollama`: one-shot `ollama run <model> <prompt>` (default model `llama3`).
 - `noop`: echoes the task. Exists for tests and pipeline verification.
 
@@ -220,3 +228,10 @@ model behavior.
 - Claude Code receipts verify captured stdout/stderr artifacts, not Claude
   account state, model correctness, or internal permission enforcement. Raw
   environment variables and credentials are never stored by OpenCobalt.
+- Codex Runtime Adapter v0 is partial when local `codex --help` and
+  `codex exec --help` prove exec mode with read-only sandbox and approval
+  policy `never`. It is unavailable when `codex` is absent and discovery-only
+  when safe headless invocation is not proven.
+- Codex receipts verify captured stdout/stderr artifacts, not Codex account
+  state, model correctness, or internal permission enforcement. Raw environment
+  variables and credentials are never stored by OpenCobalt.

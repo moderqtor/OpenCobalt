@@ -2,12 +2,13 @@ import pytest
 
 from opencobalt.integrations import REGISTRY, get_integration, list_integrations
 from opencobalt.integrations.aider_integration import AiderIntegration
+from opencobalt.integrations.codex_cli_integration import CodexCliIntegration
 from opencobalt.integrations.cursor_integration import CursorIntegration
 from opencobalt.integrations.ollama_integration import OllamaIntegration
 
 
 def test_registry_has_current_canonical_integrations():
-    assert len(REGISTRY) == 8
+    assert len(REGISTRY) == 9
 
 
 def test_registry_contains_aider_and_ollama():
@@ -19,6 +20,7 @@ def test_registry_contains_canonical_integrations_only():
     assert set(REGISTRY) == {
         "aider",
         "claude-code",
+        "codex-cli",
         "context7",
         "cursor",
         "github-cli",
@@ -50,6 +52,22 @@ def test_ollama_install_check_returns_bool():
     integration = OllamaIntegration()
     result = integration.install_check()
     assert isinstance(result, bool)
+
+
+def test_codex_install_check_returns_bool():
+    integration = CodexCliIntegration()
+    result = integration.install_check()
+    assert isinstance(result, bool)
+
+
+def test_codex_integration_remains_cli_awareness_not_runtime_claim(monkeypatch):
+    monkeypatch.setattr("opencobalt.integrations.codex_cli_integration.shutil.which", lambda command: None)
+    integration = CodexCliIntegration()
+
+    assert integration.install_check() is False
+    assert integration.integration_status() == "stub"
+    assert "runtime adapter" in integration.invoke("plan tests")
+    assert "stub" in integration.invoke("plan tests")
 
 
 def test_cursor_integration_remains_editor_awareness_not_runtime_claim(monkeypatch):
