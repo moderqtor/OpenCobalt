@@ -25,12 +25,13 @@ def test_dry_run_shows_exec_plan(runner: CliRunner, tmp_path: Path) -> None:
     assert "dry-run" in output.lower() or "Routing" in output
 
 
-def test_exec_fails_gracefully_when_tool_missing(runner: CliRunner, tmp_path: Path) -> None:
+def test_exec_blocks_legacy_launcher(runner: CliRunner, tmp_path: Path) -> None:
     with patch("opencobalt.cli._DB_PATH", tmp_path / "ledger.db"), \
          patch("shutil.which", return_value=None):
         result = runner.invoke(app, ["route", "design the auth module", "--exec"])
     assert result.exit_code == 0
-    assert "not found" in result.output.lower() or "install" in result.output.lower()
+    assert "ExecutionEngine" in result.output
+    assert "opencobalt run" in result.output
 
 
 def test_clipboard_content_contains_brief(tmp_path: Path) -> None:

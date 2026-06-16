@@ -27,6 +27,12 @@ capability discovery
 The execution layer owns this contract. Integrations can say that a tool exists,
 but runtime adapters must produce receipt evidence.
 
+External runtime task execution is only allowed through `ExecutionEngine`.
+Discovery-only subprocesses are allowed only for help, version, or install
+checks with short timeouts and no user task text. Legacy helpers that cannot
+produce the normalized contract must return a blocked message that points to
+`opencobalt run "TASK" --runtime <adapter-id> --dry-run`.
+
 ## RuntimeCapabilitySnapshot
 
 Each adapter emits a normalized capability snapshot:
@@ -145,6 +151,9 @@ artifact hash count.
 - No private keys, seed phrases, API keys, cookies, or tokens in receipt metadata.
 - Missing runtime executables create skipped, auditable receipts instead of
   starting a subprocess.
+- External runtime task execution outside `ExecutionEngine` is blocked.
+- Discovery-only subprocesses are limited to help, version, or install checks
+  with short timeouts and no task text.
 - Policy gates remain unchanged: dry-run by default, green/yellow need
   `--execute`, red needs `--execute --yes`, black is blocked.
 - No background daemon, network fetcher, deploy path, publish path, spend path,

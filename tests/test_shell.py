@@ -69,15 +69,16 @@ def test_refine_prompt_passthrough_when_no_ollama(shell: CobaltShell) -> None:
     assert result == "design the auth module"
 
 
-def test_refine_prompt_uses_refined_when_ollama_present(shell: CobaltShell) -> None:
+def test_refine_prompt_does_not_call_ollama_when_present(shell: CobaltShell) -> None:
     mock_result = MagicMock()
     mock_result.stdout = "Design a secure authentication module with JWT tokens"
     with (
         patch("shutil.which", return_value="/usr/bin/ollama"),
-        patch("subprocess.run", return_value=mock_result),
+        patch("subprocess.run", return_value=mock_result) as mock_run,
     ):
         result = shell._refine_prompt("design the auth module")
-    assert result == "Design a secure authentication module with JWT tokens"
+    assert result == "design the auth module"
+    mock_run.assert_not_called()
 
 
 def test_refine_prompt_falls_back_on_subprocess_error(shell: CobaltShell) -> None:

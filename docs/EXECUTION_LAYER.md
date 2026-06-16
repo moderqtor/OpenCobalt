@@ -27,6 +27,17 @@ opencobalt artifacts verify <artifact_id>
 `opencobalt run` defaults to dry-run. A dry-run stores the plan and a receipt
 with `verification_status: unverified` and never starts a subprocess.
 
+## Runtime execution boundary
+
+External runtime task execution is only allowed through `ExecutionEngine`.
+Discovery-only subprocesses are allowed only for help, version, or install
+checks with short timeouts and no user task text.
+
+Legacy helper paths such as council model calls, pipeline tool steps,
+shell launchers, `route --exec`, worker-tier Ollama agents, and direct auto-push
+logic do not execute external workers. They return a blocked message that points
+operators to `opencobalt run "TASK" --runtime <adapter-id> --dry-run`.
+
 ## Architecture
 
 All code lives in `src/opencobalt/execution/`:
@@ -115,8 +126,7 @@ normalized capability snapshot, and builds a default-safe argv:
   danger-full-access sandbox, credential/auth/login/logout paths, MCP
   management, app-server, remote-control, mcp-server, exec-server, apply, cloud,
   update, browser-control, deploy, publish, spend, message, and web search paths
-  are never used. Legacy council subprocess helpers block Codex directly and
-  point operators back to `opencobalt run --runtime codex-cli`.
+  are never used.
 - `ollama`: one-shot `ollama run <model> <prompt>` (default model `llama3`).
 - `noop`: echoes the task. Exists for tests and pipeline verification.
 

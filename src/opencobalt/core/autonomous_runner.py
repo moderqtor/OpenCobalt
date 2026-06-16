@@ -298,14 +298,8 @@ class AutonomousRunner:
         return "impl"
 
     def _available_tools(self) -> list[str]:
-        """Return tools available on PATH."""
-        tool_to_binary = {
-            "claude-code": "claude",
-            "codex-cli": "codex",
-            "google-antigravity": "agy",
-            "ollama": "ollama",
-        }
-        return [tool for tool, binary in tool_to_binary.items() if shutil.which(binary)]
+        """Return legacy direct-execution tools available to this runner."""
+        return []
 
     def _build_batch_table(self, tasks: list[AutonomousTask], session: AutonomousSession) -> Table:
         table = Table(

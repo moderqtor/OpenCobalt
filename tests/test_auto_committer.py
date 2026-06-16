@@ -166,7 +166,7 @@ def test_commit_returns_empty_when_git_commit_fails(tmp_path):
     assert result.files_staged == ["f.py"]
 
 
-def test_push_on_converge_calls_git_push(tmp_path):
+def test_push_on_converge_does_not_call_git_push(tmp_path):
     (tmp_path / "f.py").write_text("x")
     calls: list[list[str]] = []
 
@@ -183,8 +183,8 @@ def test_push_on_converge_calls_git_push(tmp_path):
         tests_info="n/a", verifier_info="n/a",
     )
     push_calls = [c for c in calls if c == ["git", "push"]]
-    assert len(push_calls) == 1
-    assert result.pushed is True
+    assert len(push_calls) == 0
+    assert result.pushed is False
 
 
 def test_push_not_called_when_flag_false(tmp_path):

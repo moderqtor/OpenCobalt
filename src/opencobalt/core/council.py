@@ -1,14 +1,12 @@
-"""Multi-model consultation and autonomous subprocess execution."""
+"""Multi-model consultation and legacy subprocess boundary helpers."""
 
 from __future__ import annotations
 
 import asyncio
-import os
-import shutil
-import subprocess
-import threading
 from dataclasses import dataclass
 from typing import Generator
+
+from .runtime_boundary import legacy_runtime_block_message, normalize_runtime_id
 
 
 @dataclass
@@ -47,139 +45,19 @@ class CouncilSession:
         return _build_result(task, responses, synthesize)
 
 
-# ── Subprocess execution ───────────────────────────────────────────────────────
-
-_BINARY_CMDS: dict[str, list[str]] = {
-    "claude": ["claude", "--print"],
-    "antigravity": [],
-    "ollama": [],  # filled dynamically
-}
-
-# Legacy council subprocesses must not bypass runtime adapter policy gates.
-_AUTONOMOUS_FLAGS: dict[str, list[str]] = {
-    "claude": ["--dangerously-skip-permissions"],
-    "antigravity": [],
-    "ollama": [],
-}
-
-_CODEX_DIRECT_BLOCKED_MESSAGE = (
-    "Codex CLI is only available through receipt-backed ExecutionEngine. "
-    "Use `opencobalt run ... --runtime codex-cli --dry-run`."
-)
-_DIRECT_SUBPROCESS_BLOCKED: dict[str, str] = {
-    "codex": _CODEX_DIRECT_BLOCKED_MESSAGE,
-    "codex-cli": _CODEX_DIRECT_BLOCKED_MESSAGE,
-}
-
-_INSTALL_HINTS: dict[str, str] = {
-    "claude": "npm install -g @anthropic-ai/claude-code",
-    "codex": "npm install -g @openai/codex",
-    "gemini": "Gemini CLI is legacy; use google-antigravity with agy",
-    "antigravity": "Install Google Antigravity CLI and run agy install",
-    "ollama": "brew install ollama && ollama pull llama3",
-}
-
-_IMPL_INSTRUCTIONS: dict[str, str] = {
-    "impl": (
-        "You are an autonomous senior developer with full permission to create and modify files. "
-        "Complete the following task entirely. Write all necessary code, create all required files, "
-        "and execute the implementation. Make all architectural decisions yourself. "
-        "Do not ask for clarification. Begin immediately and finish completely.\n\n"
-    ),
-    "tests": (
-        "You are an autonomous test engineer. Write comprehensive, runnable tests for the following. "
-        "Include unit tests, integration tests, and edge cases. Aim for full coverage. "
-        "Make all decisions yourself. Do not ask for clarification. Begin immediately.\n\n"
-    ),
-    "docs": (
-        "You are an autonomous technical writer. Write complete, production-quality documentation. "
-        "Include API reference, usage examples, architecture notes, and getting-started guide. "
-        "Make all decisions yourself. Do not ask for clarification. Begin immediately.\n\n"
-    ),
-    "review": (
-        "You are an autonomous code reviewer. Perform a thorough, expert review. "
-        "Identify bugs, security vulnerabilities, performance issues, and code quality problems. "
-        "Provide specific, actionable feedback with file and line references. Be comprehensive.\n\n"
-    ),
-    "analyze": (
-        "You are an autonomous systems analyst. Perform deep technical analysis. "
-        "Examine architecture, dependencies, performance characteristics, security posture, "
-        "and tradeoffs. Provide data-backed insights and concrete recommendations.\n\n"
-    ),
-    "summarize": (
-        "You are an autonomous summarizer. Create a structured, comprehensive summary. "
-        "Extract key decisions, outcomes, action items, and open questions. "
-        "Format with clear sections. Be thorough and precise.\n\n"
-    ),
-}
-
-
-def _best_ollama_model() -> str:
-    """Return the best available local ollama model."""
-    try:
-        result = subprocess.run(
-            ["ollama", "list"], capture_output=True, text=True, timeout=5
-        )
-        for line in result.stdout.splitlines()[1:]:
-            parts = line.split()
-            if not parts:
-                continue
-            name = parts[0]
-            for preferred in ("llama3", "mistral", "gemma", "phi"):
-                if preferred in name:
-                    return name
-            return name  # first available
-    except Exception:
-        pass
-    return "llama3"
-
-
-def _ollama_cmd() -> list[str]:
-    return ["ollama", "run", _best_ollama_model()]
-
-
-def _antigravity_cmd() -> list[str]:
-    from opencobalt.integrations.antigravity_integration import discover_antigravity_runtime
-
-    result = discover_antigravity_runtime()
-    capability = result["capabilities"]["non_interactive_mode"]
-    evidence = capability.get("evidence")
-    if result["installed"] and capability["source"] == "runtime_discovered" and evidence in {"--print", "--prompt"}:
-        return ["agy", str(evidence)]
-    return []
+# ── Legacy subprocess boundary ────────────────────────────────────────────────
 
 
 def _cmd_for(model: str, autonomous: bool = False) -> list[str]:
-    if model in _DIRECT_SUBPROCESS_BLOCKED:
+    """Legacy direct commands are disabled outside ExecutionEngine."""
+    _ = autonomous
+    if normalize_runtime_id(model):
         return []
-    if model == "ollama":
-        return _ollama_cmd()
-    if model in {"antigravity", "google-antigravity", "gemini"}:
-        return _antigravity_cmd()
-    base = list(_BINARY_CMDS.get(model, [model]))
-    if autonomous:
-        # Insert autonomy flags after the binary, before the subcommand
-        flags = _AUTONOMOUS_FLAGS.get(model, [])
-        if flags:
-            if len(base) > 1:
-                base = [base[0]] + flags + base[1:]
-            else:
-                base = base + flags
-    return base
+    return []
 
 
-def _blocked_direct_subprocess_message(model: str) -> str | None:
-    return _DIRECT_SUBPROCESS_BLOCKED.get(model)
-
-
-def _build_prompt(task: str, intent: str, task_type: str) -> str:
-    if intent == "implement":
-        instruction = _IMPL_INSTRUCTIONS.get(task_type, _IMPL_INSTRUCTIONS["impl"])
-        return f"{instruction}Task: {task}"
-    return (
-        f"You are a technical advisor. Task: {task}\n\n"
-        "Give your expert analysis in 3-5 bullet points. Be specific and direct."
-    )
+def _blocked_direct_subprocess_message(model: str) -> str:
+    return legacy_runtime_block_message(model)
 
 
 def consult_subprocess(
@@ -190,37 +68,9 @@ def consult_subprocess(
     timeout: int | None = None,
     autonomous: bool = True,
 ) -> str:
-    """Call a CLI binary non-interactively and return its full text output.
-
-    intent="advise"      -- quick advisory bullet points (60s timeout)
-    intent="implement"   -- full autonomous implementation (600s timeout)
-    autonomous=True      -- bypass all approval prompts (yolo mode)
-    """
-    if blocked_message := _blocked_direct_subprocess_message(model):
-        return blocked_message
-    cmd = _cmd_for(model, autonomous=(autonomous and intent == "implement"))
-    binary = cmd[0] if cmd else model
-
-    if not shutil.which(binary):
-        hint = _INSTALL_HINTS.get(model, "check tool documentation")
-        return f"[{model} unavailable — install: {hint}]"
-
-    prompt = _build_prompt(task, intent, task_type)
-    effective_timeout = timeout or (600 if intent == "implement" else 60)
-
-    try:
-        result = subprocess.run(
-            cmd + [prompt],
-            capture_output=True,
-            text=True,
-            timeout=effective_timeout,
-        )
-        output = result.stdout.strip() or result.stderr.strip()
-        return output or f"[{model}: no output]"
-    except subprocess.TimeoutExpired:
-        return f"[{model}: timed out after {effective_timeout}s]"
-    except Exception as exc:
-        return f"[{model}: error — {exc}]"
+    """Block legacy direct CLI execution and point to ExecutionEngine."""
+    _ = task, intent, task_type, timeout, autonomous
+    return _blocked_direct_subprocess_message(model)
 
 
 def stream_subprocess(
@@ -231,56 +81,10 @@ def stream_subprocess(
     timeout: int = 600,
     autonomous: bool = True,
 ) -> Generator[str, None, str]:
-    """Stream output from a CLI binary line by line.
-
-    Yields each line as it arrives. Returns full output on completion.
-    autonomous=True bypasses all approval prompts.
-    """
-    if blocked_message := _blocked_direct_subprocess_message(model):
-        yield f"{blocked_message}\n"
-        return ""
-    cmd = _cmd_for(model, autonomous=(autonomous and intent == "implement"))
-    binary = cmd[0] if cmd else model
-
-    if not shutil.which(binary):
-        hint = _INSTALL_HINTS.get(model, "check tool documentation")
-        yield f"[{model} unavailable — install: {hint}]\n"
-        return ""
-
-    prompt = _build_prompt(task, intent, task_type)
-    collected: list[str] = []
-
-    try:
-        proc = subprocess.Popen(
-            cmd + [prompt],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        assert proc.stdout is not None
-
-        # Kill timer
-        def _kill():
-            if proc.poll() is None:
-                proc.kill()
-
-        timer = threading.Timer(timeout, _kill)
-        timer.start()
-        try:
-            for line in proc.stdout:
-                collected.append(line)
-                yield line
-            proc.wait()
-        finally:
-            timer.cancel()
-
-    except Exception as exc:
-        error_line = f"[{model}: error — {exc}]\n"
-        collected.append(error_line)
-        yield error_line
-
-    return "".join(collected)
+    """Block legacy direct CLI streaming and point to ExecutionEngine."""
+    _ = task, intent, task_type, timeout, autonomous
+    yield f"{_blocked_direct_subprocess_message(model)}\n"
+    return ""
 
 
 def advise_subprocess(task: str, model: str = "ollama", timeout: int = 45) -> str:
@@ -291,13 +95,7 @@ def advise_subprocess(task: str, model: str = "ollama", timeout: int = 45) -> st
 # ── Available models (API-based CouncilSession) ────────────────────────────────
 
 def _available_models() -> list[str]:
-    available = []
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        available.append("claude")
-    if os.environ.get("GEMINI_API_KEY"):
-        available.append("gemini")
-    available.append("ollama")
-    return available
+    return []
 
 
 async def _query_all(task: str, models: list[str]) -> dict[str, str]:
@@ -307,83 +105,10 @@ async def _query_all(task: str, models: list[str]) -> dict[str, str]:
 
 
 async def _query_model(task: str, model: str) -> str:
-    try:
-        if model == "claude":
-            return await _query_anthropic(task)
-        if model == "gemini":
-            return await _query_gemini(task)
-        if model == "ollama":
-            return await _query_ollama(task)
-        return f"[unknown model: {model}]"
-    except Exception as exc:
-        return f"[unavailable: {exc}]"
-
-
-async def _query_anthropic(task: str) -> str:
-    import httpx
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return "[skipped: ANTHROPIC_API_KEY not set]"
-    prompt = (
-        f"You are a technical advisor. A developer is asking for your perspective on this task:\n\n"
-        f"{task}\n\n"
-        "Give your recommendation in 3-5 bullet points. Be specific and direct."
-    )
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-sonnet-4-6",
-                "max_tokens": 512,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["content"][0]["text"]
-
-
-async def _query_gemini(task: str) -> str:
-    import httpx
-
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-    if not api_key:
-        return "[skipped: GEMINI_API_KEY not set]"
-    prompt = (
-        f"You are a technical advisor. A developer is asking for your perspective on this task:\n\n"
-        f"{task}\n\n"
-        "Give your recommendation in 3-5 bullet points. Be specific and direct."
-    )
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}",
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-
-
-async def _query_ollama(task: str) -> str:
-    import httpx
-
-    prompt = f"Technical advisor task: {task}\n\nGive 3-5 bullet points of advice. Be direct."
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                "http://localhost:11434/api/generate",
-                json={"model": "llama3", "prompt": prompt, "stream": False},
-            )
-            resp.raise_for_status()
-            return resp.json().get("response", "[empty response]")
-    except Exception:
-        return "[skipped: ollama not running]"
+    _ = task
+    if normalize_runtime_id(model):
+        return legacy_runtime_block_message(model)
+    return f"[unknown model: {model}]"
 
 
 # ── Agreement scoring (used by CouncilSession) ─────────────────────────────────

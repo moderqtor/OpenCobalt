@@ -70,24 +70,20 @@ def test_save_flag_stores_to_memory_bridge(tmp_path: Path) -> None:
     assert "council" in results[0]["content"].lower()
 
 
-def test_consult_subprocess_returns_string(
+def test_consult_subprocess_blocks_claude_direct_execution(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
     import subprocess
 
     from opencobalt.core.council import consult_subprocess
 
-    def fake_run(cmd, **kwargs):
-        class R:
-            stdout = "- Use SQLite\n- Write tests first"
-            returncode = 0
+    def explode(*args, **kwargs):
+        raise AssertionError("direct claude subprocess must not run")
 
-        return R()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", explode)
     result = consult_subprocess("refactor the router", model="claude")
-    assert "SQLite" in result or isinstance(result, str)
+    assert "ExecutionEngine" in result
+    assert "--runtime claude-code" in result
 
 
 def test_consult_subprocess_graceful_when_binary_missing(
@@ -99,7 +95,8 @@ def test_consult_subprocess_graceful_when_binary_missing(
 
     monkeypatch.setattr(shutil, "which", lambda x: None)
     result = consult_subprocess("some task", model="claude")
-    assert "not found" in result.lower() or "unavailable" in result.lower()
+    assert "ExecutionEngine" in result
+    assert "--runtime claude-code" in result
 
 
 def test_codex_consult_subprocess_is_blocked_outside_execution_engine(

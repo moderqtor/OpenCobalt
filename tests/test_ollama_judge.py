@@ -1,4 +1,5 @@
 import json
+import subprocess
 from unittest.mock import patch
 
 from opencobalt.core.ollama_judge import _QUALITATIVE_KEYS, OllamaJudge
@@ -81,23 +82,16 @@ def test_prose_before_json_extracts_first_json_object():
     assert result["_judge"] == "ollama:llama3"
 
 
-def test_call_ollama_returns_none_on_permission_error():
+def test_call_ollama_returns_none_without_subprocess(monkeypatch):
     judge = OllamaJudge()
-    with patch("opencobalt.core.ollama_judge.subprocess.run", side_effect=PermissionError("not executable")):
-        result = judge._call_ollama("prompt")
+    called = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: called.append(True))
+    result = judge._call_ollama("prompt")
     assert result is None
+    assert called == []
 
 
-def test_call_ollama_uses_short_timeout():
-    captured = {}
-
-    def fake_run(*args, **kwargs):
-        captured["timeout"] = kwargs["timeout"]
-        raise TimeoutError("slow")
-
+def test_call_ollama_is_boundary_blocked():
     judge = OllamaJudge()
-    with patch("opencobalt.core.ollama_judge.subprocess.run", side_effect=fake_run):
-        result = judge._call_ollama("prompt")
-
+    result = judge._call_ollama("prompt")
     assert result is None
-    assert captured["timeout"] <= 20

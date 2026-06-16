@@ -42,8 +42,8 @@ src/opencobalt/
     base_agent.py      BaseAgent ABC: run(task, dry_run) -> str;
                        compatible_skills class attribute
     registry.py        REGISTRY dict, list_agents(), get_agent()
-    summarizer.py      Worker tier: calls ollama run llama3, falls back on error
-    tagger.py          Worker tier: calls ollama run llama3, falls back on error
+    summarizer.py      Worker tier: blocked outside ExecutionEngine
+    tagger.py          Worker tier: blocked outside ExecutionEngine
     code_reviewer.py   Manager tier: uses file-reader skill, escalation note
     context_builder.py Worker tier: real filesystem scan, no model
   skills/
@@ -89,12 +89,12 @@ opencobalt verify
 
 opencobalt agents run summarizer "some text"
   -> agents/registry.py: lookup by name
-  -> agents/summarizer.py: subprocess.run(["ollama", "run", "llama3", ...])
-  -> Falls back to stub string if Ollama unavailable
+  -> agents/summarizer.py: returns ExecutionEngine boundary message
+  -> Use opencobalt run "some text" --runtime ollama --dry-run for receipts
 
 opencobalt context --summarize
   -> context.py: compile pack to .opencobalt/context/latest.md
-  -> agents/summarizer.py: summarize first 2000 chars via Ollama
+  -> agents/summarizer.py: blocked outside ExecutionEngine
 
 opencobalt benchmark record "task" --agent NAME --latency 300 --success
   -> benchmark.py: BenchmarkStore.record(BenchmarkRecord)
@@ -224,8 +224,8 @@ When `dry_run=True`, the agent must return a description of what it would do wit
 
 | Name | Tier | Backend | Compatible skills |
 |------|------|---------|------------------|
-| summarizer | worker | ollama run llama3; stub fallback | context-injector |
-| tagger | worker | ollama run llama3; stub fallback | file-reader |
+| summarizer | worker | blocked outside ExecutionEngine | context-injector |
+| tagger | worker | blocked outside ExecutionEngine | file-reader |
 | code-reviewer | manager | uses file-reader skill; escalation note | file-reader, diff-writer, context-injector |
 | context-builder | worker | filesystem scan; no model | file-reader, context-injector |
 

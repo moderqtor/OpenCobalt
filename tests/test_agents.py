@@ -77,13 +77,13 @@ def test_context_builder_tier_is_worker():
 def test_summarizer_dry_run():
     agent = get_agent("summarizer")
     result = agent.run("test task", dry_run=True)
-    assert result == "[dry-run] summarizer: would call ollama run llama3 to summarize"
+    assert result == "[dry-run] summarizer: use opencobalt run --runtime ollama --dry-run"
 
 
 def test_tagger_dry_run():
     agent = get_agent("tagger")
     result = agent.run("test task", dry_run=True)
-    assert result == "[dry-run] tagger: would call ollama run llama3 to generate tags"
+    assert result == "[dry-run] tagger: use opencobalt run --runtime ollama --dry-run"
 
 
 def test_code_reviewer_dry_run():
@@ -108,6 +108,7 @@ def test_summarizer_run_returns_non_empty(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
     result = agent.run("summarize this document")
     assert len(result) > 0
+    assert "ExecutionEngine" in result
 
 
 def test_tagger_run_returns_non_empty(monkeypatch):
@@ -118,6 +119,7 @@ def test_tagger_run_returns_non_empty(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
     result = agent.run("tag this document")
     assert len(result) > 0
+    assert "ExecutionEngine" in result
 
 
 # -- fallback behavior --
@@ -126,14 +128,14 @@ def test_summarizer_fallback_on_file_not_found(monkeypatch):
     agent = get_agent("summarizer")
     monkeypatch.setattr(subprocess, "run", MagicMock(side_effect=FileNotFoundError))
     result = agent.run("some task")
-    assert "[fallback]" in result
+    assert "ExecutionEngine" in result
 
 
 def test_tagger_fallback_on_file_not_found(monkeypatch):
     agent = get_agent("tagger")
     monkeypatch.setattr(subprocess, "run", MagicMock(side_effect=FileNotFoundError))
     result = agent.run("some task")
-    assert "[fallback]" in result
+    assert "ExecutionEngine" in result
 
 
 def test_summarizer_dry_run_no_subprocess(monkeypatch):

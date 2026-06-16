@@ -968,7 +968,7 @@ def converge_cmd(
     task: str = typer.Option("", "--task", "-t", help="Task to converge on"),
     resume: str = typer.Option("", "--resume", help="Resume interrupted session by ID"),
     push_on_converge: bool = typer.Option(
-        False, "--push-on-converge", help="Push to remote after successful convergence"
+        False, "--push-on-converge", help="Deprecated; no remote push is performed"
     ),
 ) -> None:
     """Run convergence protocol: decompose task, execute DAG waves, verify, commit."""
@@ -1066,7 +1066,7 @@ def converge_show(
 def converge_run(
     task: str = typer.Argument(..., help="Task to converge on"),
     push_on_converge: bool = typer.Option(
-        False, "--push-on-converge", help="Push to remote after successful convergence"
+        False, "--push-on-converge", help="Deprecated; no remote push is performed"
     ),
 ) -> None:
     """Run convergence protocol on a task."""
@@ -2837,52 +2837,19 @@ def skills_evolve(
 
 # ── Route exec helper ──────────────────────────────────────────────────────────
 
-_TOOL_LAUNCH: dict[str, list[str]] = {
-    "claude-code": ["claude"],
-    "codex-cli": ["codex"],
-    "gemini-cli": ["gemini"],
-    "cursor": ["cursor", "."],
-    "ollama": [],  # print-only, never auto-exec
-}
-
-_TOOL_INSTALL: dict[str, str] = {
-    "claude-code": "npm install -g @anthropic-ai/claude-code",
-    "codex-cli": "npm install -g @openai/codex",
-    "gemini-cli": "npm install -g @google/gemini-cli",
-    "cursor": "Download from https://cursor.sh",
-    "ollama": "Download from https://ollama.ai",
-}
-
-
 def _route_exec(tool: str, task: str, dry_run: bool = False) -> None:
-    import shutil
-    import subprocess as _sp
+    from .core.runtime_boundary import legacy_runtime_block_message_for_runtime
 
-    cmd = _TOOL_LAUNCH.get(tool, [])
-    binary = cmd[0] if cmd else None
+    _ = task
 
     # Copy brief to clipboard
     _clipboard_brief(dry_run, tool=tool)
 
-    if tool == "ollama":
-        console.print("\n  [dim]Ollama (worker-tier) -- run manually:[/dim]")
-        console.print(f"  ollama run llama3 \"{task[:60]}\"")
-        return
-
     if dry_run:
-        if binary and shutil.which(binary):
-            console.print(f"\n  [dim]--dry-run: would run[/dim]  {' '.join(cmd)}")
-        elif binary:
-            console.print(f"\n  [dim]--dry-run: {binary} not found -- would print install instructions[/dim]")
-        return
-
-    if not binary or not shutil.which(binary):
-        install = _TOOL_INSTALL.get(tool, "Check tool documentation")
-        console.print(f"\n  [{_YELLOW}]{tool} not found.[/{_YELLOW}]  Install: {install}")
-        return
-
-    console.print(f"\n  [{_GREEN}]Opening {tool}...[/{_GREEN}]")
-    _sp.Popen(cmd)  # noqa: S603
+        console.print("\n  [dim]--dry-run: legacy launcher blocked[/dim]")
+    else:
+        console.print(f"\n  [{_YELLOW}]Legacy launcher blocked.[/{_YELLOW}]")
+    console.print(f"  {legacy_runtime_block_message_for_runtime(tool)}")
 
 
 def _clipboard_brief(dry_run: bool = False, tool: str = "the tool") -> None:
