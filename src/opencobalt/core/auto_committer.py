@@ -127,9 +127,4 @@ class AutoCommitter:
             return CommitResult(sha="", files_staged=stageable, message=message)
         sha = sha_result.stdout.strip()[:8]
 
-        pushed = False
-        if self._push_on_converge:
-            push_result = self._run_git(["git", "push"], self._repo_path)
-            pushed = push_result.returncode == 0
-
-        return CommitResult(sha=sha, files_staged=stageable, message=message, pushed=pushed)
+        return CommitResult(sha=sha, files_staged=stageable, message=message, pushed=False)

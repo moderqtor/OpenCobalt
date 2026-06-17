@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import subprocess
 
+from opencobalt.core.runtime_boundary import legacy_runtime_block_message
+
 from .base_integration import BaseIntegration
 
 
@@ -25,5 +27,6 @@ class OllamaIntegration(BaseIntegration):
             return False
 
     def invoke(self, task: str) -> str:
-        """Return a stub description of what ollama would do with this task."""
-        return f"ollama run llama3 '{task[:60]}' (stub -- Ollama not called directly)"
+        """Return a stub pointing to receipt-backed execution."""
+        _ = task
+        return f"{legacy_runtime_block_message('ollama')} (stub)"

@@ -44,7 +44,8 @@ that does not change the local-first default.
 
 ### Phase 3: Real Integration
 
-- Ollama subprocess invocation in agents (real model calls, not stubs)
+- Legacy Ollama agent subprocesses were introduced here and later blocked by
+  the execution boundary hardening.
 - Route decision logging to ledger
 - `history`, `benchmark`, `config`, and `export` commands
 - 4-panel TUI with live status display
@@ -309,6 +310,20 @@ that does not change the local-first default.
   search paths are not enabled.
 - Keep validating this adapter against local `codex --help` and
   `codex exec --help` evidence as the Codex CLI evolves.
+
+### Phase 26: Legacy Runtime Subprocess Hardening v1
+
+- External runtime task execution is only allowed through `ExecutionEngine`.
+  Discovery-only subprocesses are allowed only for help, version, or install
+  checks with short timeouts and no user task text.
+- Legacy council model helpers now block direct Claude Code, Codex CLI,
+  Cursor, Antigravity/Gemini, Ollama, and Aider task execution and point to
+  `opencobalt run "TASK" --runtime <adapter-id> --dry-run`.
+- Legacy pipeline tool steps, shell runtime launchers, `route --exec`,
+  worker-tier Ollama agents, Ollama scoring, and auto-push from convergence
+  no longer execute external workers or push directly.
+- Execution adapter discovery and fake-run tests remain allowed through the
+  normalized receipt path.
 
 ## In Progress / Next
 

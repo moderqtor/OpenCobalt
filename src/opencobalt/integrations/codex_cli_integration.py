@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import shutil
 
+from opencobalt.core.runtime_boundary import legacy_runtime_block_message
+
 from .base_integration import BaseIntegration
 
 
@@ -21,8 +23,5 @@ class CodexCliIntegration(BaseIntegration):
         return shutil.which("codex") is not None
 
     def invoke(self, task: str) -> str:
-        return (
-            "codex-cli integration stub. Runtime execution is only supported "
-            "through the receipt-backed runtime adapter if `opencobalt adapters "
-            f"inspect codex-cli` discovers a safe local surface: {task[:60]}"
-        )
+        _ = task
+        return f"{legacy_runtime_block_message('codex-cli')} (stub)"

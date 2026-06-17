@@ -5,6 +5,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from opencobalt.core.runtime_boundary import legacy_runtime_block_message
+
 from .base_integration import BaseIntegration
 
 
@@ -31,8 +33,5 @@ class CursorIntegration(BaseIntegration):
         )
 
     def invoke(self, task: str) -> str:
-        return (
-            "cursor integration stub. Runtime execution is only supported through "
-            "the receipt-backed runtime adapter if `opencobalt adapters inspect "
-            f"cursor` discovers a safe local surface: {task[:60]}"
-        )
+        _ = task
+        return f"{legacy_runtime_block_message('cursor')} (stub)"

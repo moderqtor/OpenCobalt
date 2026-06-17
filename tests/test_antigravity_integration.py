@@ -42,6 +42,19 @@ def test_install_check_uses_agy(monkeypatch):
     assert AntigravityIntegration().install_check() is True
 
 
+def test_invoke_is_boundary_stub_without_task_echo(monkeypatch):
+    def explode(*args, **kwargs):
+        raise AssertionError("Antigravity integration invoke must not start a subprocess")
+
+    monkeypatch.setattr(subprocess, "run", explode)
+    result = AntigravityIntegration().invoke("private task text")
+
+    assert result.startswith("[blocked]")
+    assert "--runtime google-antigravity" in result
+    assert "private task text" not in result
+    assert "stub" in result
+
+
 def test_missing_agy_detection_is_clean(monkeypatch):
     monkeypatch.setattr("shutil.which", lambda command: None)
     result = discover_antigravity_runtime()

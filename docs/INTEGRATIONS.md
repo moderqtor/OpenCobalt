@@ -19,6 +19,10 @@ must produce capability snapshots, normalized invocations, hashed artifacts,
 normalized receipts, provenance references, and tests. An integration registry
 entry is not runtime adapter support.
 
+External runtime task execution is only allowed through `ExecutionEngine`.
+Discovery-only subprocesses are allowed only for help, version, or install
+checks with short timeouts and no user task text.
+
 ## Current integrations
 
 | Name | Source | Tier | Capabilities | Install check | Status |
@@ -87,7 +91,7 @@ class MyToolIntegration(BaseIntegration):
         return shutil.which("mytool") is not None
 
     def invoke(self, task: str) -> str:
-        return f"mytool run '{task}' (stub -- run manually if mytool is installed)"
+        return "mytool is integration-only. Use opencobalt run --runtime mytool --dry-run."
 ```
 
 2. Add it to the registry in `src/opencobalt/integrations/registry.py`:
@@ -112,6 +116,7 @@ REGISTRY: dict[str, BaseIntegration] = {
 - Use `subprocess.run()` with `capture_output=True` and a short `timeout` when the tool needs to be responsive, not just present.
 - Always wrap `subprocess.run()` in a `try/except (FileNotFoundError, subprocess.TimeoutExpired, OSError)` and return `False` in the except block.
 - Never make network or API calls inside `install_check()`.
+- Never pass user task text to `install_check()` or other integration checks.
 
 ## CLI usage
 

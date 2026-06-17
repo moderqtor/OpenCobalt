@@ -457,6 +457,19 @@ class TestAdapterCommands:
         assert "runtime evidence: opencobalt adapters inspect codex-cli" in flat_output
         assert "receipt-backed execution ready" not in result.output
 
+    def test_integrations_check_labels_inactive_rows(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.integrations.aider_integration.AiderIntegration.install_check",
+            lambda self: False,
+        )
+
+        result = _invoke("integrations", "check")
+
+        assert result.exit_code == 0, result.output
+        flat_output = re.sub(r"\s+", " ", result.output)
+        assert "aider (not installed)" in flat_output
+
     def test_run_help_lists_receipt_backed_runtimes(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
 

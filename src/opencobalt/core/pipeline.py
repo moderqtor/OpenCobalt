@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .runtime_boundary import legacy_runtime_block_message, normalize_runtime_id
 
 
 @dataclass
@@ -25,15 +25,6 @@ class PipelineResult:
     success: bool
     output_dir: Path
     errors: list[str] = field(default_factory=list)
-
-
-_BINARY_MAP = {
-    "claude": "claude",
-    "codex": "codex",
-    "antigravity": "agy",
-    "agy": "agy",
-    "gemini": "agy",
-}
 
 
 class Pipeline:
@@ -121,19 +112,13 @@ class Pipeline:
             out_path.write_text("\n".join(result.output_summary for result in results))
             return all(result.passed for result in results)
 
-        binary = _BINARY_MAP.get(step.tool)
-        if not binary or not shutil.which(binary):
+        if normalize_runtime_id(step.tool) is None:
             out_path.write_text(f"[{step.tool} not available]")
             return False
 
-        ctx_file = out_path.parent / f"ctx-{out_path.name}"
-        ctx_file.write_text(context, encoding="utf-8")
-
-        proc = subprocess.run([binary], check=False)
-        if out_path.exists():
-            return True
-        out_path.write_text(f"[{step.tool}: completed, no output file written]")
-        return proc.returncode == 0
+        _ = context
+        out_path.write_text(legacy_runtime_block_message(step.tool), encoding="utf-8")
+        return False
 
     def _step_output_path(self, run_id: str, step_index: int) -> Path:
         run_dir = self._output_dir / run_id

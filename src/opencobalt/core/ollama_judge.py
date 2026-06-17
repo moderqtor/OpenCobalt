@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 
 _QUALITATIVE_KEYS = [
     "output_quality",
@@ -73,16 +72,8 @@ class OllamaJudge:
         return self._parse(raw)
 
     def _call_ollama(self, prompt: str) -> str | None:
-        try:
-            result = subprocess.run(
-                ["ollama", "run", self.model, prompt],
-                capture_output=True,
-                text=True,
-                timeout=_OLLAMA_TIMEOUT_SECONDS,
-            )
-            return result.stdout if result.returncode == 0 else None
-        except (OSError, subprocess.SubprocessError):
-            return None
+        _ = prompt
+        return None
 
     def _parse(self, raw: str) -> dict:
         decoder = json.JSONDecoder()

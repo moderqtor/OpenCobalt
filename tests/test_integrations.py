@@ -66,7 +66,7 @@ def test_codex_integration_remains_cli_awareness_not_runtime_claim(monkeypatch):
 
     assert integration.install_check() is False
     assert integration.integration_status() == "stub"
-    assert "runtime adapter" in integration.invoke("plan tests")
+    assert "ExecutionEngine" in integration.invoke("plan tests")
     assert "stub" in integration.invoke("plan tests")
 
 
@@ -80,8 +80,31 @@ def test_cursor_integration_remains_editor_awareness_not_runtime_claim(monkeypat
 
     assert integration.install_check() is False
     assert integration.integration_status() == "stub"
-    assert "runtime adapter" in integration.invoke("plan UI work")
+    assert "ExecutionEngine" in integration.invoke("plan UI work")
     assert "stub" in integration.invoke("plan UI work")
+
+
+@pytest.mark.parametrize(
+    ("name", "runtime"),
+    [
+        ("aider", "aider"),
+        ("claude-code", "claude-code"),
+        ("codex-cli", "codex-cli"),
+        ("cursor", "cursor"),
+        ("google-antigravity", "google-antigravity"),
+        ("ollama", "ollama"),
+    ],
+)
+def test_external_runtime_integration_invokes_are_boundary_stubs(name: str, runtime: str):
+    integration = get_integration(name)
+    assert integration is not None
+
+    result = integration.invoke("private task text")
+
+    assert result.startswith("[blocked]")
+    assert f"--runtime {runtime}" in result
+    assert "private task text" not in result
+    assert "stub" in result
 
 
 def test_list_integrations_returns_canonical_profiles():

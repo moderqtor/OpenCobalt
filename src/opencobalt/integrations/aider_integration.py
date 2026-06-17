@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import shutil
 
+from opencobalt.core.runtime_boundary import legacy_runtime_block_message
+
 from .base_integration import BaseIntegration
 
 
@@ -17,5 +19,6 @@ class AiderIntegration(BaseIntegration):
         return shutil.which("aider") is not None
 
     def invoke(self, task: str) -> str:
-        """Return a stub description of what aider would do with this task."""
-        return f"aider --message '{task}' (stub -- run manually if aider is installed)"
+        """Return a stub pointing to the runtime adapter boundary."""
+        _ = task
+        return f"{legacy_runtime_block_message('aider')} (stub)"

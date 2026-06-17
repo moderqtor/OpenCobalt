@@ -262,7 +262,7 @@ class OrchestrationExecutor:
                     errors.append(f"{st.task_type}: {exc}")
 
         elapsed = round(time.monotonic() - t0, 2)
-        real_outputs = {k: v for k, v in outputs.items() if not v.startswith("[error")}
+        real_outputs = {k: v for k, v in outputs.items() if not v.startswith("[")}
         success = len(real_outputs) > 0
 
         synthesizer = ResultSynthesizer()

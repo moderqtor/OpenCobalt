@@ -488,27 +488,7 @@ class CobaltShell:
         verify_async(self._runner, root=Path("."), ledger=self._ledger)
 
     def _refine_prompt(self, task: str) -> str:
-        """Optionally refine the prompt via a local Ollama model. No-ops if unavailable."""
-        import shutil
-
-        if not shutil.which("ollama"):
-            return task
-        try:
-            system = (
-                "You are a prompt optimizer. Rewrite the user's task to be more precise, "
-                "specific, and actionable while preserving the original intent. "
-                "Output ONLY the rewritten task — no explanation, no preamble."
-            )
-            result = subprocess.run(
-                ["ollama", "run", "llama3", f"System: {system}\n\nTask: {task}"],
-                capture_output=True, text=True, timeout=12,
-            )
-            refined = result.stdout.strip()
-            if refined and len(refined) < 500 and refined != task:
-                console.print(f"  [dim]refined → {refined[:80]}{'…' if len(refined)>80 else ''}[/dim]")
-                return refined
-        except Exception:
-            pass
+        """Return the prompt unchanged; model refinement needs ExecutionEngine."""
         return task
 
     def _ensure_session_branch(self) -> None:
@@ -560,27 +540,17 @@ class CobaltShell:
             pass
 
     def _open_tool(self, tool: str, task: str = "") -> None:
-        import shutil
+        from .core.runtime_boundary import (
+            legacy_runtime_block_message_for_runtime,
+            normalize_runtime_id,
+        )
 
-        binaries = {
-            "claude-code": "claude",
-            "codex-cli": "codex",
-            "google-antigravity": "agy",
-            "github-cli": "gh",
-            "cursor": "cursor",
-            "ollama": None,
-            "obsidian": None,
-        }
-        binary = binaries.get(tool, tool)
-        if binary is None:
-            console.print("  [dim]ollama: run manually from another pane[/dim]")
+        _ = task
+        runtime = normalize_runtime_id(tool)
+        if runtime is not None:
+            console.print(f"  {legacy_runtime_block_message_for_runtime(runtime)}", markup=False)
             return
-        if not shutil.which(binary):
-            console.print(f"  [{_AMBER}]{binary} not on PATH[/{_AMBER}]  [dim]check install[/dim]")
-            return
-        console.print(f"  [dim]opening {binary}...[/dim]\n")
-        cmd = [binary] if tool == "google-antigravity" else ([binary, task] if task else [binary])
-        subprocess.Popen(cmd)
+        console.print(f"  [{_AMBER}]{tool} cannot be launched by the shell[/{_AMBER}]")
 
     def _queue_background_council(self, task: str, task_id: str) -> None:
         import shutil
