@@ -4,6 +4,7 @@ Usage:
   opencobalt status
   opencobalt models
   opencobalt route TASK
+  opencobalt auto GOAL
   opencobalt history [--limit N]
   opencobalt stats
   opencobalt benchmark
@@ -890,33 +891,77 @@ def orch(
 
 @app.command()
 def auto(
-    task: str = typer.Argument(..., help="Seed task for autonomous multi-hour execution"),
-    iterations: int = typer.Option(20, "--iterations", "-n", help="Max iterations"),
-    hours: float = typer.Option(5.0, "--hours", "-t", help="Max runtime in hours"),
-    use_limits: str = typer.Option(
-        "balanced",
+    goal: str = typer.Argument(..., help="Natural-language goal to plan automatically"),
+    envelope: str | None = typer.Option(
+        None,
+        "--envelope",
+        help="Autonomy envelope id, such as observe, plan, dry_run, or autonomous_lab",
+    ),
+    budget: str | None = typer.Option(
+        None,
+        "--budget",
+        help="Cognitive budget id: low, medium, high, xhigh, or research",
+    ),
+    execute: bool = typer.Option(
+        False,
+        "--execute",
+        help="Request execution in the plan. V1 still stops at authority boundaries.",
+    ),
+    iterations: int | None = typer.Option(
+        None,
+        "--iterations",
+        "-n",
+        help="Compatibility hint only. V1 auto plans instead of running long loops.",
+    ),
+    hours: float | None = typer.Option(
+        None,
+        "--hours",
+        "-t",
+        help="Compatibility hint only. V1 auto plans instead of running long loops.",
+    ),
+    use_limits: str | None = typer.Option(
+        None,
         "--use-limits",
-        help="Autonomy profile: balanced, aggressive, max, cheap, or executive",
+        help="Compatibility hint. Use --budget for cognitive budgets.",
     ),
     converge: bool = typer.Option(
-        False, "--converge", help="Use convergence protocol (DAG + gating) instead of autonomous runner"
+        False,
+        "--converge",
+        help="Compatibility hint only. Convergence is planned as an internal primitive.",
     ),
 ) -> None:
-    """Run an autonomous multi-agent session for hours."""
-    if converge:
-        from .core.convergence_orchestrator import ConvergenceOrchestrator
-        orch = ConvergenceOrchestrator(ledger=_ledger())
-        orch.run(task)
-        return
-    from .core.autonomy_engine import AutonomyEngine
+    """Plan the automatic internal route for a natural-language goal.
 
-    engine = AutonomyEngine(ledger=_ledger(), max_iterations=iterations)
-    run = engine.start(task, profile=use_limits, hours=hours)
-    tasks = _ledger().list_autonomy_tasks(run["id"])
-    console.print(f"\n  [bold {_COBALT}]Autonomy run[/bold {_COBALT}]  [dim]{run['id'][:8]}[/dim]")
-    console.print(f"  [dim]profile:[/dim] {run['profile']}  [dim]hours:[/dim] {hours:g}")
-    console.print(f"  [dim]tasks:[/dim]   {len(tasks)} checkpointed")
-    console.print("  [dim]external tools are not called until task execution is explicitly run[/dim]\n")
+    V1 is conservative: it classifies, selects an envelope and cognitive
+    budget, then prints the internal primitive sequence. It does not start a
+    legacy long-running runner or external runtime.
+    """
+    from .core.auto_orchestrator import AutoOrchestrator, render_auto_plan
+    from .core.autonomy_envelopes import COGNITIVE_BUDGETS
+
+    selected_budget = budget
+    if selected_budget is None and use_limits in COGNITIVE_BUDGETS:
+        selected_budget = use_limits
+
+    try:
+        plan = AutoOrchestrator().plan(
+            goal,
+            envelope_id=envelope,
+            cognitive_budget_id=selected_budget,
+            execute=execute,
+        )
+    except ValueError as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print()
+    console.print(render_auto_plan(plan))
+    if iterations is not None or hours is not None or use_limits or converge:
+        console.print(
+            "\n  [dim]Compatibility options were treated as planning hints; "
+            "no long-running runner was started.[/dim]"
+        )
+    console.print()
 
 
 @app.command("overlay")

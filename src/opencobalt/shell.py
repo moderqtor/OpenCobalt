@@ -397,16 +397,59 @@ class CobaltShell:
         orch.run(actual_task, resume_session_id=resume_id)
 
     def _run_auto(self, task: str) -> None:
-        from .core.autonomous_runner import AutonomousRunner
+        from .core.auto_orchestrator import AutoOrchestrator, render_auto_plan
 
         if not task.strip():
             console.print(
-                f"  [{_AMBER}]Usage:[/{_AMBER}]  /auto \"seed task\""
-                "  Runs for up to 5 hours across all available agents."
+                f"  [{_AMBER}]Usage:[/{_AMBER}]  /auto \"goal\""
+                "  Plans the internal route without starting external runtimes."
             )
             return
-        runner = AutonomousRunner()
-        runner.run(task)
+
+        envelope: str | None = None
+        budget: str | None = None
+        execute = False
+        goal_parts: list[str] = []
+        parts = shlex.split(task)
+        index = 0
+        while index < len(parts):
+            token = parts[index]
+            if token == "--envelope" and index + 1 < len(parts):
+                envelope = parts[index + 1]
+                index += 2
+                continue
+            if token == "--budget" and index + 1 < len(parts):
+                budget = parts[index + 1]
+                index += 2
+                continue
+            if token == "--execute":
+                execute = True
+                index += 1
+                continue
+            goal_parts.append(token)
+            index += 1
+
+        goal = " ".join(goal_parts).strip()
+        if not goal:
+            console.print(
+                f"  [{_AMBER}]Usage:[/{_AMBER}]  /auto \"goal\""
+                "  Plans the internal route without starting external runtimes."
+            )
+            return
+
+        try:
+            plan = AutoOrchestrator().plan(
+                goal,
+                envelope_id=envelope,
+                cognitive_budget_id=budget,
+                execute=execute,
+            )
+        except ValueError as exc:
+            console.print(f"  [{_AMBER}]{exc}[/{_AMBER}]")
+            return
+        console.print()
+        console.print(render_auto_plan(plan))
+        console.print()
 
     def _run_mission(self, task: str) -> None:
         if not task.strip():

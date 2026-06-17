@@ -394,12 +394,16 @@ def test_auto_accepts_converge_flag_help():
     assert "use-limits" in output
 
 
-def test_auto_creates_checkpointed_run(tmp_path, monkeypatch):
+def test_auto_plans_without_checkpointed_run(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = _invoke("auto", "--hours", "1", "--use-limits", "max", "build auth with tests")
     assert result.exit_code == 0, _debug(result)
-    assert "Autonomy run" in result.output
-    assert "max" in result.output
+    plain = " ".join(_plain(result.output).split())
+    assert "Auto orchestration plan" in result.output
+    assert "What I would do" in result.output
+    assert "planned only" in result.output
+    assert "no long-running runner was started" in plain
+    assert not (tmp_path / ".opencobalt" / "ledger.db").exists()
 
 
 def test_overlay_help_registered():
