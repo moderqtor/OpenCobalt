@@ -207,9 +207,27 @@ class ProvenanceBuilder:
                     "mission_type": mission.mission_type,
                     "status": mission.status,
                     "outcome": mission.outcome,
+                    "intent": mission.auto_intent,
+                    "envelope": mission.autonomy_envelope,
+                    "budget": mission.cognitive_budget,
                 },
             )
         )
+        if mission.auto_plan_id:
+            trace.add_node(
+                ProvenanceNode(
+                    node_id=mission.auto_plan_id,
+                    kind="auto_plan",
+                    label=mission.goal[:80],
+                    data={
+                        "intent": mission.auto_intent,
+                        "envelope": mission.autonomy_envelope,
+                        "budget": mission.cognitive_budget,
+                        "auto_plan_hash": mission.auto_plan_hash,
+                    },
+                )
+            )
+            trace.add_edge(mission.mission_id, mission.auto_plan_id, "has_auto_plan")
         if mission.run_id:
             run = self._opportunity_store().get_run(mission.run_id)
             if run is not None:
@@ -228,10 +246,16 @@ class ProvenanceBuilder:
                         "risk_level": mission_step.risk_level,
                         "approval_state": mission_step.approval_state,
                         "execution_state": mission_step.execution_state,
+                        "primitive": mission_step.auto_primitive,
+                        "uses_execution_engine": mission_step.uses_execution_engine,
+                        "expected_receipt": mission_step.expected_receipt,
+                        "requires_approval": mission_step.requires_approval,
                     },
                 )
             )
-            trace.add_edge(mission.mission_id, mission_step.step_id, "tracks")
+            parent_id = mission.auto_plan_id or mission.mission_id
+            relation = "routes" if mission.auto_plan_id else "tracks"
+            trace.add_edge(parent_id, mission_step.step_id, relation)
             if mission_step.approval_step_id and trace.get_node(
                 mission_step.approval_step_id
             ):
@@ -657,7 +681,9 @@ def render_trace_lines(trace: ProvenanceTrace) -> list[str]:
         detail = []
         for key in (
             "goal_class", "track_type", "candidate_type", "status", "score_total",
+            "intent", "envelope", "budget", "primitive",
             "risk_level", "approval_state", "state", "dry_run",
+            "uses_execution_engine", "expected_receipt", "requires_approval",
             "verification_status", "source_type", "strength",
             "adapter_id", "capability_snapshot_hash", "verifiability_level",
             "artifact_count",

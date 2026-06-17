@@ -397,7 +397,11 @@ class CobaltShell:
         orch.run(actual_task, resume_session_id=resume_id)
 
     def _run_auto(self, task: str) -> None:
-        from .core.auto_orchestrator import AutoOrchestrator, render_auto_plan
+        from .core.auto_orchestrator import (
+            AutoOrchestrator,
+            render_auto_mission_record,
+            render_auto_plan,
+        )
 
         if not task.strip():
             console.print(
@@ -409,6 +413,7 @@ class CobaltShell:
         envelope: str | None = None
         budget: str | None = None
         execute = False
+        create_mission = False
         goal_parts: list[str] = []
         parts = shlex.split(task)
         index = 0
@@ -426,6 +431,10 @@ class CobaltShell:
                 execute = True
                 index += 1
                 continue
+            if token in ("--create-mission", "--mission"):
+                create_mission = True
+                index += 1
+                continue
             goal_parts.append(token)
             index += 1
 
@@ -438,17 +447,33 @@ class CobaltShell:
             return
 
         try:
-            plan = AutoOrchestrator().plan(
-                goal,
-                envelope_id=envelope,
-                cognitive_budget_id=budget,
-                execute=execute,
-            )
+            orchestrator = AutoOrchestrator()
+            if create_mission:
+                record = orchestrator.create_mission(
+                    goal,
+                    envelope_id=envelope,
+                    cognitive_budget_id=budget,
+                    execute=execute,
+                    db_path=self._db_path,
+                    root=Path("."),
+                )
+                plan = record.plan
+            else:
+                record = None
+                plan = orchestrator.plan(
+                    goal,
+                    envelope_id=envelope,
+                    cognitive_budget_id=budget,
+                    execute=execute,
+                )
         except ValueError as exc:
             console.print(f"  [{_AMBER}]{exc}[/{_AMBER}]")
             return
         console.print()
         console.print(render_auto_plan(plan))
+        if record is not None:
+            console.print()
+            console.print(render_auto_mission_record(record))
         console.print()
 
     def _run_mission(self, task: str) -> None:

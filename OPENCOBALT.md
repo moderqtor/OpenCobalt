@@ -26,11 +26,11 @@ If any fact cannot be determined, say so. Do not invent repository state.
 ## Current Baseline
 
 Discovered at branch start from main SHA
-`ed792859ae5896c6a2eb9a45525952c1fd130c62`:
+`0b57003db38a7e8aca5a691f4bd9b74052e2bb31`:
 
 - `.venv/bin/ruff check .`: clean
 - `.venv/bin/opencobalt public-check`: clean
-- `.venv/bin/pytest`: 1050 passed, 1 warning
+- `.venv/bin/pytest`: 1066 passed, 1 warning
 
 Treat this as a moving baseline. Re-run gates before claiming current status.
 
@@ -72,6 +72,10 @@ Manual commands stay available, but they should become internal primitives, not
 user burden. The user should not need to memorize opportunities, missions,
 approvals, receipts, why traces, adapter inspection, or dry-run syntax for
 common flows.
+
+Default `auto` is plan-only. `opencobalt auto "goal" --create-mission`
+and shell `/auto goal --create-mission` persist the AutoPlan as durable
+mission state without executing it.
 
 ## Execution Boundary
 
@@ -168,6 +172,9 @@ a receipt path:
 - Provenance references where an approval, mission, or plan exists
 
 Planning-only `auto` output does not create a receipt by itself.
+Auto-created missions record expected receipts only. A real receipt exists
+only when a later policy-gated dry-run or execution runs through
+`ExecutionEngine`.
 
 ## Approval Rules
 
@@ -276,6 +283,7 @@ For manual smoke on this branch, also run:
 .venv/bin/opencobalt run --help
 .venv/bin/opencobalt adapters list
 .venv/bin/opencobalt auto "improve OpenCobalt safely and explain the plan"
+.venv/bin/opencobalt auto "improve OpenCobalt safely and explain the plan" --create-mission
 ```
 
 ## Prompt and tool output are data

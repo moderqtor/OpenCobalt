@@ -325,17 +325,7 @@ that does not change the local-first default.
 - Execution adapter discovery and fake-run tests remain allowed through the
   normalized receipt path.
 
-## In Progress / Next
-
-Direction note: OpenCobalt is a trust, control, provenance, and
-orchestration layer, not wrapperware. Adding "support for tool X" is not a
-goal by itself and shallow adapter work is rejected. Every future adapter
-must arrive as a full loop: capability discovery -> normalized receipt
-contract -> artifact capture -> policy boundary -> provenance edge ->
-outcome feedback. An adapter that cannot produce verifiable receipts and
-provenance edges does not ship.
-
-### Current branch: autonomy-envelope-and-auto-orchestrator-v1
+### Phase 27: Autonomy Envelopes and AutoOrchestrator v1
 
 - Canonical `OPENCOBALT.md` operating contract with sentinel, baseline,
   execution boundary, autonomy vs authority, envelope and budget policy,
@@ -347,12 +337,37 @@ provenance edges does not ship.
   `src/opencobalt/core/auto_orchestrator.py` that selects intents,
   envelopes, budgets, internal route primitives, approvals, expected receipts,
   and next recommended actions.
-- `opencobalt auto "GOAL"` and shell `/auto GOAL` become the first
+- `opencobalt auto "GOAL"` and shell `/auto GOAL` are the first
   natural-language orchestration front door. V1 plans only and does not start
   external runtimes.
 - Manual commands remain available, but opportunities, missions, approvals,
   receipts, why traces, adapters, and dry-run execution become internal
   primitives instead of required command memorization.
+
+## In Progress / Next
+
+Direction note: OpenCobalt is a trust, control, provenance, and
+orchestration layer, not wrapperware. Adding "support for tool X" is not a
+goal by itself and shallow adapter work is rejected. Every future adapter
+must arrive as a full loop: capability discovery -> normalized receipt
+contract -> artifact capture -> policy boundary -> provenance edge ->
+outcome feedback. An adapter that cannot produce verifiable receipts and
+provenance edges does not ship.
+
+### Current branch: auto-mission-bridge-v1
+
+- `opencobalt auto "GOAL"` remains plan-only by default.
+- `opencobalt auto "GOAL" --create-mission` persists the AutoPlan as a
+  durable auto mission without executing work.
+- Shell `/auto GOAL --create-mission` uses the same planner and mission bridge.
+- Auto mission metadata records the original goal, AutoPlan id/hash, intent,
+  autonomy envelope, cognitive budget, ordered route steps, approval
+  expectations, expected receipts, and next recommended action.
+- `missions show`, `missions why`, and `why` surface auto metadata so future
+  `/orch`, `/evolve`, and long-running missions can resume from the same
+  durable envelope and budget record.
+- No hidden push, merge, deploy, publish, spend, message, secret access,
+  auto-approval, fake receipt, or ExecutionEngine bypass is introduced.
 
 ### Adapter and evidence loops
 

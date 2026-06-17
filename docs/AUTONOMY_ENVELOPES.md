@@ -42,3 +42,14 @@ and irreversible remote actions.
 
 External runtimes are not architecture. They are optional receipt-backed
 workers selected inside an envelope.
+
+## Durable Recording
+
+When `opencobalt auto "GOAL" --create-mission` is used, the selected envelope
+and cognitive budget are copied into mission state. This does not grant new
+authority. It gives future outcome routing a durable record of which envelope,
+budget, intent, and route steps were selected for the original goal.
+
+The default envelopes still block push, merge, deploy, publish, spend,
+external messages, and secret/auth access. Cognitive budgets guide depth and
+verification expectations; they do not grant execution authority.

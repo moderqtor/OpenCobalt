@@ -929,6 +929,12 @@ def auto(
         "--converge",
         help="Compatibility hint only. Convergence is planned as an internal primitive.",
     ),
+    create_mission: bool = typer.Option(
+        False,
+        "--create-mission",
+        "--mission",
+        help="Persist the AutoPlan as a durable mission without executing it.",
+    ),
 ) -> None:
     """Plan the automatic internal route for a natural-language goal.
 
@@ -936,26 +942,46 @@ def auto(
     budget, then prints the internal primitive sequence. It does not start a
     legacy long-running runner or external runtime.
     """
-    from .core.auto_orchestrator import AutoOrchestrator, render_auto_plan
+    from .core.auto_orchestrator import (
+        AutoOrchestrator,
+        render_auto_mission_record,
+        render_auto_plan,
+    )
     from .core.autonomy_envelopes import COGNITIVE_BUDGETS
 
     selected_budget = budget
     if selected_budget is None and use_limits in COGNITIVE_BUDGETS:
         selected_budget = use_limits
 
+    orchestrator = AutoOrchestrator()
     try:
-        plan = AutoOrchestrator().plan(
-            goal,
-            envelope_id=envelope,
-            cognitive_budget_id=selected_budget,
-            execute=execute,
-        )
+        if create_mission:
+            record = orchestrator.create_mission(
+                goal,
+                envelope_id=envelope,
+                cognitive_budget_id=selected_budget,
+                execute=execute,
+                db_path=_DB_PATH,
+                root=Path("."),
+            )
+            plan = record.plan
+        else:
+            record = None
+            plan = orchestrator.plan(
+                goal,
+                envelope_id=envelope,
+                cognitive_budget_id=selected_budget,
+                execute=execute,
+            )
     except ValueError as exc:
         err.print(f"  [red]{exc}[/red]")
         raise typer.Exit(1) from exc
 
     console.print()
     console.print(render_auto_plan(plan))
+    if record is not None:
+        console.print()
+        console.print(render_auto_mission_record(record))
     if iterations is not None or hours is not None or use_limits or converge:
         console.print(
             "\n  [dim]Compatibility options were treated as planning hints; "
@@ -4530,12 +4556,24 @@ def _print_mission_steps(steps) -> None:
         if step.risk_level == "black":
             line += f"  [{_RED}]blocked[/{_RED}]"
         console.print(line)
+        if step.auto_step_why:
+            markers = []
+            if step.uses_execution_engine:
+                markers.append("uses ExecutionEngine")
+            if step.expected_receipt:
+                markers.append("expected receipt")
+            if step.requires_approval:
+                markers.append("approval expected")
+            suffix = "  [dim]" + ", ".join(markers) + "[/dim]" if markers else ""
+            console.print(f"        [dim]why:[/dim] {step.auto_step_why}{suffix}")
         if step.receipt_id:
             console.print(f"        [dim]receipt:[/dim] {step.receipt_id[:14]}")
 
 
 def _mission_next_action(mission, steps) -> str | None:
     mid = mission.mission_id[:13]
+    if mission.mission_type == "auto":
+        return mission.auto_next_action or f"opencobalt missions show {mid}"
     if mission.status in ("opportunities_generated", "candidates_generated",
                           "plan_proposed", "verifying"):
         return f"opencobalt missions advance {mid}"
@@ -4658,6 +4696,15 @@ def missions_show(
     ):
         if value:
             console.print(f"  [dim]{label}:[/dim]{' ' * max(1, 10 - len(label))}{value}")
+    if mission.auto_plan_id:
+        console.print(
+            f"  [dim]Auto plan:[/dim] {mission.auto_plan_id}"
+            f"\n  [dim]Intent:[/dim]    {mission.auto_intent}"
+            f"\n  [dim]Envelope:[/dim]  {mission.autonomy_envelope}"
+            f"\n  [dim]Budget:[/dim]    {mission.cognitive_budget}"
+        )
+        if mission.auto_plan_hash:
+            console.print(f"  [dim]Plan hash:[/dim] {mission.auto_plan_hash[:16]}")
     _print_mission_steps(steps)
     action = _mission_next_action(mission, steps)
     if action:
@@ -4812,6 +4859,14 @@ def missions_why(
         f"\n  [dim]Status:[/dim]  {_mission_status_str(mission.status)}"
         f"\n  [dim]Outcome:[/dim] {mission.outcome or 'not recorded'}"
     )
+    if mission.auto_plan_id:
+        console.print(
+            f"\n  [dim]Auto plan:[/dim] {mission.auto_plan_id}"
+            f"\n  [dim]Intent:[/dim]    {mission.auto_intent}"
+            f"\n  [dim]Envelope:[/dim]  {mission.autonomy_envelope}"
+            f"\n  [dim]Budget:[/dim]    {mission.cognitive_budget}"
+            f"\n  [dim]Next:[/dim]      {mission.auto_next_action}"
+        )
 
     # Score explanation for the selected track, if any.
     if mission.run_id and mission.selected_track_id:
