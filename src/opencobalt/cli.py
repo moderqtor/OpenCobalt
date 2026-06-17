@@ -935,6 +935,11 @@ def auto(
         "--mission",
         help="Persist the AutoPlan as a durable mission without executing it.",
     ),
+    promote: bool = typer.Option(
+        False,
+        "--promote",
+        help="After --create-mission, promote selected route steps into pending approvals.",
+    ),
 ) -> None:
     """Plan the automatic internal route for a natural-language goal.
 
@@ -948,10 +953,14 @@ def auto(
         render_auto_plan,
     )
     from .core.autonomy_envelopes import COGNITIVE_BUDGETS
+    from .core.mission_engine import MissionEngine, render_auto_route_promotion_report
 
     selected_budget = budget
     if selected_budget is None and use_limits in COGNITIVE_BUDGETS:
         selected_budget = use_limits
+    if promote and not create_mission:
+        err.print("  [red]--promote requires --create-mission[/red]")
+        raise typer.Exit(1)
 
     orchestrator = AutoOrchestrator()
     try:
@@ -965,8 +974,14 @@ def auto(
                 root=Path("."),
             )
             plan = record.plan
+            promotion_report = (
+                MissionEngine(db_path=_DB_PATH).promote_auto_route(record.mission_id)
+                if promote
+                else None
+            )
         else:
             record = None
+            promotion_report = None
             plan = orchestrator.plan(
                 goal,
                 envelope_id=envelope,
@@ -982,6 +997,9 @@ def auto(
     if record is not None:
         console.print()
         console.print(render_auto_mission_record(record))
+    if promotion_report is not None:
+        console.print()
+        console.print(render_auto_route_promotion_report(promotion_report))
     if iterations is not None or hours is not None or use_limits or converge:
         console.print(
             "\n  [dim]Compatibility options were treated as planning hints; "
@@ -4558,6 +4576,8 @@ def _print_mission_steps(steps) -> None:
         console.print(line)
         if step.auto_step_why:
             markers = []
+            if step.auto_promotion_classification:
+                markers.append(step.auto_promotion_classification)
             if step.uses_execution_engine:
                 markers.append("uses ExecutionEngine")
             if step.expected_receipt:
@@ -4566,14 +4586,54 @@ def _print_mission_steps(steps) -> None:
                 markers.append("approval expected")
             suffix = "  [dim]" + ", ".join(markers) + "[/dim]" if markers else ""
             console.print(f"        [dim]why:[/dim] {step.auto_step_why}{suffix}")
+        if step.auto_promotion_reason:
+            console.print(
+                f"        [dim]promotion:[/dim] {step.auto_promotion_reason}",
+                highlight=False,
+            )
+        if step.approval_request_id:
+            console.print(
+                f"        [dim]approval:[/dim] {step.approval_request_id[:13]}"
+                f" / {step.approval_step_id[:13] if step.approval_step_id else ''}"
+            )
+        if step.blocked_authority and step.auto_promotion_classification == "blocked_authority":
+            console.print(
+                "        [dim]blocked authority:[/dim] "
+                + ", ".join(step.blocked_authority),
+                highlight=False,
+            )
+        if step.execution_plan_id:
+            console.print(f"        [dim]exec plan:[/dim] {step.execution_plan_id[:14]}")
         if step.receipt_id:
             console.print(f"        [dim]receipt:[/dim] {step.receipt_id[:14]}")
+
+
+def _print_auto_route_promotion_summary(mission, steps) -> None:
+    if mission.mission_type != "auto":
+        return
+    promoted = [step for step in steps if step.approval_request_id]
+    blocked = [
+        step
+        for step in promoted
+        if step.auto_promotion_classification == "blocked_authority"
+    ]
+    unpromoted = [step for step in steps if not step.approval_request_id]
+    console.print("  [dim]Auto route promotion:[/dim]")
+    if mission.approval_request_id:
+        console.print(f"    approval request: {mission.approval_request_id[:13]}")
+    else:
+        console.print("    approval request: not promoted")
+    console.print(f"    promoted: {len(promoted)}")
+    console.print(f"    blocked authority placeholders: {len(blocked)}")
+    console.print(f"    unpromoted: {len(unpromoted)}")
 
 
 def _mission_next_action(mission, steps) -> str | None:
     mid = mission.mission_id[:13]
     if mission.mission_type == "auto":
-        return mission.auto_next_action or f"opencobalt missions show {mid}"
+        if mission.approval_request_id:
+            return f"opencobalt approvals show {mission.approval_request_id[:13]}"
+        return f"opencobalt missions promote-auto {mid}"
     if mission.status in ("opportunities_generated", "candidates_generated",
                           "plan_proposed", "verifying"):
         return f"opencobalt missions advance {mid}"
@@ -4706,6 +4766,7 @@ def missions_show(
         if mission.auto_plan_hash:
             console.print(f"  [dim]Plan hash:[/dim] {mission.auto_plan_hash[:16]}")
     _print_mission_steps(steps)
+    _print_auto_route_promotion_summary(mission, steps)
     action = _mission_next_action(mission, steps)
     if action:
         console.print(f"\n  [dim]Next:[/dim] {action}")
@@ -4737,6 +4798,28 @@ def missions_advance(
     action = _mission_next_action(mission, report.steps or engine.store.list_steps(mission.mission_id))
     if action:
         console.print(f"\n  [dim]Next:[/dim] {action}")
+    console.print("")
+
+
+@missions_app.command("promote-auto")
+def missions_promote_auto(
+    mission_id: str = typer.Argument(..., help="Auto mission id (full or prefix)"),
+) -> None:
+    """Promote selected auto route steps into pending approval requests.
+
+    This records approval state only. It does not approve, execute, or create
+    receipts.
+    """
+    from .core.mission_engine import MissionError, render_auto_route_promotion_report
+
+    engine = _mission_engine()
+    try:
+        report = engine.promote_auto_route(mission_id)
+    except (KeyError, MissionError) as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print()
+    console.print(render_auto_route_promotion_report(report))
     console.print("")
 
 
@@ -4867,6 +4950,22 @@ def missions_why(
             f"\n  [dim]Budget:[/dim]    {mission.cognitive_budget}"
             f"\n  [dim]Next:[/dim]      {mission.auto_next_action}"
         )
+        steps = engine.store.list_steps(mission.mission_id)
+        if steps:
+            console.print("\n  [dim]Auto route steps:[/dim]")
+            for step in steps:
+                marker = step.auto_promotion_classification or "unpromoted"
+                link = (
+                    f" -> {step.approval_request_id[:13]}"
+                    if step.approval_request_id
+                    else ""
+                )
+                console.print(
+                    f"    {step.step_id[:14]}  {step.auto_primitive}"
+                    f"  {marker}{link}",
+                    markup=False,
+                    highlight=False,
+                )
 
     # Score explanation for the selected track, if any.
     if mission.run_id and mission.selected_track_id:

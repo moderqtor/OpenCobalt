@@ -402,6 +402,10 @@ class CobaltShell:
             render_auto_mission_record,
             render_auto_plan,
         )
+        from .core.mission_engine import (
+            MissionEngine,
+            render_auto_route_promotion_report,
+        )
 
         if not task.strip():
             console.print(
@@ -414,6 +418,7 @@ class CobaltShell:
         budget: str | None = None
         execute = False
         create_mission = False
+        promote = False
         goal_parts: list[str] = []
         parts = shlex.split(task)
         index = 0
@@ -435,6 +440,10 @@ class CobaltShell:
                 create_mission = True
                 index += 1
                 continue
+            if token == "--promote":
+                promote = True
+                index += 1
+                continue
             goal_parts.append(token)
             index += 1
 
@@ -444,6 +453,10 @@ class CobaltShell:
                 f"  [{_AMBER}]Usage:[/{_AMBER}]  /auto \"goal\""
                 "  Plans the internal route without starting external runtimes."
             )
+            return
+
+        if promote and not create_mission:
+            console.print(f"  [{_AMBER}]--promote requires --create-mission[/{_AMBER}]")
             return
 
         try:
@@ -458,8 +471,16 @@ class CobaltShell:
                     root=Path("."),
                 )
                 plan = record.plan
+                promotion_report = (
+                    MissionEngine(db_path=self._db_path).promote_auto_route(
+                        record.mission_id
+                    )
+                    if promote
+                    else None
+                )
             else:
                 record = None
+                promotion_report = None
                 plan = orchestrator.plan(
                     goal,
                     envelope_id=envelope,
@@ -474,6 +495,9 @@ class CobaltShell:
         if record is not None:
             console.print()
             console.print(render_auto_mission_record(record))
+        if promotion_report is not None:
+            console.print()
+            console.print(render_auto_route_promotion_report(promotion_report))
         console.print()
 
     def _run_mission(self, task: str) -> None:

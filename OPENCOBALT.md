@@ -26,11 +26,11 @@ If any fact cannot be determined, say so. Do not invent repository state.
 ## Current Baseline
 
 Discovered at branch start from main SHA
-`0b57003db38a7e8aca5a691f4bd9b74052e2bb31`:
+`094c6b3fedabce65edb44d4876d24643262bce08`:
 
 - `.venv/bin/ruff check .`: clean
 - `.venv/bin/opencobalt public-check`: clean
-- `.venv/bin/pytest`: 1066 passed, 1 warning
+- `.venv/bin/pytest`: 1073 passed, 1 warning
 
 Treat this as a moving baseline. Re-run gates before claiming current status.
 
@@ -76,6 +76,13 @@ common flows.
 Default `auto` is plan-only. `opencobalt auto "goal" --create-mission`
 and shell `/auto goal --create-mission` persist the AutoPlan as durable
 mission state without executing it.
+
+`opencobalt auto "goal" --create-mission --promote` and
+`opencobalt missions promote-auto MISSION_ID` explicitly promote selected
+durable auto route steps into pending ApprovalBridge requests. Promotion
+does not approve anything, does not execute anything, and does not create
+receipts. Informational route steps remain unpromoted; outward authority
+steps become blocked placeholders.
 
 ## Execution Boundary
 
@@ -176,6 +183,10 @@ Auto-created missions record expected receipts only. A real receipt exists
 only when a later policy-gated dry-run or execution runs through
 `ExecutionEngine`.
 
+Auto route promotion is still not a receipt boundary. Dry-run receipts for
+promoted route steps are deferred until a path can create them through the
+ApprovalBridge and `ExecutionEngine` without bypassing pending approval state.
+
 ## Approval Rules
 
 Approval boundaries are not suggestions.
@@ -187,6 +198,9 @@ Approval boundaries are not suggestions.
   access require explicit authority not present in the default envelopes.
 - Approval state is owned by the Approval Bridge and Mission State Machine, not
   by ad hoc CLI shortcuts.
+- Auto route promotion creates pending approval requests. It never
+  auto-approves green steps, and blocked authority placeholders remain
+  black-risk with no override.
 
 ## MCP and Tool Invocation Rules
 

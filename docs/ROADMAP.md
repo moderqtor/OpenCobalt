@@ -354,20 +354,31 @@ contract -> artifact capture -> policy boundary -> provenance edge ->
 outcome feedback. An adapter that cannot produce verifiable receipts and
 provenance edges does not ship.
 
-### Current branch: auto-mission-bridge-v1
+### Current branch: auto-route-promotion-v1
 
 - `opencobalt auto "GOAL"` remains plan-only by default.
 - `opencobalt auto "GOAL" --create-mission` persists the AutoPlan as a
   durable auto mission without executing work.
-- Shell `/auto GOAL --create-mission` uses the same planner and mission bridge.
+- `opencobalt auto "GOAL" --create-mission --promote` and shell
+  `/auto GOAL --create-mission --promote` persist the AutoPlan and promote
+  selected route steps into pending approval requests.
+- `opencobalt missions promote-auto MISSION_ID` promotes an existing auto
+  mission without command-sprawl around separate execution paths.
 - Auto mission metadata records the original goal, AutoPlan id/hash, intent,
   autonomy envelope, cognitive budget, ordered route steps, approval
   expectations, expected receipts, and next recommended action.
 - `missions show`, `missions why`, and `why` surface auto metadata so future
   `/orch`, `/evolve`, and long-running missions can resume from the same
-  durable envelope and budget record.
+  durable envelope and budget record. They also show promoted approval
+  requests, blocked authority placeholders, unpromoted informational steps,
+  and later real receipts if any are created.
 - No hidden push, merge, deploy, publish, spend, message, secret access,
   auto-approval, fake receipt, or ExecutionEngine bypass is introduced.
+- Dry-run receipts from promoted route steps are deferred until a future branch
+  can create them through ApprovalBridge and `ExecutionEngine` without
+  bypassing pending approval state.
+- Future outcome routing will use promoted route metadata, explicit approvals,
+  real receipts, autonomy envelope, and cognitive budget as bounded evidence.
 
 ### Adapter and evidence loops
 

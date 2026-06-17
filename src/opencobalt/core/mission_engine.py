@@ -76,16 +76,6 @@ OUTCOME_TO_STATUS = {
 }
 
 _RISK_ORDER = {"green": 0, "yellow": 1, "red": 2, "black": 3}
-_BLOCKED_AUTHORITY_FIELDS = (
-    ("allowed_push", "push"),
-    ("allowed_merge", "merge"),
-    ("allowed_deploy", "deploy"),
-    ("allowed_publish", "publish"),
-    ("allowed_spend", "spend"),
-    ("allowed_external_messages", "external_messages"),
-    ("allowed_secret_auth_access", "secret_auth_access"),
-)
-
 # Risk budgets only ever tighten the existing gates. Black is not a valid
 # budget because black work is blocked everywhere with no override.
 RISK_BUDGETS = ("green", "yellow", "red")
@@ -94,6 +84,7 @@ EXECUTION_STATES = ("not_started", "dry_run", "executed", "failed")
 
 EVENT_MISSION_CREATED = "mission.created"
 EVENT_AUTO_PLAN_ATTACHED = "mission.auto_plan_attached"
+EVENT_AUTO_ROUTE_PROMOTED = "mission.auto_route_promoted"
 EVENT_STATUS_CHANGED = "mission.status_changed"
 EVENT_DISCOVERY_LINKED = "mission.discovery_linked"
 EVENT_TARGET_SELECTED = "mission.target_selected"
@@ -118,6 +109,47 @@ _EVOLVE_KEYWORDS = (
     "wrapperware",
 )
 
+_INFORMATIONAL_AUTO_PRIMITIVES = {
+    "status_check",
+    "adapter_health_check",
+    "approval_queue",
+    "receipt_inspection",
+    "provenance_why",
+}
+_APPROVAL_AUTO_PRIMITIVES = {
+    "mission_start",
+    "opportunity_discovery",
+    "evolve_candidate_generation",
+    "roadmap_design",
+    "external_research",
+}
+_VERIFICATION_AUTO_PRIMITIVES = {"verification_gates"}
+_EXECUTION_AUTO_PRIMITIVES = {"run_dry_run"}
+_BLOCKED_AUTHORITY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("push", ("git push", " push ", "push origin")),
+    ("merge", ("git merge", "gh pr merge", " merge ")),
+    ("deploy", ("deploy", "production")),
+    ("publish", ("publish", "npm publish", "twine upload")),
+    ("spend", ("spend", "purchase", "buy ", "billing", "payment")),
+    ("messages", ("send message", "external message", "email", "slack", "sms")),
+    (
+        "secrets/auth",
+        (
+            "secret",
+            "credential",
+            "token",
+            "cookie",
+            "private key",
+            "ssh key",
+            "login",
+            "logout",
+            "auth state",
+        ),
+    ),
+    ("browser-control", ("browser-control", "browser control", "remote browser")),
+    ("remote irreversible action", ("remote irreversible",)),
+)
+
 
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
@@ -125,6 +157,22 @@ def _now_iso() -> str:
 
 def _uid(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
+def _max_risk(*risks: str) -> str:
+    present = [risk for risk in risks if risk]
+    if not present:
+        return "green"
+    return max(present, key=lambda risk: _RISK_ORDER.get(risk, 0))
+
+
+def _blocked_authority_for_step(step: "MissionStep") -> list[str]:
+    text = f" {step.title} {step.command_or_action} ".lower()
+    blocked: list[str] = []
+    for label, patterns in _BLOCKED_AUTHORITY_PATTERNS:
+        if any(pattern in text for pattern in patterns):
+            blocked.append(label)
+    return list(dict.fromkeys(blocked))
 
 
 class MissionError(Exception):
@@ -201,6 +249,8 @@ class MissionStep:
     auto_step_order: int | None = None
     auto_primitive: str | None = None
     auto_step_why: str = ""
+    auto_promotion_classification: str = ""
+    auto_promotion_reason: str = ""
     uses_execution_engine: bool = False
     requires_approval: bool = False
     expected_receipt: bool = False
@@ -221,6 +271,20 @@ class AdvanceReport:
     #              ready_to_run / verified / awaiting_feedback / noop / abandoned
     detail: str = ""
     steps: list[MissionStep] = field(default_factory=list)
+
+
+@dataclass
+class AutoRoutePromotionReport:
+    """Result of explicitly promoting durable auto route state."""
+
+    mission: Mission
+    action: str
+    detail: str = ""
+    approval_request_id: str | None = None
+    promoted_steps: list[MissionStep] = field(default_factory=list)
+    unpromoted_steps: list[MissionStep] = field(default_factory=list)
+    blocked_steps: list[MissionStep] = field(default_factory=list)
+    created: bool = False
 
 
 _SCHEMA = """
@@ -574,11 +638,6 @@ class MissionEngine:
         max_risk = envelope.max_risk_level
         if max_risk == "black":
             max_risk = "red"
-        blocked_authority = [
-            label
-            for field_name, label in _BLOCKED_AUTHORITY_FIELDS
-            if not getattr(envelope, field_name)
-        ]
         mission = Mission(
             mission_id=_uid("mis"),
             goal=plan.goal,
@@ -612,7 +671,6 @@ class MissionEngine:
             self._mirror_auto_step(
                 mission,
                 route_step,
-                blocked_authority=blocked_authority,
             )
             for route_step in plan.internal_route_steps
         ]
@@ -627,6 +685,158 @@ class MissionEngine:
         )
         self.store.save_mission(mission)
         return mission, steps
+
+    def promote_auto_route(
+        self,
+        mission_id: str,
+        *,
+        new: bool = False,
+    ) -> AutoRoutePromotionReport:
+        """Promote selected auto route steps into pending approval requests.
+
+        This is an explicit boundary crossing from durable planning state to
+        approval state. It does not approve, execute, or fabricate receipts.
+        """
+        mission = self._require_mission(mission_id)
+        if mission.mission_type != "auto":
+            raise MissionError(
+                f"mission {mission.mission_id[:13]} is {mission.mission_type}; "
+                "only auto missions can promote auto routes"
+            )
+        if not mission.auto_plan_id or not mission.auto_plan_hash:
+            raise MissionError("auto mission has no AutoPlan metadata to promote")
+
+        route_steps = self.store.list_steps(mission.mission_id)
+        if not route_steps:
+            raise MissionError("auto mission has no route steps to promote")
+
+        approval_payloads: list[dict[str, Any]] = []
+        unpromoted: list[MissionStep] = []
+        for step in route_steps:
+            classification, blocked_authority = self._classify_auto_route_step(step)
+            step.auto_promotion_classification = classification
+            step.auto_promotion_reason = self._auto_promotion_reason(
+                classification, blocked_authority
+            )
+            if classification == "blocked_authority":
+                step.risk_level = "black"
+                step.blocked_authority = blocked_authority
+                step.requires_approval = True
+            elif classification == "verification_candidate":
+                step.risk_level = _max_risk(step.risk_level, "yellow")
+                step.requires_approval = True
+            elif classification == "execution_candidate":
+                step.risk_level = _max_risk(step.risk_level, "yellow")
+                step.requires_approval = True
+            elif classification == "approval_candidate":
+                step.requires_approval = True
+            else:
+                step.approval_state = "not_required"
+                self.store.save_step(step)
+                unpromoted.append(step)
+                continue
+
+            approval_payloads.append(
+                self._auto_approval_payload(mission, step, blocked_authority)
+            )
+            self.store.save_step(step)
+
+        if not approval_payloads:
+            self._record(
+                mission,
+                EVENT_AUTO_ROUTE_PROMOTED,
+                "auto route inspected; no promotable route steps found",
+                auto_plan_id=mission.auto_plan_id,
+                promoted_step_ids=[],
+                unpromoted_step_ids=[step.step_id for step in unpromoted],
+            )
+            return AutoRoutePromotionReport(
+                mission=mission,
+                action="noop",
+                detail="no promotable auto route steps found",
+                unpromoted_steps=unpromoted,
+            )
+
+        bridge = self._approval_bridge()
+        request, created = bridge.promote_auto_route(
+            mission_id=mission.mission_id,
+            auto_plan_id=mission.auto_plan_id,
+            auto_plan_hash=mission.auto_plan_hash,
+            goal=mission.goal,
+            intent=mission.auto_intent or "",
+            envelope=mission.autonomy_envelope or "",
+            cognitive_budget=mission.cognitive_budget or "",
+            route_steps=approval_payloads,
+            new=new,
+        )
+        request_steps = {
+            approval_step.metadata.get("route_mission_step_id"): approval_step
+            for approval_step in request.steps
+        }
+        promoted: list[MissionStep] = []
+        blocked: list[MissionStep] = []
+        for step in route_steps:
+            approval_step = request_steps.get(step.step_id)
+            if approval_step is None:
+                continue
+            step.approval_request_id = request.request_id
+            step.approval_step_id = approval_step.step_id
+            step.approval_state = approval_step.approval_state
+            step.risk_level = approval_step.risk_level
+            step.execution_plan_id = approval_step.execution_plan_id
+            step.receipt_id = approval_step.receipt_id
+            step.requires_approval = True
+            step.auto_promotion_classification = str(
+                approval_step.metadata.get("promotion_classification", "")
+            )
+            step.auto_promotion_reason = str(
+                approval_step.metadata.get("promotion_reason", "")
+            )
+            step.blocked_authority = list(
+                approval_step.metadata.get("blocked_authority", [])
+            )
+            self.store.save_step(step)
+            promoted.append(step)
+            if step.auto_promotion_classification == "blocked_authority":
+                blocked.append(step)
+
+        mission.approval_request_id = request.request_id
+        if mission.status == "plan_proposed":
+            self._set_status(
+                mission,
+                "awaiting_approval",
+                "auto route promoted into explicit pending approval requests",
+            )
+        self._record(
+            mission,
+            EVENT_AUTO_ROUTE_PROMOTED,
+            f"auto route promoted to approval request {request.request_id[:13]} "
+            f"({len(promoted)} promoted, {len(unpromoted)} unpromoted)",
+            approval_request_id=request.request_id,
+            created=created,
+            auto_plan_id=mission.auto_plan_id,
+            auto_plan_hash=mission.auto_plan_hash,
+            envelope=mission.autonomy_envelope,
+            cognitive_budget=mission.cognitive_budget,
+            promoted_step_ids=[step.step_id for step in promoted],
+            blocked_step_ids=[step.step_id for step in blocked],
+            unpromoted_step_ids=[step.step_id for step in unpromoted],
+        )
+        self.store.save_mission(mission)
+        return AutoRoutePromotionReport(
+            mission=mission,
+            action="promoted" if created else "reused",
+            detail=(
+                f"{len(promoted)} route step(s) linked to approval request "
+                f"{request.request_id[:13]}; approval requests are pending "
+                "and nothing executed"
+            ),
+            approval_request_id=request.request_id,
+            promoted_steps=promoted,
+            unpromoted_steps=unpromoted,
+            blocked_steps=blocked,
+            created=created,
+        )
 
     # --- Lifecycle: advance ---
 
@@ -1082,8 +1292,6 @@ class MissionEngine:
         self,
         mission: Mission,
         route_step: Any,
-        *,
-        blocked_authority: list[str],
     ) -> MissionStep:
         risk_level = "green"
         if route_step.approval_required:
@@ -1104,8 +1312,77 @@ class MissionEngine:
             uses_execution_engine=route_step.uses_execution_engine,
             requires_approval=route_step.approval_required,
             expected_receipt=route_step.expected_receipt,
-            blocked_authority=list(route_step.blocked_authority or blocked_authority),
+            blocked_authority=list(route_step.blocked_authority),
         )
+
+    def _classify_auto_route_step(
+        self, step: MissionStep
+    ) -> tuple[str, list[str]]:
+        blocked_authority = _blocked_authority_for_step(step)
+        if blocked_authority:
+            return "blocked_authority", blocked_authority
+        if step.uses_execution_engine or step.auto_primitive in _EXECUTION_AUTO_PRIMITIVES:
+            return "execution_candidate", []
+        if step.auto_primitive in _VERIFICATION_AUTO_PRIMITIVES:
+            return "verification_candidate", []
+        if step.requires_approval or step.auto_primitive in _APPROVAL_AUTO_PRIMITIVES:
+            return "approval_candidate", []
+        if step.auto_primitive in _INFORMATIONAL_AUTO_PRIMITIVES:
+            return "informational", []
+        return "informational", []
+
+    @staticmethod
+    def _auto_promotion_reason(
+        classification: str,
+        blocked_authority: list[str],
+    ) -> str:
+        if classification == "blocked_authority":
+            return (
+                "route step asks for blocked authority: "
+                + ", ".join(blocked_authority)
+            )
+        if classification == "execution_candidate":
+            return "route step expects ExecutionEngine-backed work or receipt evidence"
+        if classification == "verification_candidate":
+            return "route step represents verification gates that require explicit supervision"
+        if classification == "approval_candidate":
+            return "route step advances supervised mission or opportunity state"
+        return "route step is informational and remains unpromoted"
+
+    @staticmethod
+    def _auto_approval_payload(
+        mission: Mission,
+        step: MissionStep,
+        blocked_authority: list[str],
+    ) -> dict[str, Any]:
+        expected_receipt = (
+            "WorkReceipt from ExecutionEngine dry-run or approved execution"
+            if step.expected_receipt or step.uses_execution_engine
+            else "No receipt expected until a later explicit ExecutionEngine handoff"
+        )
+        boundary = (
+            "blocked authority; no approval can grant this in the current envelope"
+            if step.auto_promotion_classification == "blocked_authority"
+            else "explicit ApprovalBridge decision before any run"
+        )
+        task = step.command_or_action or step.title
+        return {
+            "route_mission_step_id": step.step_id,
+            "route_step_order": step.auto_step_order,
+            "route_step_primitive": step.auto_primitive,
+            "route_step_why": step.auto_step_why,
+            "task": task,
+            "risk_level": step.risk_level,
+            "promotion_classification": step.auto_promotion_classification,
+            "promotion_reason": step.auto_promotion_reason,
+            "expected_receipt_description": expected_receipt,
+            "execution_primitive": step.auto_primitive or "",
+            "required_approval_boundary": boundary,
+            "blocked_authority": blocked_authority,
+            "mission_id": mission.mission_id,
+            "auto_plan_id": mission.auto_plan_id,
+            "auto_plan_hash": mission.auto_plan_hash,
+        }
 
     def _check_budget(self, mission: Mission, step: MissionStep, *, verb: str) -> None:
         if step.risk_level == "black":
@@ -1174,3 +1451,46 @@ class MissionEngine:
             pass
         if self.event_sink is not None:
             self.event_sink(event)
+
+
+def render_auto_route_promotion_report(report: AutoRoutePromotionReport) -> str:
+    """Render explicit auto route promotion without implying execution."""
+    mission = report.mission
+    request_id = report.approval_request_id or ""
+    lines = [
+        "Auto route promoted" if report.action != "noop" else "Auto route inspected",
+        "Mission: " + mission.mission_id,
+    ]
+    if request_id:
+        lines.append("Approval request: " + request_id)
+    lines.extend(
+        [
+            "AutoPlan id/hash: "
+            + (mission.auto_plan_id or "")
+            + " / "
+            + ((mission.auto_plan_hash or "")[:16]),
+            "Envelope: " + (mission.autonomy_envelope or ""),
+            "Cognitive budget: " + (mission.cognitive_budget or ""),
+            "",
+            "Promotion result:",
+            "  - promoted route steps: " + str(len(report.promoted_steps)),
+            "  - blocked authority placeholders: " + str(len(report.blocked_steps)),
+            "  - unpromoted informational steps: " + str(len(report.unpromoted_steps)),
+            "  - approval requests are pending",
+            "",
+            "What was not done:",
+            "  - no approvals granted",
+            "  - no execution started",
+            "  - no receipts fabricated",
+        ]
+    )
+    if request_id:
+        lines.extend(
+            [
+                "",
+                "Inspect: opencobalt approvals show " + request_id[:13],
+                "Mission: opencobalt missions show " + mission.mission_id[:13],
+                "Why: opencobalt why " + mission.mission_id[:13],
+            ]
+        )
+    return "\n".join(lines)
