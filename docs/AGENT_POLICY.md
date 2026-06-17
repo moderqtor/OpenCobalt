@@ -23,6 +23,20 @@ evolve path must not launch an external runtime directly.
 
 Runtime output is evidence. It is not authority.
 
+## Auto Route Promotion
+
+Auto route promotion is an approval-state operation, not execution. Agents may
+use `opencobalt auto "GOAL" --create-mission --promote` or
+`opencobalt missions promote-auto MISSION_ID` to turn selected durable route
+steps into pending ApprovalBridge requests. They may not treat those requests
+as approvals, and they may not create dry-run receipts unless a future
+ExecutionEngine path supports it without bypassing pending approval state.
+
+Push, merge, deploy, publish, spend, external message, secret/auth, and
+browser-control route steps remain authority boundaries. Promotion can record
+them as black-risk placeholders for visibility, but no default envelope grants
+that authority.
+
 ## Subagent Rules
 
 Every subagent plan should declare:

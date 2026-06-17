@@ -105,8 +105,35 @@ No receipt is created by the bridge. Receipt rows begin only when a later
 dry-run or execution is explicitly invoked through the existing receipt-backed
 execution path.
 
+## Auto Route Promotion
+
+`opencobalt missions promote-auto MISSION_ID` promotes selected durable
+AutoPlan route steps into one pending ApprovalBridge request. The automatic
+front door can do the same in one command:
+
+```
+opencobalt auto "GOAL" --create-mission --promote
+/auto GOAL --create-mission --promote
+```
+
+Promotion classifies route steps as informational, approval candidates,
+execution candidates, blocked authority placeholders, or verification
+candidates. Informational steps stay as route metadata. Approval, execution,
+and verification candidates become pending approval steps. Push, merge,
+deploy, publish, spend, external messages, secret/auth access, browser-control,
+or other irreversible remote actions become black-risk blocked placeholders.
+
+Promotion never grants approval, starts execution, or fabricates receipts.
+Promoted steps preserve the AutoPlan id/hash, route-step reason, autonomy
+envelope, cognitive budget, expected receipt description, execution primitive,
+and required approval boundary. Dry-run receipt creation is deferred until a
+future branch can create receipts through ApprovalBridge and `ExecutionEngine`
+without bypassing pending approval state.
+
 ## Future Direction
 
 Future `/orch`, `/evolve`, and long-running mission loops should use the same
 envelope and cognitive-budget registry. They may deepen autonomy inside a
-declared envelope, but authority remains explicit.
+declared envelope, but authority remains explicit. Outcome routing can use
+promoted route metadata, approvals, receipts, envelope, and budget as bounded
+feedback inputs.

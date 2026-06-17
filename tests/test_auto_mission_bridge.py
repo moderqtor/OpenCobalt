@@ -6,10 +6,12 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from opencobalt.cli import app
-from opencobalt.core.auto_orchestrator import AutoOrchestrator
+from opencobalt.core.approval_bridge import ApprovalStore, BlockedStepError
+from opencobalt.core.auto_orchestrator import AutoOrchestrator, AutoPlan, AutoRouteStep
 from opencobalt.core.mission_engine import MissionEngine, MissionStore
 from opencobalt.execution.store import ExecutionStore
 from opencobalt.shell import CobaltShell
@@ -142,6 +144,232 @@ def test_auto_cli_default_remains_plan_only(tmp_path: Path, monkeypatch) -> None
     assert "planned only" in result.output
     assert "Mission created" not in result.output
     assert not (tmp_path / ".opencobalt" / "ledger.db").exists()
+
+
+def test_auto_create_mission_remains_mission_only_until_promoted(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "ledger.db"
+
+    record = AutoOrchestrator().create_mission(
+        "improve OpenCobalt safely and explain the plan",
+        db_path=db,
+        root=tmp_path,
+    )
+
+    assert MissionStore(db).get_mission(record.mission_id).approval_request_id is None
+    assert ApprovalStore(db).list_requests() == []
+    assert ExecutionStore(db).list_receipts() == []
+
+
+def test_auto_route_promotion_creates_pending_approval_request_without_execution(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db = tmp_path / "ledger.db"
+    record = AutoOrchestrator().create_mission(
+        "improve OpenCobalt safely and explain the plan",
+        db_path=db,
+        root=tmp_path,
+    )
+
+    def explode(*args, **kwargs):
+        raise AssertionError("auto route promotion must not spawn subprocesses")
+
+    monkeypatch.setattr(subprocess, "run", explode)
+    monkeypatch.setattr(subprocess, "Popen", explode)
+
+    report = MissionEngine(root=tmp_path, db_path=db).promote_auto_route(
+        record.mission_id
+    )
+
+    assert report.action == "promoted"
+    assert report.approval_request_id.startswith("areq-")
+    assert report.promoted_steps
+    assert report.unpromoted_steps
+    assert any(
+        step.auto_promotion_classification == "informational"
+        for step in report.unpromoted_steps
+    )
+    assert any(
+        step.auto_promotion_classification == "approval_candidate"
+        for step in report.promoted_steps
+    )
+    assert any(
+        step.auto_promotion_classification == "verification_candidate"
+        for step in report.promoted_steps
+    )
+
+    mission = MissionStore(db).get_mission(record.mission_id)
+    assert mission is not None
+    assert mission.approval_request_id == report.approval_request_id
+    assert mission.auto_plan_id == record.plan.auto_plan_id
+    assert mission.auto_plan_hash == record.plan.auto_plan_hash
+    assert mission.autonomy_envelope == record.plan.selected_envelope
+    assert mission.cognitive_budget == record.plan.selected_cognitive_budget
+
+    request = ApprovalStore(db).get_request(report.approval_request_id)
+    assert request is not None
+    assert request.source_type == "auto_route"
+    assert request.source_id == mission.mission_id
+    assert request.state == "pending"
+    assert request.metadata["mission_id"] == mission.mission_id
+    assert request.metadata["auto_plan_id"] == record.plan.auto_plan_id
+    assert request.metadata["auto_plan_hash"] == record.plan.auto_plan_hash
+    assert request.metadata["envelope"] == record.plan.selected_envelope
+    assert request.metadata["cognitive_budget"] == record.plan.selected_cognitive_budget
+    assert all(step.approval_state == "pending" for step in request.steps)
+    assert all(step.execution_plan_id is None for step in request.steps)
+    assert all(step.receipt_id is None for step in request.steps)
+    assert all(step.metadata["route_step_why"] for step in request.steps)
+    assert all(step.metadata["expected_receipt_description"] for step in request.steps)
+
+    promoted = [step for step in MissionStore(db).list_steps(mission.mission_id) if step.approval_step_id]
+    assert len(promoted) == len(request.steps)
+    assert all(step.approval_request_id == request.request_id for step in promoted)
+    assert all(step.approval_state == "pending" for step in promoted)
+    assert all(step.receipt_id is None for step in promoted)
+    assert ExecutionStore(db).list_receipts() == []
+
+    events = MissionStore(db).list_mission_events(mission.mission_id)
+    assert any(event["event_type"] == "mission.auto_route_promoted" for event in events)
+
+
+def test_auto_route_promotion_blocks_outward_authority_placeholders(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "ledger.db"
+    plan = AutoPlan(
+        auto_plan_id="aplan-testblocked",
+        auto_plan_hash="f" * 64,
+        goal="push and deploy this branch",
+        intent="repo_improvement",
+        selected_envelope="dry_run",
+        selected_cognitive_budget="high",
+        internal_route_steps=[
+            AutoRouteStep(
+                order=1,
+                primitive="mission_start",
+                command_hint="git push origin main && deploy production",
+                why="Remote push and deploy are outward authority boundaries.",
+                approval_required=True,
+            )
+        ],
+        required_approvals=["human approval before any non-dry-run execution"],
+        expected_receipts=["No receipt is created by planning alone"],
+        next_recommended_action="do not push or deploy",
+        did_actions=["planned only; no subprocesses started"],
+    )
+    mission, _steps = MissionEngine(root=tmp_path, db_path=db).create_auto_mission(plan)
+
+    report = MissionEngine(root=tmp_path, db_path=db).promote_auto_route(
+        mission.mission_id
+    )
+
+    assert report.blocked_steps
+    blocked_step = report.blocked_steps[0]
+    assert blocked_step.auto_promotion_classification == "blocked_authority"
+    assert blocked_step.risk_level == "black"
+    assert {"push", "deploy"} <= set(blocked_step.blocked_authority)
+
+    request = ApprovalStore(db).get_request(report.approval_request_id)
+    assert request is not None
+    assert request.steps[0].risk_level == "black"
+    assert request.steps[0].metadata["promotion_classification"] == "blocked_authority"
+    assert {"push", "deploy"} <= set(request.steps[0].metadata["blocked_authority"])
+
+    with pytest.raises(BlockedStepError):
+        MissionEngine(root=tmp_path, db_path=db).approve_step(blocked_step.step_id)
+
+    assert ExecutionStore(db).list_receipts() == []
+
+
+def test_auto_cli_promote_flag_persists_mission_and_approval_request(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = _invoke(
+        "auto",
+        "improve OpenCobalt safely and explain the plan",
+        "--create-mission",
+        "--promote",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Mission created" in result.output
+    assert "Auto route promoted" in result.output
+    assert "no approvals granted" in result.output
+    mission_id = _first(r"(mis-[0-9a-f]{6,})", result.output)
+    request_id = _first(r"(areq-[0-9a-f]{6,})", result.output)
+
+    mission = MissionStore(tmp_path / ".opencobalt" / "ledger.db").get_mission(mission_id)
+    assert mission is not None
+    assert mission.approval_request_id == request_id
+    assert ApprovalStore(tmp_path / ".opencobalt" / "ledger.db").get_request(request_id)
+    assert ExecutionStore(tmp_path / ".opencobalt" / "ledger.db").list_receipts() == []
+
+
+def test_missions_promote_auto_command_and_displays_expose_promoted_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    created = _invoke(
+        "auto",
+        "improve OpenCobalt safely and explain the plan",
+        "--create-mission",
+    )
+    mission_id = _first(r"(mis-[0-9a-f]{6,})", created.output)
+
+    promoted = _invoke("missions", "promote-auto", mission_id)
+
+    assert promoted.exit_code == 0, promoted.output
+    assert "Auto route promoted" in promoted.output
+    request_id = _first(r"(areq-[0-9a-f]{6,})", promoted.output)
+    assert "approval requests are pending" in promoted.output
+
+    shown = _invoke("missions", "show", mission_id)
+    assert shown.exit_code == 0, shown.output
+    assert "Auto route promotion" in shown.output
+    assert request_id[:13] in shown.output
+    assert "approval_candidate" in shown.output
+    assert "verification_candidate" in shown.output
+    assert "unpromoted" in shown.output
+    assert "approvals show" in shown.output
+
+    why = _invoke("why", mission_id)
+    assert why.exit_code == 0, why.output
+    assert "approval request" in why.output
+    assert "promoted_to" in why.output
+    assert "approval_state=pending" in why.output
+    assert ExecutionStore(tmp_path / ".opencobalt" / "ledger.db").list_receipts() == []
+
+
+def test_shell_auto_create_mission_promote_uses_same_bridge(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    shell = CobaltShell(
+        db_path=tmp_path / "ledger.db",
+        bridge_path=tmp_path / "memories.db",
+    )
+
+    shell._run_auto("improve OpenCobalt safely --create-mission --promote")
+
+    captured = capsys.readouterr()
+    assert "Auto route promoted" in captured.out
+    mission = MissionStore(tmp_path / "ledger.db").latest_mission()
+    assert mission is not None
+    assert mission.approval_request_id
+    request = ApprovalStore(tmp_path / "ledger.db").get_request(
+        mission.approval_request_id
+    )
+    assert request is not None
+    assert request.state == "pending"
+    assert all(step.approval_state == "pending" for step in request.steps)
+    assert ExecutionStore(tmp_path / "ledger.db").list_receipts() == []
 
 
 def test_auto_why_surfaces_auto_plan_linkage(tmp_path: Path, monkeypatch) -> None:

@@ -62,6 +62,7 @@ opencobalt missions start "goal"        create mission + run discovery (no execu
 opencobalt missions list                missions with status, approvals, receipts, outcomes
 opencobalt missions show MISSION_ID     full mission state and next action
 opencobalt missions advance MISSION_ID  one safe stage; stops at approval boundaries
+opencobalt missions promote-auto ID     promote auto route steps into pending approvals
 opencobalt missions approve-step ID     approve a pending step (black stays blocked)
 opencobalt missions run-step ID         dry-run; --execute to run; red needs --execute --yes
 opencobalt missions outcome ID VALUE    useful / neutral / wasted / abandoned
@@ -91,6 +92,35 @@ Auto route steps are mission steps without ApprovalBridge linkage. They are not
 silently executable. If a future stage turns one of those route steps into
 runtime work, that stage must use the existing Approval Bridge and
 `ExecutionEngine`, and any receipt must be real.
+
+`opencobalt missions promote-auto MISSION_ID` is the explicit promotion path.
+It inspects the stored route steps, preserves the AutoPlan id/hash, envelope,
+cognitive budget, and route-step reasons, and creates a pending ApprovalBridge
+request for selected candidates. `opencobalt auto "GOAL" --create-mission
+--promote` and shell `/auto GOAL --create-mission --promote` perform the same
+create-then-promote sequence.
+
+Promotion classifies route steps:
+
+- `informational`: stays unpromoted route context.
+- `approval_candidate`: becomes a pending approval request step.
+- `execution_candidate`: becomes a pending approval step with an expected
+  ExecutionEngine receipt description.
+- `verification_candidate`: becomes a pending approval step for supervised
+  verification gates.
+- `blocked_authority`: becomes a black-risk placeholder that cannot be
+  approved or executed in the current envelopes.
+
+Promotion never grants approval and never runs work. It does not create
+dry-run receipts yet because the current ApprovalBridge only hands steps to
+`ExecutionEngine` after approval; bypassing that just to create receipts would
+weaken the boundary. A later branch can add explicit dry-run receipt creation
+when it can remain fully policy-gated.
+
+`missions show`, `missions why`, and generic `why` expose the AutoPlan,
+route steps, promotion classification, linked approval request/steps, any
+later real receipts, unpromoted informational steps, and the next explicit
+action.
 
 ## Mission types
 

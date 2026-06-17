@@ -47,7 +47,7 @@ APPROVAL_STATES = (
     "superseded",
 )
 
-SOURCE_TYPES = ("opportunity_track", "opportunity_plan", "delegation_node")
+SOURCE_TYPES = ("opportunity_track", "opportunity_plan", "delegation_node", "auto_route")
 
 EVENT_REQUEST_CREATED = "approval.request_created"
 EVENT_REQUEST_SUPERSEDED = "approval.request_superseded"
@@ -60,6 +60,7 @@ _DEFAULT_DB = Path(".opencobalt") / "ledger.db"
 _DEFAULT_EVENTS_PATH = Path(".opencobalt") / "events" / "approval.jsonl"
 
 _RISK_SCOPES = {"green": "read", "yellow": "write", "red": "write", "black": "read"}
+_RISK_ORDER = {"green": 0, "yellow": 1, "red": 2, "black": 3}
 
 
 def _now_iso() -> str:
@@ -499,6 +500,110 @@ class ApprovalBridge:
         )
         return request, True
 
+    def promote_auto_route(
+        self,
+        *,
+        mission_id: str,
+        auto_plan_id: str,
+        auto_plan_hash: str,
+        goal: str,
+        intent: str,
+        envelope: str,
+        cognitive_budget: str,
+        route_steps: list[dict[str, Any]],
+        new: bool = False,
+    ) -> tuple[ApprovalRequest, bool]:
+        """Promote durable auto route steps into an explicit approval request.
+
+        Auto route promotion deliberately disables green auto-approval. These
+        steps are pending placeholders until a human or later policy-gated
+        command approves them. Nothing executes here.
+        """
+        existing = self.store.find_request_for_source(mission_id)
+        if existing is not None:
+            if not new:
+                return existing, False
+            existing.state = "superseded"
+            existing.updated_at = _now_iso()
+            self.store.save_request(existing)
+            self._emit(
+                EVENT_REQUEST_SUPERSEDED,
+                existing.request_id,
+                f"auto route request superseded for mission {mission_id}",
+                mission_id=mission_id,
+                auto_plan_id=auto_plan_id,
+            )
+
+        request = ApprovalRequest(
+            request_id=_uid("areq"),
+            source_type="auto_route",
+            source_id=mission_id,
+            run_id=mission_id,
+            goal_id=auto_plan_id,
+            track_id=mission_id,
+            opportunity_plan_id=auto_plan_id,
+            goal_text=goal,
+            track_name="Auto route promotion",
+            risk_level=_max_risk(step["risk_level"] for step in route_steps),
+            metadata={
+                "mission_id": mission_id,
+                "auto_plan_id": auto_plan_id,
+                "auto_plan_hash": auto_plan_hash,
+                "intent": intent,
+                "envelope": envelope,
+                "cognitive_budget": cognitive_budget,
+                "promotion_source": "auto_route",
+            },
+        )
+        for raw in route_steps:
+            risk = raw["risk_level"]
+            request.steps.append(
+                ApprovalStep(
+                    step_id=_uid("astp"),
+                    request_id=request.request_id,
+                    source_type="auto_route",
+                    source_id=mission_id,
+                    task=raw["task"],
+                    risk_level=risk,
+                    permission_scope=_RISK_SCOPES.get(risk, "read"),
+                    approval_required=True,
+                    approval_state="pending",
+                    metadata={
+                        "mission_id": mission_id,
+                        "auto_plan_id": auto_plan_id,
+                        "auto_plan_hash": auto_plan_hash,
+                        "route_mission_step_id": raw["route_mission_step_id"],
+                        "route_step_order": raw["route_step_order"],
+                        "route_step_primitive": raw["route_step_primitive"],
+                        "route_step_why": raw["route_step_why"],
+                        "promotion_classification": raw["promotion_classification"],
+                        "promotion_reason": raw["promotion_reason"],
+                        "expected_receipt_description": raw[
+                            "expected_receipt_description"
+                        ],
+                        "execution_primitive": raw["execution_primitive"],
+                        "required_approval_boundary": raw[
+                            "required_approval_boundary"
+                        ],
+                        "blocked_authority": list(raw["blocked_authority"]),
+                        "auto_approved": False,
+                        "blocked": risk == "black",
+                    },
+                )
+            )
+        request.refresh_state()
+        self.store.save_request(request)
+        self._emit(
+            EVENT_REQUEST_CREATED,
+            request.request_id,
+            f"auto route approval request created for mission {mission_id[:13]} "
+            f"({len(request.steps)} step(s), risk {request.risk_level})",
+            mission_id=mission_id,
+            auto_plan_id=auto_plan_id,
+            state=request.state,
+        )
+        return request, True
+
     def _resolve_source(
         self,
         run: OpportunityRun,
@@ -766,3 +871,10 @@ class ApprovalBridge:
             pass
         if self.event_sink is not None:
             self.event_sink(event)
+
+
+def _max_risk(risks: Any) -> str:
+    ordered = list(risks)
+    if not ordered:
+        return "green"
+    return max(ordered, key=lambda risk: _RISK_ORDER.get(str(risk), 0))
