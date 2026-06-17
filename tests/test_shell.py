@@ -109,6 +109,10 @@ def test_orch_in_slash_commands(shell: CobaltShell) -> None:
     assert "orch" in shell.list_slash_commands()
 
 
+def test_auto_in_slash_commands(shell: CobaltShell) -> None:
+    assert "auto" in shell.list_slash_commands()
+
+
 def test_dispatch_orch_calls_run_orch(shell: CobaltShell) -> None:
     called_with: dict = {}
 
@@ -118,6 +122,26 @@ def test_dispatch_orch_calls_run_orch(shell: CobaltShell) -> None:
     shell._run_orch = fake_run_orch  # type: ignore[method-assign]
     shell.dispatch("/orch implement auth with tests")
     assert called_with.get("expr") == "implement auth with tests"
+
+
+def test_dispatch_auto_calls_run_auto(shell: CobaltShell) -> None:
+    called_with: dict = {}
+
+    def fake_run_auto(expr: str) -> None:
+        called_with["expr"] = expr
+
+    shell._run_auto = fake_run_auto  # type: ignore[method-assign]
+    shell.dispatch("/auto improve OpenCobalt safely")
+    assert called_with.get("expr") == "improve OpenCobalt safely"
+
+
+def test_run_auto_prints_auto_orchestrator_plan(shell: CobaltShell, capsys) -> None:
+    shell._run_auto("improve OpenCobalt safely and explain the plan")
+
+    captured = capsys.readouterr()
+    assert "Auto orchestration plan" in captured.out
+    assert "What I would do" in captured.out
+    assert "planned only" in captured.out
 
 
 def test_converge_in_slash_commands(tmp_path):

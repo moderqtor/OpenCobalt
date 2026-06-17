@@ -335,6 +335,25 @@ contract -> artifact capture -> policy boundary -> provenance edge ->
 outcome feedback. An adapter that cannot produce verifiable receipts and
 provenance edges does not ship.
 
+### Current branch: autonomy-envelope-and-auto-orchestrator-v1
+
+- Canonical `OPENCOBALT.md` operating contract with sentinel, baseline,
+  execution boundary, autonomy vs authority, envelope and budget policy,
+  receipt requirements, approval rules, MCP/tool rules, subagent and skill
+  rules, commit/push/merge rules, final report schema, and claim discipline.
+- Typed autonomy envelopes and cognitive budgets in
+  `src/opencobalt/core/autonomy_envelopes.py`.
+- Deterministic `AutoOrchestrator` in
+  `src/opencobalt/core/auto_orchestrator.py` that selects intents,
+  envelopes, budgets, internal route primitives, approvals, expected receipts,
+  and next recommended actions.
+- `opencobalt auto "GOAL"` and shell `/auto GOAL` become the first
+  natural-language orchestration front door. V1 plans only and does not start
+  external runtimes.
+- Manual commands remain available, but opportunities, missions, approvals,
+  receipts, why traces, adapters, and dry-run execution become internal
+  primitives instead of required command memorization.
+
 ### Adapter and evidence loops
 
 - adapter-routing-from-outcomes-v1: start selecting runtimes from receipt
