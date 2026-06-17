@@ -48,7 +48,10 @@ All state lives in the shared `.opencobalt/ledger.db`:
   run_id, evolve_mission_id, selected track/candidate/plan, approval
   request, last receipt, outcome.
 - `mission_steps`: step_id (`mstp-`), title, risk_level, approval_state,
-  execution_state, approval/receipt linkage.
+  execution_state, approval/receipt linkage. Auto-created missions also store
+  route-step metadata in `step_json`: primitive, order, reason, whether the
+  step expects `ExecutionEngine`, whether it expects a receipt, and whether it
+  represents an approval expectation.
 - `mission_events`: append-only (`mev-`), enforced by SQLite triggers
   that abort UPDATE and DELETE.
 
@@ -66,6 +69,29 @@ opencobalt missions why MISSION_ID      goal, evidence, score, plan, approvals, 
 opencobalt why MISSION_ID               the generic lineage trace also resolves mis-/mstp- ids
 ```
 
+## Auto-created missions
+
+`opencobalt auto "goal" --create-mission` creates a mission with
+`mission_type=auto`. It does not run opportunity discovery, does not promote
+approval requests, and does not execute anything. It persists the AutoPlan so
+the natural-language front door becomes durable and resumable.
+
+Auto mission metadata includes:
+
+- AutoPlan id and hash
+- intent
+- autonomy envelope
+- cognitive budget
+- next recommended action
+- required approval expectations
+- expected receipt descriptions
+- ordered route steps and their reasons
+
+Auto route steps are mission steps without ApprovalBridge linkage. They are not
+silently executable. If a future stage turns one of those route steps into
+runtime work, that stage must use the existing Approval Bridge and
+`ExecutionEngine`, and any receipt must be real.
+
 ## Mission types
 
 - `opportunity` (default): discovery runs through the Opportunity Engine.
@@ -74,6 +100,9 @@ opencobalt why MISSION_ID               the generic lineage trace also resolves 
   candidates back the mission; the selected candidate keeps its receipt,
   outcome, and provenance linkage. "Make OpenCobalt more useful this week"
   is a first-class mission.
+- `auto`: an AutoPlan persisted from `opencobalt auto --create-mission`.
+  This is durable orchestration state only. It records route, envelope,
+  budget, approvals, and expected receipts without hidden execution.
 
 ## Risk budget
 

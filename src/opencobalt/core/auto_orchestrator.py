@@ -7,7 +7,11 @@ Runtime dry-runs or execution remain ExecutionEngine responsibilities.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shlex
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -59,8 +63,10 @@ class AutoRouteStep(BaseModel):
     command_hint: str
     why: str
     produces_receipt: bool = False
+    expected_receipt: bool = False
     uses_execution_engine: bool = False
     approval_required: bool = False
+    blocked_authority: list[str] = Field(default_factory=list)
 
 
 class AutoPlan(BaseModel):
@@ -68,6 +74,8 @@ class AutoPlan(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    auto_plan_id: str
+    auto_plan_hash: str
     goal: str
     intent: AutoIntent
     selected_envelope: str
@@ -78,6 +86,15 @@ class AutoPlan(BaseModel):
     next_recommended_action: str
     did_actions: list[str] = Field(default_factory=list)
     execute_requested: bool = False
+
+
+@dataclass(frozen=True)
+class AutoMissionRecord:
+    """Durable mission attachment created from one AutoPlan."""
+
+    plan: AutoPlan
+    mission_id: str
+    route_step_ids: list[str]
 
 
 _INTENT_KEYWORDS: dict[AutoIntent, tuple[str, ...]] = {
@@ -187,17 +204,52 @@ class AutoOrchestrator:
                 "execution was requested, but v1 does not cross approval or authority boundaries"
             )
 
+        payload = {
+            "goal": redacted_goal,
+            "intent": intent,
+            "selected_envelope": selected_envelope,
+            "selected_cognitive_budget": selected_budget,
+            "internal_route_steps": steps,
+            "required_approvals": required_approvals,
+            "expected_receipts": expected_receipts,
+            "next_recommended_action": self._next_action(intent, redacted_goal),
+            "did_actions": did_actions,
+            "execute_requested": execute,
+        }
+        digest = _stable_plan_hash(payload)
+
         return AutoPlan(
-            goal=redacted_goal,
-            intent=intent,
-            selected_envelope=selected_envelope,
-            selected_cognitive_budget=selected_budget,
-            internal_route_steps=steps,
-            required_approvals=required_approvals,
-            expected_receipts=expected_receipts,
-            next_recommended_action=self._next_action(intent, redacted_goal),
-            did_actions=did_actions,
-            execute_requested=execute,
+            auto_plan_id="aplan-" + digest[:12],
+            auto_plan_hash=digest,
+            **payload,
+        )
+
+    def create_mission(
+        self,
+        goal: str,
+        *,
+        envelope_id: str | None = None,
+        cognitive_budget_id: str | None = None,
+        execute: bool = False,
+        db_path: Path | None = None,
+        root: Path | None = None,
+    ) -> AutoMissionRecord:
+        """Persist an AutoPlan as durable mission state without execution."""
+        from .mission_engine import MissionEngine
+
+        plan = self.plan(
+            goal,
+            envelope_id=envelope_id,
+            cognitive_budget_id=cognitive_budget_id,
+            execute=execute,
+        )
+        mission, steps = MissionEngine(root=root, db_path=db_path).create_auto_mission(
+            plan
+        )
+        return AutoMissionRecord(
+            plan=plan,
+            mission_id=mission.mission_id,
+            route_step_ids=[step.step_id for step in steps],
         )
 
     def _steps_for(self, intent: AutoIntent, goal: str) -> list[AutoRouteStep]:
@@ -413,6 +465,7 @@ class AutoOrchestrator:
                 command_hint=command,
                 why=why,
                 produces_receipt=produces_receipt,
+                expected_receipt=produces_receipt,
                 uses_execution_engine=uses_execution_engine,
                 approval_required=approval_required,
             )
@@ -476,6 +529,7 @@ def render_auto_plan(plan: AutoPlan) -> str:
     envelope = AUTONOMY_ENVELOPES[plan.selected_envelope]
     lines = [
         "Auto orchestration plan",
+        "AutoPlan: " + plan.auto_plan_id,
         "Goal: " + plan.goal,
         "Intent: " + plan.intent,
         "Envelope: " + plan.selected_envelope + " (" + envelope.max_risk_level + " max risk)",
@@ -516,3 +570,44 @@ def render_auto_plan(plan: AutoPlan) -> str:
 
     lines.extend(["", "Next recommended action: " + plan.next_recommended_action])
     return "\n".join(lines)
+
+
+def render_auto_mission_record(record: AutoMissionRecord) -> str:
+    """Render the durable mission attachment created from an AutoPlan."""
+    plan = record.plan
+    lines = [
+        "Mission created: " + record.mission_id,
+        "",
+        "What was persisted:",
+        "  - original goal",
+        "  - AutoPlan id/hash: " + plan.auto_plan_id + " / " + plan.auto_plan_hash[:16],
+        "  - intent: " + plan.intent,
+        "  - autonomy envelope: " + plan.selected_envelope,
+        "  - cognitive budget: " + plan.selected_cognitive_budget,
+        "  - route steps: " + str(len(record.route_step_ids)),
+        "  - approval expectations",
+        "  - expected receipts",
+        "  - next recommended action",
+        "",
+        "What was not executed:",
+        "  - no external runtimes started",
+        "  - no subprocesses started by auto",
+        "  - no approvals granted",
+        "  - no receipts fabricated",
+        "",
+        "Inspect: opencobalt missions show " + record.mission_id[:13],
+        "Why: opencobalt why " + record.mission_id[:13],
+    ]
+    return "\n".join(lines)
+
+
+def _stable_plan_hash(payload: dict) -> str:
+    serializable = json.loads(json.dumps(payload, default=_json_default, sort_keys=True))
+    encoded = json.dumps(serializable, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _json_default(value):
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")

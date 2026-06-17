@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from opencobalt.execution.engine import ExecutionEngine
 
     from .approval_bridge import ApprovalStep, StepRunReport
+    from .auto_orchestrator import AutoPlan
     from .opportunity_engine import OpportunityRun
 
 _DEFAULT_DB = Path(".opencobalt") / "ledger.db"
@@ -64,7 +65,7 @@ MISSION_STATUSES = (
 
 TERMINAL_STATUSES = ("completed", "failed", "abandoned")
 
-MISSION_TYPES = ("opportunity", "evolve")
+MISSION_TYPES = ("opportunity", "evolve", "auto")
 
 # Outcomes reuse the opportunity outcome vocabulary unchanged.
 OUTCOME_TO_STATUS = {
@@ -75,6 +76,15 @@ OUTCOME_TO_STATUS = {
 }
 
 _RISK_ORDER = {"green": 0, "yellow": 1, "red": 2, "black": 3}
+_BLOCKED_AUTHORITY_FIELDS = (
+    ("allowed_push", "push"),
+    ("allowed_merge", "merge"),
+    ("allowed_deploy", "deploy"),
+    ("allowed_publish", "publish"),
+    ("allowed_spend", "spend"),
+    ("allowed_external_messages", "external_messages"),
+    ("allowed_secret_auth_access", "secret_auth_access"),
+)
 
 # Risk budgets only ever tighten the existing gates. Black is not a valid
 # budget because black work is blocked everywhere with no override.
@@ -83,6 +93,7 @@ RISK_BUDGETS = ("green", "yellow", "red")
 EXECUTION_STATES = ("not_started", "dry_run", "executed", "failed")
 
 EVENT_MISSION_CREATED = "mission.created"
+EVENT_AUTO_PLAN_ATTACHED = "mission.auto_plan_attached"
 EVENT_STATUS_CHANGED = "mission.status_changed"
 EVENT_DISCOVERY_LINKED = "mission.discovery_linked"
 EVENT_TARGET_SELECTED = "mission.target_selected"
@@ -146,6 +157,14 @@ class Mission:
     outcome: str | None = None
     outcome_id: str | None = None
     summary: str = ""
+    auto_plan_id: str | None = None
+    auto_plan_hash: str | None = None
+    auto_intent: str | None = None
+    autonomy_envelope: str | None = None
+    cognitive_budget: str | None = None
+    auto_next_action: str | None = None
+    auto_required_approvals: list[str] = field(default_factory=list)
+    auto_expected_receipts: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 
@@ -179,6 +198,13 @@ class MissionStep:
     approval_step_id: str | None = None
     execution_plan_id: str | None = None
     receipt_id: str | None = None
+    auto_step_order: int | None = None
+    auto_primitive: str | None = None
+    auto_step_why: str = ""
+    uses_execution_engine: bool = False
+    requires_approval: bool = False
+    expected_receipt: bool = False
+    blocked_authority: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 
@@ -535,6 +561,73 @@ class MissionEngine:
         self.store.save_mission(mission)
         return mission
 
+    def create_auto_mission(self, plan: AutoPlan) -> tuple[Mission, list[MissionStep]]:
+        """Persist an AutoPlan as mission state without discovery or execution.
+
+        The created route steps intentionally have no approval-step linkage.
+        They record future approval and receipt expectations only; any later
+        runtime work must create proper ApprovalBridge/ExecutionEngine state.
+        """
+        from .autonomy_envelopes import get_autonomy_envelope
+
+        envelope = get_autonomy_envelope(plan.selected_envelope)
+        max_risk = envelope.max_risk_level
+        if max_risk == "black":
+            max_risk = "red"
+        blocked_authority = [
+            label
+            for field_name, label in _BLOCKED_AUTHORITY_FIELDS
+            if not getattr(envelope, field_name)
+        ]
+        mission = Mission(
+            mission_id=_uid("mis"),
+            goal=plan.goal,
+            mission_type="auto",
+            status="plan_proposed",
+            max_risk=max_risk,
+            summary=f"auto plan {plan.auto_plan_id} persisted without execution",
+            auto_plan_id=plan.auto_plan_id,
+            auto_plan_hash=plan.auto_plan_hash,
+            auto_intent=plan.intent,
+            autonomy_envelope=plan.selected_envelope,
+            cognitive_budget=plan.selected_cognitive_budget,
+            auto_next_action=plan.next_recommended_action,
+            auto_required_approvals=list(plan.required_approvals),
+            auto_expected_receipts=list(plan.expected_receipts),
+        )
+        self.store.save_mission(mission)
+        self._record(
+            mission,
+            EVENT_MISSION_CREATED,
+            f"auto mission created for {plan.intent}",
+            goal=plan.goal,
+            auto_plan_id=plan.auto_plan_id,
+            auto_plan_hash=plan.auto_plan_hash,
+            intent=plan.intent,
+            envelope=plan.selected_envelope,
+            cognitive_budget=plan.selected_cognitive_budget,
+        )
+
+        steps = [
+            self._mirror_auto_step(
+                mission,
+                route_step,
+                blocked_authority=blocked_authority,
+            )
+            for route_step in plan.internal_route_steps
+        ]
+        for step in steps:
+            self.store.save_step(step)
+        self._record(
+            mission,
+            EVENT_AUTO_PLAN_ATTACHED,
+            f"auto plan {plan.auto_plan_id} attached ({len(steps)} route step(s))",
+            auto_plan=plan.model_dump(mode="json"),
+            step_ids=[step.step_id for step in steps],
+        )
+        self.store.save_mission(mission)
+        return mission, steps
+
     # --- Lifecycle: advance ---
 
     def advance(self, mission_id: str) -> AdvanceReport:
@@ -546,6 +639,16 @@ class MissionEngine:
             return AdvanceReport(
                 mission=mission, action="noop",
                 detail=f"mission is {mission.status}; nothing to advance",
+            )
+        if mission.mission_type == "auto":
+            return AdvanceReport(
+                mission=mission,
+                action="noop",
+                detail=(
+                    "auto mission stores durable route state only; follow the "
+                    "recorded next action. nothing executes from advance."
+                ),
+                steps=self.store.list_steps(mission.mission_id),
             )
         if mission.status in ("created", "evidence_gathering"):
             return AdvanceReport(
@@ -973,6 +1076,35 @@ class MissionEngine:
             source_plan_id=mission.active_plan_id,
             approval_request_id=approval_step.request_id,
             approval_step_id=approval_step.step_id,
+        )
+
+    def _mirror_auto_step(
+        self,
+        mission: Mission,
+        route_step: Any,
+        *,
+        blocked_authority: list[str],
+    ) -> MissionStep:
+        risk_level = "green"
+        if route_step.approval_required:
+            risk_level = mission.max_risk
+        elif route_step.uses_execution_engine:
+            risk_level = "yellow"
+        return MissionStep(
+            step_id=_uid("mstp"),
+            mission_id=mission.mission_id,
+            title=f"{route_step.order}. {route_step.primitive}",
+            command_or_action=route_step.command_hint,
+            risk_level=risk_level,
+            approval_state="not_required",
+            execution_state="not_started",
+            auto_step_order=route_step.order,
+            auto_primitive=route_step.primitive,
+            auto_step_why=route_step.why,
+            uses_execution_engine=route_step.uses_execution_engine,
+            requires_approval=route_step.approval_required,
+            expected_receipt=route_step.expected_receipt,
+            blocked_authority=list(route_step.blocked_authority or blocked_authority),
         )
 
     def _check_budget(self, mission: Mission, step: MissionStep, *, verb: str) -> None:

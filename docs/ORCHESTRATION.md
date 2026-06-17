@@ -77,6 +77,34 @@ No auto path may bypass the execution boundary.
 In v1, "What I did" is planning only. No subprocess is started by the auto
 front door. Shell `/auto GOAL` uses the same `AutoOrchestrator` and renderer.
 
+## Durable Mission Bridge
+
+`opencobalt auto "GOAL" --create-mission` persists the selected AutoPlan as a
+mission without executing it. Shell `/auto GOAL --create-mission` uses the
+same path.
+
+The created mission records:
+
+- original goal
+- AutoPlan id and hash
+- selected intent
+- selected autonomy envelope
+- selected cognitive budget
+- ordered route steps
+- step reasons
+- approval expectations
+- expected receipts
+- next recommended action
+
+Auto route steps are stored as mission steps with no ApprovalBridge linkage.
+That is intentional: they are durable route state, not executable approval
+steps. Future execution must still create or use policy-gated approval and
+execution objects, and runtime work must still go through `ExecutionEngine`.
+
+No receipt is created by the bridge. Receipt rows begin only when a later
+dry-run or execution is explicitly invoked through the existing receipt-backed
+execution path.
+
 ## Future Direction
 
 Future `/orch`, `/evolve`, and long-running mission loops should use the same
