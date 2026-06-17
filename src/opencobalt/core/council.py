@@ -116,7 +116,10 @@ async def _query_model(task: str, model: str) -> str:
 def _build_result(task: str, responses: dict[str, str], synthesize: bool) -> CouncilResult:
     real = {
         m: r for m, r in responses.items()
-        if not r.startswith("[skipped") and not r.startswith("[error") and not r.startswith("[unavailable")
+        if not r.startswith("[skipped")
+        and not r.startswith("[error")
+        and not r.startswith("[unavailable")
+        and not r.startswith("[blocked")
     }
     agreements, disagreements = _score_agreement(real)
     score = _agreement_score(real)

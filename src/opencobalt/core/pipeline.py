@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .runtime_boundary import legacy_runtime_block_message
+from .runtime_boundary import legacy_runtime_block_message, normalize_runtime_id
 
 
 @dataclass
@@ -25,15 +25,6 @@ class PipelineResult:
     success: bool
     output_dir: Path
     errors: list[str] = field(default_factory=list)
-
-
-_BINARY_MAP = {
-    "claude": "claude",
-    "codex": "codex",
-    "antigravity": "agy",
-    "agy": "agy",
-    "gemini": "agy",
-}
 
 
 class Pipeline:
@@ -121,8 +112,7 @@ class Pipeline:
             out_path.write_text("\n".join(result.output_summary for result in results))
             return all(result.passed for result in results)
 
-        binary = _BINARY_MAP.get(step.tool)
-        if not binary:
+        if normalize_runtime_id(step.tool) is None:
             out_path.write_text(f"[{step.tool} not available]")
             return False
 

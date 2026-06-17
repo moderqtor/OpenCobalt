@@ -1788,7 +1788,7 @@ def integrations_check() -> None:
         else:
             console.print(f"  {_dot(True)}  {name}")
     for name in sorted(inactive):
-        console.print(f"  {_dot(False, warn=True)}  [dim]{name}[/dim]")
+        console.print(f"  {_dot(False, warn=True)}  [dim]{name} (not installed)[/dim]")
 
     console.print()
     console.print(f"  [dim]{len(active)} active  {len(inactive)} not installed[/dim]\n")
@@ -2849,7 +2849,7 @@ def _route_exec(tool: str, task: str, dry_run: bool = False) -> None:
         console.print("\n  [dim]--dry-run: legacy launcher blocked[/dim]")
     else:
         console.print(f"\n  [{_YELLOW}]Legacy launcher blocked.[/{_YELLOW}]")
-    console.print(f"  {legacy_runtime_block_message_for_runtime(tool)}")
+    console.print(f"  {legacy_runtime_block_message_for_runtime(tool)}", markup=False)
 
 
 def _clipboard_brief(dry_run: bool = False, tool: str = "the tool") -> None:

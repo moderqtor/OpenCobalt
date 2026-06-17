@@ -32,7 +32,7 @@ def legacy_runtime_block_message(name: str) -> str:
     """Message used when old helpers try to execute an external runtime."""
     runtime = normalize_runtime_id(name) or "<adapter-id>"
     return (
-        f"Direct {name} subprocess execution is blocked outside receipt-backed "
+        f"[blocked] Direct {name} subprocess execution is blocked outside receipt-backed "
         "ExecutionEngine. Use "
         f"`opencobalt run \"TASK\" --runtime {runtime} --dry-run`."
     )
@@ -41,7 +41,7 @@ def legacy_runtime_block_message(name: str) -> str:
 def legacy_runtime_block_message_for_runtime(runtime: str) -> str:
     """Message for call sites that already have a canonical runtime id."""
     return (
-        f"Direct {runtime} execution is blocked outside receipt-backed "
+        f"[blocked] Direct {runtime} execution is blocked outside receipt-backed "
         "ExecutionEngine. Use "
         f"`opencobalt run \"TASK\" --runtime {runtime} --dry-run`."
     )

@@ -548,7 +548,7 @@ class CobaltShell:
         _ = task
         runtime = normalize_runtime_id(tool)
         if runtime is not None:
-            console.print(f"  {legacy_runtime_block_message_for_runtime(runtime)}")
+            console.print(f"  {legacy_runtime_block_message_for_runtime(runtime)}", markup=False)
             return
         console.print(f"  [{_AMBER}]{tool} cannot be launched by the shell[/{_AMBER}]")
 

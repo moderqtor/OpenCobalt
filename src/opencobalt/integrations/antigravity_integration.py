@@ -9,6 +9,8 @@ import warnings
 from copy import deepcopy
 from typing import Any
 
+from opencobalt.core.runtime_boundary import legacy_runtime_block_message
+
 from .base_integration import BaseIntegration
 
 _COMMAND = "agy"
@@ -219,4 +221,5 @@ class AntigravityIntegration(BaseIntegration):
         return shutil.which(self.command) is not None
 
     def invoke(self, task: str) -> str:
-        return f"agy (stub -- task copied by OpenCobalt; direct execution is under active development: {task[:60]})"
+        _ = task
+        return f"{legacy_runtime_block_message('google-antigravity')} (stub)"

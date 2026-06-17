@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import shutil
 
+from opencobalt.core.runtime_boundary import legacy_runtime_block_message
+
 from .base_integration import BaseIntegration
 
 
@@ -18,4 +20,5 @@ class ClaudeCodeIntegration(BaseIntegration):
         return shutil.which("claude") is not None
 
     def invoke(self, task: str) -> str:
-        return f"claude '{task[:60]}' (stub -- run manually if claude-code is installed)"
+        _ = task
+        return f"{legacy_runtime_block_message('claude-code')} (stub)"

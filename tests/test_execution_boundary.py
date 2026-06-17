@@ -43,6 +43,7 @@ def test_legacy_council_consult_blocks_direct_runtime_subprocesses(
 
     result = consult_subprocess("modify files", model=model, intent="implement")
 
+    assert result.startswith("[blocked]")
     assert "ExecutionEngine" in result
     assert f"--runtime {runtime}" in result
     assert "opencobalt run" in result
@@ -77,6 +78,7 @@ def test_legacy_council_stream_blocks_direct_runtime_subprocesses(
 
     output = "".join(stream_subprocess("modify files", model=model))
 
+    assert output.startswith("[blocked]")
     assert "ExecutionEngine" in output
     assert f"--runtime {runtime}" in output
     assert "opencobalt run" in output
@@ -94,7 +96,23 @@ def test_council_session_blocks_explicit_external_models() -> None:
     assert all("ExecutionEngine" in response for response in result.responses.values())
 
 
-@pytest.mark.parametrize("tool", ["claude", "codex", "antigravity", "agy", "gemini"])
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "claude",
+        "claude-code",
+        "codex",
+        "codex-cli",
+        "cursor",
+        "antigravity",
+        "google-antigravity",
+        "agy",
+        "gemini",
+        "gemini-cli",
+        "ollama",
+        "aider",
+    ],
+)
 def test_legacy_pipeline_blocks_external_runtime_steps(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -117,8 +135,10 @@ def test_legacy_pipeline_blocks_external_runtime_steps(
     ok = pipeline._run_step(PipelineStep(tool=tool), "Task: modify files", out_path)
 
     assert ok is False
-    assert "ExecutionEngine" in out_path.read_text(encoding="utf-8")
-    assert "opencobalt run" in out_path.read_text(encoding="utf-8")
+    output = out_path.read_text(encoding="utf-8")
+    assert output.startswith("[blocked]")
+    assert "ExecutionEngine" in output
+    assert "opencobalt run" in output
 
 
 def test_route_exec_blocks_legacy_launcher_without_popen(
@@ -140,6 +160,7 @@ def test_route_exec_blocks_legacy_launcher_without_popen(
     _route_exec("claude-code", "modify files", dry_run=False)
 
     output = capsys.readouterr().out
+    assert "[blocked]" in output
     assert "ExecutionEngine" in output
     assert "--runtime claude-code" in output
     assert "opencobalt run" in output
@@ -168,6 +189,7 @@ def test_shell_open_tool_blocks_external_runtime_without_popen(
     shell._open_tool("claude-code", "modify files")
 
     output = capsys.readouterr().out
+    assert "[blocked]" in output
     assert "ExecutionEngine" in output
     assert "--runtime claude-code" in output
 
@@ -195,8 +217,59 @@ def test_legacy_ollama_agents_block_direct_task_execution(
 
     result = agent.run("summarize or tag this task")
 
+    assert result.startswith("[blocked]")
     assert "ExecutionEngine" in result
     assert "--runtime ollama" in result
+
+
+def test_orchestration_blocked_runtime_output_is_not_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opencobalt.core.models import SubTask
+    from opencobalt.core.orchestrator import OrchestrationExecutor
+
+    monkeypatch.setattr(
+        "opencobalt.core.orchestrator.shutil.which",
+        lambda command: f"/usr/local/bin/{command}",
+    )
+
+    def explode(*args, **kwargs):
+        raise AssertionError("orchestrator must not start external runtimes directly")
+
+    monkeypatch.setattr(subprocess, "Popen", explode)
+    monkeypatch.setattr(subprocess, "run", explode)
+
+    subtask = SubTask(task_type="impl", prompt="modify files", preferred_tool="claude-code")
+    result = OrchestrationExecutor().run("modify files", [subtask], show_live=False)
+
+    assert result.success is False
+    assert result.outputs[subtask.id].startswith("[blocked]")
+    assert "ExecutionEngine" in result.outputs[subtask.id]
+
+
+def test_autonomous_task_blocked_runtime_output_is_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opencobalt.core.autonomous_runner import AutonomousRunner, AutonomousTask
+
+    def explode(*args, **kwargs):
+        raise AssertionError("autonomous runner must not start external runtimes directly")
+
+    monkeypatch.setattr(subprocess, "Popen", explode)
+    monkeypatch.setattr(subprocess, "run", explode)
+
+    task = AutonomousTask(
+        id="task-1",
+        task="modify files",
+        tool="claude-code",
+        task_type="impl",
+    )
+
+    AutonomousRunner()._execute_task(task)
+
+    assert task.status == "failed"
+    assert task.output.startswith("[blocked]")
+    assert "ExecutionEngine" in task.output
 
 
 def test_ollama_judge_falls_back_without_direct_subprocess(
