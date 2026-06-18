@@ -37,6 +37,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from .events import append_event, make_event
+from .mission_extractor import (
+    MISSION_EXTRACTION_SCHEMA_VERSION,
+    DeterministicMissionExtractor,
+    MissionExtraction,
+    load_extraction_json,
+)
 
 if TYPE_CHECKING:
     from opencobalt.execution.engine import ExecutionEngine
@@ -95,6 +101,7 @@ EVENT_STEP_RUN = "mission.step_run"
 EVENT_RECEIPT_LINKED = "mission.receipt_linked"
 EVENT_VERIFICATION = "mission.verification"
 EVENT_OUTCOME_RECORDED = "mission.outcome_recorded"
+EVENT_EXTRACTION_ATTACHED = "mission.extraction_attached"
 
 # Deterministic keyword routing: goals about improving OpenCobalt itself
 # become evolve-type missions; everything else stays a generic
@@ -287,6 +294,33 @@ class AutoRoutePromotionReport:
     created: bool = False
 
 
+@dataclass(frozen=True)
+class MissionExtractionRecord:
+    """One versioned extraction attached to a mission."""
+
+    extraction_id: str
+    mission_id: str
+    version: int
+    source_type: str
+    source_path: str
+    extractor: str
+    schema_version: int
+    created_at: str
+    extraction: MissionExtraction
+
+    @property
+    def goal(self) -> str:
+        return self.extraction.goal
+
+    @property
+    def status(self) -> str:
+        return self.extraction.status
+
+    @property
+    def confidence_overall(self) -> str:
+        return self.extraction.confidence.overall
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS missions (
     mission_id            TEXT PRIMARY KEY,
@@ -330,6 +364,21 @@ CREATE TABLE IF NOT EXISTS mission_events (
     created_at   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS mission_extractions (
+    extraction_id   TEXT PRIMARY KEY,
+    mission_id      TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    source_type     TEXT NOT NULL,
+    source_path     TEXT NOT NULL,
+    extractor       TEXT NOT NULL,
+    schema_version  INTEGER NOT NULL,
+    created_at      TEXT NOT NULL,
+    extraction_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mission_extractions_mission
+ON mission_extractions (mission_id, version);
+
 CREATE TRIGGER IF NOT EXISTS mission_events_no_update
 BEFORE UPDATE ON mission_events
 BEGIN
@@ -340,6 +389,18 @@ CREATE TRIGGER IF NOT EXISTS mission_events_no_delete
 BEFORE DELETE ON mission_events
 BEGIN
     SELECT RAISE(ABORT, 'mission_events is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS mission_extractions_no_update
+BEFORE UPDATE ON mission_extractions
+BEGIN
+    SELECT RAISE(ABORT, 'mission_extractions is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS mission_extractions_no_delete
+BEFORE DELETE ON mission_extractions
+BEGIN
+    SELECT RAISE(ABORT, 'mission_extractions is append-only');
 END;
 """
 
@@ -492,6 +553,97 @@ class MissionStore:
             item["payload"] = json.loads(item.pop("payload_json"))
             out.append(item)
         return out
+
+    # --- Extractions (append-only, versioned) ---
+
+    def append_mission_extraction(
+        self,
+        mission_id: str,
+        extraction: MissionExtraction,
+        *,
+        source_type: str,
+        source_path: str | Path | None = None,
+        extractor: str,
+        schema_version: int = MISSION_EXTRACTION_SCHEMA_VERSION,
+    ) -> MissionExtractionRecord:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) AS latest "
+                "FROM mission_extractions WHERE mission_id = ?",
+                (mission_id,),
+            ).fetchone()
+            version = int(row["latest"]) + 1
+            record = MissionExtractionRecord(
+                extraction_id=_uid("mex"),
+                mission_id=mission_id,
+                version=version,
+                source_type=source_type,
+                source_path=str(source_path or ""),
+                extractor=extractor,
+                schema_version=schema_version,
+                created_at=_now_iso(),
+                extraction=extraction,
+            )
+            conn.execute(
+                "INSERT INTO mission_extractions VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    record.extraction_id,
+                    record.mission_id,
+                    record.version,
+                    record.source_type,
+                    record.source_path,
+                    record.extractor,
+                    record.schema_version,
+                    record.created_at,
+                    record.extraction.model_dump_json(),
+                ),
+            )
+        return record
+
+    def get_mission_extraction(self, extraction_id: str) -> MissionExtractionRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM mission_extractions "
+                "WHERE extraction_id = ? OR extraction_id LIKE ?",
+                (extraction_id, f"{extraction_id}%"),
+            ).fetchone()
+        return _extraction_record_from_row(row) if row else None
+
+    def list_mission_extractions(
+        self, mission_id: str, *, limit: int = 50
+    ) -> list[MissionExtractionRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM mission_extractions WHERE mission_id = ? "
+                "ORDER BY version, created_at, extraction_id LIMIT ?",
+                (mission_id, limit),
+            ).fetchall()
+        return [_extraction_record_from_row(row) for row in rows]
+
+    def latest_mission_extraction(
+        self, mission_id: str
+    ) -> MissionExtractionRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM mission_extractions WHERE mission_id = ? "
+                "ORDER BY version DESC, created_at DESC, extraction_id DESC LIMIT 1",
+                (mission_id,),
+            ).fetchone()
+        return _extraction_record_from_row(row) if row else None
+
+
+def _extraction_record_from_row(row: sqlite3.Row) -> MissionExtractionRecord:
+    return MissionExtractionRecord(
+        extraction_id=row["extraction_id"],
+        mission_id=row["mission_id"],
+        version=int(row["version"]),
+        source_type=row["source_type"],
+        source_path=row["source_path"],
+        extractor=row["extractor"],
+        schema_version=int(row["schema_version"]),
+        created_at=row["created_at"],
+        extraction=MissionExtraction.model_validate(json.loads(row["extraction_json"])),
+    )
 
 
 # --- Engine ---
@@ -685,6 +837,80 @@ class MissionEngine:
         )
         self.store.save_mission(mission)
         return mission, steps
+
+    def ingest_session_file(
+        self,
+        mission_id: str,
+        path: Path,
+        *,
+        extractor: DeterministicMissionExtractor | None = None,
+    ) -> MissionExtractionRecord:
+        """Extract mission intelligence from a local session file.
+
+        v0 uses a deterministic local extractor only. The raw session is not
+        persisted; only the structured, redacted extraction record is stored.
+        """
+        selected = extractor or DeterministicMissionExtractor()
+        transcript = path.read_text(encoding="utf-8")
+        extraction = selected.extract(transcript)
+        return self.attach_extraction(
+            mission_id,
+            extraction,
+            source_type="session_file",
+            source_path=path,
+            extractor=selected.__class__.__name__,
+        )
+
+    def attach_extraction_json(
+        self,
+        mission_id: str,
+        path: Path,
+        *,
+        extractor: str = "external_json",
+    ) -> MissionExtractionRecord:
+        """Attach externally generated extraction JSON after schema validation."""
+        extraction = load_extraction_json(path)
+        return self.attach_extraction(
+            mission_id,
+            extraction,
+            source_type="external_json",
+            source_path=path,
+            extractor=extractor,
+        )
+
+    def attach_extraction(
+        self,
+        mission_id: str,
+        extraction: MissionExtraction,
+        *,
+        source_type: str,
+        source_path: str | Path | None = None,
+        extractor: str,
+    ) -> MissionExtractionRecord:
+        """Append one extraction record and link it to mission provenance."""
+        mission = self._require_mission(mission_id)
+        record = self.store.append_mission_extraction(
+            mission.mission_id,
+            extraction,
+            source_type=source_type,
+            source_path=source_path,
+            extractor=extractor,
+        )
+        self._record(
+            mission,
+            EVENT_EXTRACTION_ATTACHED,
+            f"extraction {record.extraction_id[:14]} attached "
+            f"(v{record.version}, {source_type})",
+            extraction_id=record.extraction_id,
+            version=record.version,
+            source_type=record.source_type,
+            source_path=record.source_path,
+            extractor=record.extractor,
+            schema_version=record.schema_version,
+            extracted_status=record.extraction.status,
+            confidence_overall=record.extraction.confidence.overall,
+        )
+        return record
 
     def promote_auto_route(
         self,

@@ -14,6 +14,7 @@ Usage:
   opencobalt memory export
   opencobalt context
   opencobalt run TASK [--runtime R] [--execute] [--yes]
+  opencobalt continue MISSION_ID
   opencobalt receipts list|inspect|verify
   opencobalt artifacts attach|verify|list
   opencobalt adapters list|inspect
@@ -4628,6 +4629,40 @@ def _print_auto_route_promotion_summary(mission, steps) -> None:
     console.print(f"    unpromoted: {len(unpromoted)}")
 
 
+def _print_mission_extraction_summary(record) -> None:
+    if record is None:
+        return
+    extraction = record.extraction
+    console.print("  [dim]Mission extraction:[/dim]")
+    console.print(
+        f"    {record.extraction_id[:14]}  v{record.version}  "
+        f"source: {record.source_type}  extractor: {record.extractor}",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        "    confidence "
+        f"overall: {extraction.confidence.overall}  "
+        f"goal: {extraction.confidence.goal}  "
+        f"status: {extraction.confidence.status}",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        f"    extracted status: {extraction.status}  "
+        f"next actions: {len(extraction.next_actions)}  "
+        f"open questions: {len(extraction.open_questions)}",
+        markup=False,
+        highlight=False,
+    )
+    if extraction.risks:
+        console.print(
+            "    risks: " + "; ".join(extraction.risks[:3]),
+            markup=False,
+            highlight=False,
+        )
+
+
 def _mission_next_action(mission, steps) -> str | None:
     mid = mission.mission_id[:13]
     if mission.mission_type == "auto":
@@ -4646,6 +4681,115 @@ def _mission_next_action(mission, steps) -> str | None:
     if mission.status == "awaiting_feedback":
         return f"opencobalt missions outcome {mid} useful"
     return None
+
+
+def _format_context_items(values: list[str]) -> list[str]:
+    if not values:
+        return ["- none recorded"]
+    return [f"- {value}" for value in values]
+
+
+def _render_continue_context(mission, record) -> str:
+    if record is None:
+        return "\n".join(
+            [
+                "OPENCOBALT MISSION CONTEXT",
+                "",
+                f"Mission: {mission.mission_id}",
+                f"Goal: {mission.goal}",
+                f"Status: {mission.status}",
+                "Last known state: no mission extraction is attached yet.",
+                "",
+                "Findings:",
+                "- none recorded",
+                "Decisions:",
+                "- none recorded",
+                "Assumptions:",
+                "- none recorded",
+                "Open questions:",
+                "- Attach a mission extraction before relying on cold resume.",
+                "Risks:",
+                "- No extracted mission intelligence is available.",
+                "Files touched:",
+                "- none recorded",
+                "Artifacts:",
+                "- none recorded",
+                "Next actions:",
+                f"- opencobalt missions ingest-session {mission.mission_id[:13]} --file PATH",
+                "",
+                "Confidence:",
+                "- overall: low",
+                "Continuation instruction:",
+                "You are resuming this mission from OpenCobalt durable mission state. "
+                "Treat this context as the source of continuity, but verify claims "
+                "against the repository before making changes.",
+            ]
+        )
+
+    extraction = record.extraction
+    confidence = extraction.confidence
+    lines = [
+        "OPENCOBALT MISSION CONTEXT",
+        "",
+        f"Mission: {mission.mission_id}",
+        f"Goal: {extraction.goal or mission.goal}",
+        f"Status: {extraction.status}",
+        (
+            "Last known state: "
+            f"mission status {mission.status}; extraction {record.extraction_id} "
+            f"version {record.version}; source {record.source_type}; "
+            f"recorded {record.created_at}"
+        ),
+        "",
+        "Findings:",
+        *_format_context_items(extraction.findings),
+        "Decisions:",
+        *_format_context_items(extraction.decisions),
+        "Assumptions:",
+        *_format_context_items(extraction.assumptions),
+        "Open questions:",
+        *_format_context_items(extraction.open_questions),
+        "Risks:",
+        *_format_context_items(extraction.risks),
+        "Files touched:",
+        *_format_context_items(extraction.files_touched),
+        "Artifacts:",
+        *_format_context_items(extraction.artifacts),
+        "Next actions:",
+        *_format_context_items(extraction.next_actions),
+        "",
+        "Confidence:",
+        f"- goal: {confidence.goal}",
+        f"- status: {confidence.status}",
+        f"- findings: {confidence.findings}",
+        f"- decisions: {confidence.decisions}",
+        f"- assumptions: {confidence.assumptions}",
+        f"- open_questions: {confidence.open_questions}",
+        f"- next_actions: {confidence.next_actions}",
+        f"- files_touched: {confidence.files_touched}",
+        f"- artifacts: {confidence.artifacts}",
+        f"- risks: {confidence.risks}",
+        f"- overall: {confidence.overall}",
+        "Continuation instruction:",
+        "You are resuming this mission from OpenCobalt durable mission state. "
+        "Treat this context as the source of continuity, but verify claims "
+        "against the repository before making changes.",
+    ]
+    return "\n".join(lines)
+
+
+@app.command("continue")
+def continue_mission(
+    mission_id: str = typer.Argument(..., help="Mission id (full or prefix)"),
+) -> None:
+    """Print a compact cold-resume context package for another agent."""
+    engine = _mission_engine()
+    mission = engine.store.get_mission(mission_id)
+    if mission is None:
+        err.print(f"  [red]Unknown mission: {mission_id}[/red]")
+        raise typer.Exit(1)
+    record = engine.store.latest_mission_extraction(mission.mission_id)
+    console.print(_render_continue_context(mission, record), markup=False, highlight=False)
 
 
 @missions_app.command("start")
@@ -4765,12 +4909,88 @@ def missions_show(
         )
         if mission.auto_plan_hash:
             console.print(f"  [dim]Plan hash:[/dim] {mission.auto_plan_hash[:16]}")
+    extraction = engine.store.latest_mission_extraction(mission.mission_id)
+    _print_mission_extraction_summary(extraction)
     _print_mission_steps(steps)
     _print_auto_route_promotion_summary(mission, steps)
     action = _mission_next_action(mission, steps)
     if action:
         console.print(f"\n  [dim]Next:[/dim] {action}")
     console.print("")
+
+
+@missions_app.command("ingest-session")
+def missions_ingest_session(
+    mission_id: str = typer.Argument(..., help="Mission id (full or prefix)"),
+    file: Path = typer.Option(
+        ...,
+        "--file",
+        help="Local session transcript or agent output file to extract",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+    ),
+) -> None:
+    """Extract mission intelligence from a completed local session file.
+
+    v0 uses the deterministic local extractor and performs no network/model
+    calls. The raw transcript is not persisted.
+    """
+    from pydantic import ValidationError
+
+    from .core.mission_engine import MissionError
+
+    engine = _mission_engine()
+    try:
+        record = engine.ingest_session_file(mission_id, file)
+    except (KeyError, MissionError, OSError, ValidationError, ValueError) as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"\n  [bold]Extraction attached:[/bold] {record.extraction_id}"
+        f"\n  [dim]Mission:[/dim]   {record.mission_id}"
+        f"\n  [dim]Version:[/dim]   {record.version}"
+        f"\n  [dim]Source:[/dim]    {record.source_type}"
+        f"\n  [dim]Status:[/dim]    {record.extraction.status}"
+        f"\n  [dim]Confidence:[/dim] overall: {record.extraction.confidence.overall}"
+        f"\n\n  [dim]Continue:[/dim]  opencobalt continue {record.mission_id[:13]}\n",
+        highlight=False,
+    )
+
+
+@missions_app.command("attach-extraction")
+def missions_attach_extraction(
+    mission_id: str = typer.Argument(..., help="Mission id (full or prefix)"),
+    json_file: Path = typer.Option(
+        ...,
+        "--json",
+        help="Externally generated extraction JSON matching the v0 schema",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+    ),
+) -> None:
+    """Attach externally generated extraction JSON after schema validation."""
+    from pydantic import ValidationError
+
+    from .core.mission_engine import MissionError
+
+    engine = _mission_engine()
+    try:
+        record = engine.attach_extraction_json(mission_id, json_file)
+    except (KeyError, MissionError, OSError, ValidationError, ValueError) as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"\n  [bold]Extraction attached:[/bold] {record.extraction_id}"
+        f"\n  [dim]Mission:[/dim]   {record.mission_id}"
+        f"\n  [dim]Version:[/dim]   {record.version}"
+        f"\n  [dim]Source:[/dim]    {record.source_type}"
+        f"\n  [dim]Status:[/dim]    {record.extraction.status}"
+        f"\n  [dim]Confidence:[/dim] overall: {record.extraction.confidence.overall}"
+        f"\n\n  [dim]Continue:[/dim]  opencobalt continue {record.mission_id[:13]}\n",
+        highlight=False,
+    )
 
 
 @missions_app.command("advance")
@@ -5004,7 +5224,7 @@ def why(
     any_id: str = typer.Argument(
         ..., help="Any known id: mission, mission step, run, goal, track, "
         "evidence, opportunity plan, approval request, step, execution plan, "
-        "receipt, artifact, or outcome"
+        "receipt, artifact, mission extraction, or outcome"
     ),
 ) -> None:
     """Trace the lineage of any object: what caused it, what evidence and
@@ -5016,7 +5236,7 @@ def why(
     if trace is None:
         err.print(
             f"  [red]No lineage found for: {any_id}[/red]\n"
-            "  [dim]Accepted: mis-/mstp-/emis-/ecand-/orun-/goal-/otrk-/ev-/"
+            "  [dim]Accepted: mis-/mstp-/mex-/emis-/ecand-/orun-/goal-/otrk-/ev-/"
             "oplan-/areq-/astp-/oout- ids, "
             "or execution plan / receipt / artifact ids.[/dim]"
         )
