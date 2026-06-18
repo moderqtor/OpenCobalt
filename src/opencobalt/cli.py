@@ -16,6 +16,7 @@ Usage:
   opencobalt run TASK [--runtime R] [--execute] [--yes]
   opencobalt continue MISSION_ID
   opencobalt handoff MISSION_ID --to TARGET
+  opencobalt demo cold-resume [--target TARGET]
   opencobalt receipts list|inspect|verify
   opencobalt artifacts attach|verify|list
   opencobalt adapters list|inspect
@@ -55,6 +56,7 @@ from rich.text import Text
 
 from .agents.registry import get_agent
 from .agents.registry import list_agents as _list_agents
+from .core.cold_resume_demo import NORTH_STAR, run_cold_resume_demo
 from .core.cost import CostTracker
 from .core.ledger import Ledger
 from .core.memory import MemoryStore
@@ -139,6 +141,9 @@ missions_app = typer.Typer(
     "discovery, approval, execution, receipts, provenance, and outcomes."
 )
 app.add_typer(missions_app, name="missions")
+
+demo_app = typer.Typer(help="Deterministic local demos.")
+app.add_typer(demo_app, name="demo")
 
 
 class _EvolveGroup(typer.core.TyperGroup):
@@ -4917,6 +4922,159 @@ def handoff_mission(
         markup=False,
         highlight=False,
     )
+
+
+@demo_app.command("cold-resume")
+def demo_cold_resume(
+    target_value: str = typer.Option(
+        "generic",
+        "--target",
+        help="Handoff target: generic, codex-cli, claude-code, cursor",
+    ),
+) -> None:
+    """Run a deterministic local cold-resume demo.
+
+    The demo creates a mission, ingests a built-in sanitized old-agent report,
+    verifies the extraction, and renders continue/handoff previews. It does not
+    execute agents, runtimes, subprocesses, networks, or model APIs.
+    """
+    try:
+        target = normalize_handoff_target(target_value)
+    except MissionHandoffTargetError as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    engine = _mission_engine()
+    result = run_cold_resume_demo(engine)
+    mission = result.mission
+    extraction_record = result.extraction_record
+    verification_record = result.verification_record
+    continue_output = _render_continue_context(
+        mission,
+        extraction_record,
+        verification_record,
+    )
+    handoff_output = render_mission_handoff(
+        mission=mission,
+        target=target,
+        extraction_record=extraction_record,
+        verification_record=verification_record,
+    )
+
+    console.print(
+        _render_cold_resume_demo_output(
+            mission_id=mission.mission_id,
+            extraction_id=extraction_record.extraction_id,
+            verification_id=verification_record.verification_id,
+            verification_status=verification_record.verification.status,
+            verification_warning_count=len(verification_record.verification.warnings),
+            target=target,
+            continue_output=continue_output,
+            handoff_output=handoff_output,
+            safety=result.safety,
+        ),
+        markup=False,
+        highlight=False,
+    )
+
+
+def _render_cold_resume_demo_output(
+    *,
+    mission_id: str,
+    extraction_id: str,
+    verification_id: str,
+    verification_status: str,
+    verification_warning_count: int,
+    target: str,
+    continue_output: str,
+    handoff_output: str,
+    safety,
+) -> str:
+    safety_lines = [
+        _safety_line(
+            "injected instruction treated as data",
+            safety.injected_instruction_absent_from_store,
+        ),
+        _safety_line(
+            "fake token absent from stored extraction and verifier record",
+            safety.sensitive_content_absent_from_store,
+        ),
+        _safety_line(
+            "raw report not persisted in mission store",
+            safety.raw_report_absent_from_store,
+        ),
+        _safety_line(
+            "verification warnings visible",
+            safety.verification_warnings_visible,
+        ),
+        _safety_line(
+            "temporary source report removed",
+            safety.temp_report_removed,
+        ),
+        "- No runtime execution performed",
+        "- No network or model API calls performed",
+        "- No authority granted by this demo output",
+    ]
+    return "\n".join(
+        [
+            "OpenCobalt cold-resume demo",
+            "",
+            "North star:",
+            NORTH_STAR,
+            "",
+            f"Created mission: {mission_id}",
+            f"Attached extraction: {extraction_id}",
+            (
+                f"Verified extraction: {verification_id} "
+                f"({verification_status}; warnings: {verification_warning_count})"
+            ),
+            "",
+            "Safety checks:",
+            *safety_lines,
+            "",
+            "Cold resume:",
+            f"opencobalt continue {mission_id}",
+            "",
+            "Cold resume preview:",
+            _preview_block(continue_output, max_lines=16),
+            "",
+            "Handoff:",
+            f"opencobalt handoff {mission_id} --to {target}",
+            "",
+            f"Handoff packet preview ({target}):",
+            _handoff_preview_block(handoff_output),
+            "",
+            "Rerun commands:",
+            f".venv/bin/opencobalt demo cold-resume --target {target}",
+            f".venv/bin/opencobalt continue {mission_id}",
+            f".venv/bin/opencobalt handoff {mission_id} --to {target}",
+        ]
+    )
+
+
+def _safety_line(label: str, passed: bool) -> str:
+    status = "ok" if passed else "failed"
+    return f"- {label}: {status}"
+
+
+def _preview_block(text: str, *, max_lines: int) -> str:
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    return "\n".join([*lines[:max_lines], "..."])
+
+
+def _handoff_preview_block(text: str) -> str:
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) <= 18:
+        return "\n".join(lines)
+    preview = [*lines[:18], "..."]
+    try:
+        target_start = lines.index("Target-specific instructions:")
+    except ValueError:
+        return "\n".join(preview)
+    preview.extend(lines[target_start : target_start + 6])
+    return "\n".join(preview)
 
 
 @missions_app.command("start")

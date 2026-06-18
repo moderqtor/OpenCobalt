@@ -83,6 +83,7 @@ opencobalt missions outcome ID VALUE    useful / neutral / wasted / abandoned
 opencobalt missions why MISSION_ID      goal, evidence, score, plan, approvals, receipts, outcome
 opencobalt continue MISSION_ID          print a cold-resume context package
 opencobalt handoff MISSION_ID --to TARGET print a runtime-specific handoff packet
+opencobalt demo cold-resume            run the deterministic local cold-resume demo
 opencobalt why MISSION_ID               the generic lineage trace also resolves mis-/mstp- ids
 ```
 
@@ -95,6 +96,7 @@ intelligence:
 session output -> mission extraction -> structured state -> SQLite
                -> opencobalt continue MISSION_ID -> next agent resumes
                -> opencobalt handoff MISSION_ID --to codex-cli -> cold agent resumes
+               -> opencobalt demo cold-resume -> reproducible local demo
 ```
 
 The settled v0 schema contains:
@@ -197,6 +199,17 @@ call runtime adapters, start subprocesses, call the network, create receipts,
 or grant permission to push, merge, deploy, publish, spend, send messages, or
 touch secrets. The receiving agent must verify claims against repository
 evidence before editing.
+
+`opencobalt demo cold-resume` creates a real local mission, ingests a built-in
+sanitized old-agent report fixture, verifies the extraction, and prints
+mission, extraction, and verification ids plus compact `continue` and `handoff`
+previews. The command is local and deterministic. It performs no live model
+calls, no runtime or adapter execution, no network calls, and no authority
+grants. The demo fixture includes injected instruction text and token-shaped
+content so the output can demonstrate that source reports are data, suspicious
+content is not emitted, raw report text is not persisted in the mission store,
+and verifier warnings stay visible. See `docs/COLD_RESUME_DEMO.md` for the
+60-second demo script.
 
 `missions show`, `missions why`, and generic `why` expose extraction records
 and their confidence plus verifier records and warnings. Generic `why`
