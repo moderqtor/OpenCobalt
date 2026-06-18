@@ -354,31 +354,24 @@ contract -> artifact capture -> policy boundary -> provenance edge ->
 outcome feedback. An adapter that cannot produce verifiable receipts and
 provenance edges does not ship.
 
-### Current branch: auto-route-promotion-v1
+### Current branch: mission-extractor-v0
 
-- `opencobalt auto "GOAL"` remains plan-only by default.
-- `opencobalt auto "GOAL" --create-mission` persists the AutoPlan as a
-  durable auto mission without executing work.
-- `opencobalt auto "GOAL" --create-mission --promote` and shell
-  `/auto GOAL --create-mission --promote` persist the AutoPlan and promote
-  selected route steps into pending approval requests.
-- `opencobalt missions promote-auto MISSION_ID` promotes an existing auto
-  mission without command-sprawl around separate execution paths.
-- Auto mission metadata records the original goal, AutoPlan id/hash, intent,
-  autonomy envelope, cognitive budget, ordered route steps, approval
-  expectations, expected receipts, and next recommended action.
-- `missions show`, `missions why`, and `why` surface auto metadata so future
-  `/orch`, `/evolve`, and long-running missions can resume from the same
-  durable envelope and budget record. They also show promoted approval
-  requests, blocked authority placeholders, unpromoted informational steps,
-  and later real receipts if any are created.
-- No hidden push, merge, deploy, publish, spend, message, secret access,
-  auto-approval, fake receipt, or ExecutionEngine bypass is introduced.
-- Dry-run receipts from promoted route steps are deferred until a future branch
-  can create them through ApprovalBridge and `ExecutionEngine` without
-  bypassing pending approval state.
-- Future outcome routing will use promoted route metadata, explicit approvals,
-  real receipts, autonomy envelope, and cognitive budget as bounded evidence.
+- Agents come and go. Models change. Sessions die. OpenCobalt remembers.
+- `opencobalt missions ingest-session MISSION_ID --file PATH` extracts
+  structured mission intelligence from a local session transcript or agent
+  report with a deterministic, offline v0 extractor.
+- `opencobalt missions attach-extraction MISSION_ID --json PATH` imports
+  externally generated extraction JSON after schema validation.
+- Mission extraction records are append-only/versioned `mex-` rows linked to
+  `mission_id` in the shared SQLite ledger. Attaching one emits
+  `mission.extraction_attached`.
+- `missions show`, `missions why`, generic `why mex-...`, and
+  `opencobalt continue MISSION_ID` surface extraction confidence and produce a
+  compact cold-resume context package for the next agent session.
+- v0 is single-pass extraction. The two-pass verifier is future work.
+- Live LLM extraction is deferred. No hidden network/model call, external
+  runtime execution, fake receipt, secret storage, or raw transcript
+  persistence is introduced.
 
 ### Adapter and evidence loops
 

@@ -179,24 +179,36 @@ class ProvenanceBuilder:
         return trace
 
     def _trace_mission(self, any_id: str) -> ProvenanceTrace | None:
-        if not any_id.startswith(("mis-", "mstp-")):
+        if not any_id.startswith(("mis-", "mstp-", "mex-")):
             return None
         from .mission_engine import MissionStore
 
         store = MissionStore(self.db_path)
         step = None
+        extraction = None
         if any_id.startswith("mstp-"):
             step = store.get_step(any_id)
             if step is None:
                 return None
             mission = store.get_mission(step.mission_id)
+        elif any_id.startswith("mex-"):
+            extraction = store.get_mission_extraction(any_id)
+            if extraction is None:
+                return None
+            mission = store.get_mission(extraction.mission_id)
         else:
             mission = store.get_mission(any_id)
         if mission is None:
             return None
 
-        focus_id = step.step_id if step else mission.mission_id
-        focus_kind = "mission_step" if step else "mission"
+        focus_id = mission.mission_id
+        focus_kind = "mission"
+        if step is not None:
+            focus_id = step.step_id
+            focus_kind = "mission_step"
+        elif extraction is not None:
+            focus_id = extraction.extraction_id
+            focus_kind = "mission_extraction"
         trace = ProvenanceTrace(focus_id=focus_id, focus_kind=focus_kind)
         trace.add_node(
             ProvenanceNode(
@@ -228,6 +240,28 @@ class ProvenanceBuilder:
                 )
             )
             trace.add_edge(mission.mission_id, mission.auto_plan_id, "has_auto_plan")
+        for mission_extraction in store.list_mission_extractions(mission.mission_id):
+            trace.add_node(
+                ProvenanceNode(
+                    node_id=mission_extraction.extraction_id,
+                    kind="mission_extraction",
+                    label=mission_extraction.goal[:70],
+                    data={
+                        "version": mission_extraction.version,
+                        "status": mission_extraction.status,
+                        "source_type": mission_extraction.source_type,
+                        "overall_confidence": (
+                            mission_extraction.extraction.confidence.overall
+                        ),
+                        "schema_version": mission_extraction.schema_version,
+                    },
+                )
+            )
+            trace.add_edge(
+                mission.mission_id,
+                mission_extraction.extraction_id,
+                "has_extraction",
+            )
         if mission.run_id:
             run = self._opportunity_store().get_run(mission.run_id)
             if run is not None:
@@ -692,11 +726,12 @@ def render_trace_lines(trace: ProvenanceTrace) -> list[str]:
         detail = []
         for key in (
             "goal_class", "track_type", "candidate_type", "status", "score_total",
-            "intent", "envelope", "budget", "primitive",
+            "intent", "envelope", "budget", "primitive", "source_type",
+            "overall_confidence", "schema_version", "version",
             "promotion_classification",
             "risk_level", "approval_state", "state", "dry_run",
             "uses_execution_engine", "expected_receipt", "requires_approval",
-            "verification_status", "source_type", "strength",
+            "verification_status", "strength",
             "adapter_id", "capability_snapshot_hash", "verifiability_level",
             "artifact_count",
         ):

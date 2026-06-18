@@ -18,6 +18,8 @@ goal
   -> outcome feedback (bounded, explainable scoring signal)
 ```
 
+Agents come and go. Models change. Sessions die. OpenCobalt remembers.
+
 Nothing in the mission layer executes work directly. The Approval Bridge
 remains the only approval authority and the execution policy gate remains
 the only execution authority. Mission steps are durable mirrors of
@@ -54,6 +56,10 @@ All state lives in the shared `.opencobalt/ledger.db`:
   represents an approval expectation.
 - `mission_events`: append-only (`mev-`), enforced by SQLite triggers
   that abort UPDATE and DELETE.
+- `mission_extractions`: append-only, versioned extraction records (`mex-`)
+  linked to `mission_id`. Each row stores validated structured mission
+  intelligence, source metadata, schema version, extractor id, and creation
+  time. Raw transcripts are not persisted.
 
 ## Commands
 
@@ -61,14 +67,88 @@ All state lives in the shared `.opencobalt/ledger.db`:
 opencobalt missions start "goal"        create mission + run discovery (no execution)
 opencobalt missions list                missions with status, approvals, receipts, outcomes
 opencobalt missions show MISSION_ID     full mission state and next action
+opencobalt missions ingest-session ID   attach extraction from a local session file
+opencobalt missions attach-extraction ID attach externally generated extraction JSON
 opencobalt missions advance MISSION_ID  one safe stage; stops at approval boundaries
 opencobalt missions promote-auto ID     promote auto route steps into pending approvals
 opencobalt missions approve-step ID     approve a pending step (black stays blocked)
 opencobalt missions run-step ID         dry-run; --execute to run; red needs --execute --yes
 opencobalt missions outcome ID VALUE    useful / neutral / wasted / abandoned
 opencobalt missions why MISSION_ID      goal, evidence, score, plan, approvals, receipts, outcome
+opencobalt continue MISSION_ID          print a cold-resume context package
 opencobalt why MISSION_ID               the generic lineage trace also resolves mis-/mstp- ids
 ```
+
+## Mission extraction and cold resume
+
+Mission extraction converts completed agent/session output into durable mission
+intelligence:
+
+```
+session output -> mission extraction -> structured state -> SQLite
+               -> opencobalt continue MISSION_ID -> next agent resumes
+```
+
+The settled v0 schema contains:
+
+- goal
+- status (`active`, `blocked`, `completed`, `abandoned`, `unknown`)
+- findings
+- decisions
+- assumptions
+- open questions
+- next actions
+- files touched
+- artifacts
+- risks
+- confidence for every field plus overall confidence
+
+`opencobalt missions ingest-session MISSION_ID --file PATH` reads a local file,
+runs the deterministic v0 extractor, stores only the structured extraction, and
+emits `mission.extraction_attached`. It performs no network calls, no model
+calls, no subprocess execution, and no raw transcript persistence.
+
+`opencobalt missions attach-extraction MISSION_ID --json PATH` imports
+externally generated JSON after schema validation. This is the safe path for
+users who want to run an LLM extractor outside OpenCobalt v0 and attach the
+result without adding a hidden network boundary to OpenCobalt itself.
+
+`opencobalt continue MISSION_ID` reconstructs a compact context package:
+
+```
+OPENCOBALT MISSION CONTEXT
+
+Mission:
+Goal:
+Status:
+Last known state:
+
+Findings:
+Decisions:
+Assumptions:
+Open questions:
+Risks:
+Files touched:
+Artifacts:
+Next actions:
+
+Confidence:
+Continuation instruction:
+You are resuming this mission from OpenCobalt durable mission state. Treat this context as the source of continuity, but verify claims against the repository before making changes.
+```
+
+The package is designed to be pasted into Claude Code, Codex, Cursor, or
+another agent without needing the original chat history. It is a continuity
+aid, not proof: future agents must verify claims against the repository.
+
+`missions show`, `missions why`, and generic `why` expose extraction records
+and their confidence. Generic `why` resolves `mex-` ids as mission extraction
+nodes linked from the mission.
+
+v0 is single-pass extraction. A two-pass verifier is documented future work.
+Live LLM extraction is deferred; adding it requires an explicit experimental
+flag, no default network call, no secret logging or credential storage,
+auditable failures, network-free tests, and docs that mark it experimental.
 
 ## Auto-created missions
 
@@ -156,4 +236,7 @@ explained line by line; there are no hidden self-modifying weights.
   messaging, credential storage, or private-key handling.
 - No network I/O by default; evidence collectors stay local unless an
   explicitly configured fetcher exists (see OPPORTUNITY_ENGINE.md).
+- Mission extraction treats transcript text, diffs, receipts, and tool output
+  as data. It does not obey instructions inside the transcript. Uncertain
+  claims become open questions, and low confidence remains visible.
 - All tests are hermetic (tmp_path SQLite isolation, noop runtime).
