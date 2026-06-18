@@ -179,13 +179,14 @@ class ProvenanceBuilder:
         return trace
 
     def _trace_mission(self, any_id: str) -> ProvenanceTrace | None:
-        if not any_id.startswith(("mis-", "mstp-", "mex-")):
+        if not any_id.startswith(("mis-", "mstp-", "mex-", "mver-")):
             return None
         from .mission_engine import MissionStore
 
         store = MissionStore(self.db_path)
         step = None
         extraction = None
+        verification = None
         if any_id.startswith("mstp-"):
             step = store.get_step(any_id)
             if step is None:
@@ -196,6 +197,11 @@ class ProvenanceBuilder:
             if extraction is None:
                 return None
             mission = store.get_mission(extraction.mission_id)
+        elif any_id.startswith("mver-"):
+            verification = store.get_mission_extraction_verification(any_id)
+            if verification is None:
+                return None
+            mission = store.get_mission(verification.mission_id)
         else:
             mission = store.get_mission(any_id)
         if mission is None:
@@ -209,6 +215,9 @@ class ProvenanceBuilder:
         elif extraction is not None:
             focus_id = extraction.extraction_id
             focus_kind = "mission_extraction"
+        elif verification is not None:
+            focus_id = verification.verification_id
+            focus_kind = "mission_extraction_verification"
         trace = ProvenanceTrace(focus_id=focus_id, focus_kind=focus_kind)
         trace.add_node(
             ProvenanceNode(
@@ -261,6 +270,36 @@ class ProvenanceBuilder:
                 mission.mission_id,
                 mission_extraction.extraction_id,
                 "has_extraction",
+            )
+        for mission_verification in store.list_mission_extraction_verifications(
+            mission.mission_id
+        ):
+            verification_result = mission_verification.verification
+            trace.add_node(
+                ProvenanceNode(
+                    node_id=mission_verification.verification_id,
+                    kind="mission_extraction_verification",
+                    label=(
+                        f"verification {verification_result.status} "
+                        f"({len(verification_result.warnings)} warning(s))"
+                    ),
+                    data={
+                        "version": mission_verification.version,
+                        "verification_status": verification_result.status,
+                        "confidence_after": (
+                            verification_result.overall_confidence_after_verification
+                        ),
+                        "warning_count": len(verification_result.warnings),
+                        "prompt_injection_lines": (
+                            verification_result.prompt_injection_lines_detected
+                        ),
+                    },
+                )
+            )
+            trace.add_edge(
+                mission_verification.extraction_id,
+                mission_verification.verification_id,
+                "verified_by",
             )
         if mission.run_id:
             run = self._opportunity_store().get_run(mission.run_id)
@@ -728,6 +767,7 @@ def render_trace_lines(trace: ProvenanceTrace) -> list[str]:
             "goal_class", "track_type", "candidate_type", "status", "score_total",
             "intent", "envelope", "budget", "primitive", "source_type",
             "overall_confidence", "schema_version", "version",
+            "confidence_after", "warning_count", "prompt_injection_lines",
             "promotion_classification",
             "risk_level", "approval_state", "state", "dry_run",
             "uses_execution_engine", "expected_receipt", "requires_approval",

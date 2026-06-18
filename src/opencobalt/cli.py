@@ -4663,6 +4663,32 @@ def _print_mission_extraction_summary(record) -> None:
         )
 
 
+def _print_mission_verification_summary(record) -> None:
+    if record is None:
+        return
+    verification = record.verification
+    console.print("  [dim]Mission extraction verification:[/dim]")
+    console.print(
+        f"    {record.verification_id[:14]}  v{record.version}  "
+        f"extraction: {record.extraction_id[:14]}  "
+        f"status: {verification.status}  verifier: {record.verifier}",
+        markup=False,
+        highlight=False,
+    )
+    console.print(
+        "    confidence after verification "
+        f"overall: {verification.overall_confidence_after_verification}  "
+        f"warnings: {len(verification.warnings)}  "
+        f"redactions: {len(verification.redactions_detected)}  "
+        "prompt-injection lines: "
+        f"{verification.prompt_injection_lines_detected}",
+        markup=False,
+        highlight=False,
+    )
+    for warning in verification.warnings[:3]:
+        console.print(f"    warning: {warning}", markup=False, highlight=False)
+
+
 def _mission_next_action(mission, steps) -> str | None:
     mid = mission.mission_id[:13]
     if mission.mission_type == "auto":
@@ -4689,7 +4715,31 @@ def _format_context_items(values: list[str]) -> list[str]:
     return [f"- {value}" for value in values]
 
 
-def _render_continue_context(mission, record) -> str:
+def _verification_context_lines(verification) -> list[str]:
+    if verification is None:
+        return [
+            "Verification: unverified",
+            "Verifier warnings:",
+            "- Latest extraction has not been verified against a source report.",
+        ]
+    result = verification.verification
+    lines = [
+        (
+            "Verification: "
+            f"{result.status} ({verification.verification_id}; "
+            f"overall after verification: "
+            f"{result.overall_confidence_after_verification})"
+        ),
+        "Verifier warnings:",
+    ]
+    if result.warnings:
+        lines.extend(_format_context_items(result.warnings))
+    else:
+        lines.append("- none recorded")
+    return lines
+
+
+def _render_continue_context(mission, record, verification=None) -> str:
     if record is None:
         return "\n".join(
             [
@@ -4717,6 +4767,10 @@ def _render_continue_context(mission, record) -> str:
                 "Next actions:",
                 f"- opencobalt missions ingest-session {mission.mission_id[:13]} --file PATH",
                 "",
+                "Verification: unverified",
+                "Verifier warnings:",
+                "- No extraction is attached, so no extraction verification exists.",
+                "",
                 "Confidence:",
                 "- overall: low",
                 "Continuation instruction:",
@@ -4740,6 +4794,8 @@ def _render_continue_context(mission, record) -> str:
             f"version {record.version}; source {record.source_type}; "
             f"recorded {record.created_at}"
         ),
+        "",
+        *_verification_context_lines(verification),
         "",
         "Findings:",
         *_format_context_items(extraction.findings),
@@ -4770,6 +4826,14 @@ def _render_continue_context(mission, record) -> str:
         f"- artifacts: {confidence.artifacts}",
         f"- risks: {confidence.risks}",
         f"- overall: {confidence.overall}",
+        (
+            "- verified_overall: "
+            + (
+                verification.verification.overall_confidence_after_verification
+                if verification is not None
+                else "low"
+            )
+        ),
         "Continuation instruction:",
         "You are resuming this mission from OpenCobalt durable mission state. "
         "Treat this context as the source of continuity, but verify claims "
@@ -4789,7 +4853,19 @@ def continue_mission(
         err.print(f"  [red]Unknown mission: {mission_id}[/red]")
         raise typer.Exit(1)
     record = engine.store.latest_mission_extraction(mission.mission_id)
-    console.print(_render_continue_context(mission, record), markup=False, highlight=False)
+    verification = (
+        engine.store.latest_mission_extraction_verification(
+            mission.mission_id,
+            extraction_id=record.extraction_id,
+        )
+        if record is not None
+        else None
+    )
+    console.print(
+        _render_continue_context(mission, record, verification),
+        markup=False,
+        highlight=False,
+    )
 
 
 @missions_app.command("start")
@@ -4911,6 +4987,15 @@ def missions_show(
             console.print(f"  [dim]Plan hash:[/dim] {mission.auto_plan_hash[:16]}")
     extraction = engine.store.latest_mission_extraction(mission.mission_id)
     _print_mission_extraction_summary(extraction)
+    verification = (
+        engine.store.latest_mission_extraction_verification(
+            mission.mission_id,
+            extraction_id=extraction.extraction_id,
+        )
+        if extraction is not None
+        else None
+    )
+    _print_mission_verification_summary(verification)
     _print_mission_steps(steps)
     _print_auto_route_promotion_summary(mission, steps)
     action = _mission_next_action(mission, steps)
@@ -4989,6 +5074,63 @@ def missions_attach_extraction(
         f"\n  [dim]Status:[/dim]    {record.extraction.status}"
         f"\n  [dim]Confidence:[/dim] overall: {record.extraction.confidence.overall}"
         f"\n\n  [dim]Continue:[/dim]  opencobalt continue {record.mission_id[:13]}\n",
+        highlight=False,
+    )
+
+
+@missions_app.command("verify-extraction")
+def missions_verify_extraction(
+    mission_id: str = typer.Argument(..., help="Mission id (full or prefix)"),
+    source_file: Path = typer.Option(
+        ...,
+        "--source-file",
+        help="Local source report used to verify the attached extraction",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    extraction_id: str | None = typer.Option(
+        None,
+        "--extraction-id",
+        help="Specific extraction id to verify. Defaults to the latest extraction.",
+    ),
+) -> None:
+    """Verify a mission extraction against a source report.
+
+    v0 is deterministic and local. The source report is read for this command
+    only; raw source text is not persisted.
+    """
+    from .core.mission_engine import MissionError
+
+    engine = _mission_engine()
+    try:
+        record = engine.verify_extraction(
+            mission_id,
+            extraction_id=extraction_id,
+            source_file=source_file,
+        )
+    except (KeyError, MissionError, OSError, ValueError) as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    verification = record.verification
+    console.print(
+        f"\n  [bold]Extraction verified:[/bold] {record.verification_id}"
+        f"\n  [dim]Mission:[/dim]     {record.mission_id}"
+        f"\n  [dim]Extraction:[/dim]  {record.extraction_id}"
+        f"\n  [dim]Version:[/dim]     {record.version}"
+        f"\n  [dim]Status:[/dim]      {verification.status}"
+        "\n  [dim]Confidence:[/dim]  overall after verification: "
+        f"{verification.overall_confidence_after_verification}"
+        f"\n  [dim]Warnings:[/dim]    {len(verification.warnings)}"
+        f"\n  [dim]Redactions:[/dim]  {len(verification.redactions_detected)}"
+        "\n  [dim]Prompt injection lines:[/dim] "
+        f"{verification.prompt_injection_lines_detected}",
+        highlight=False,
+    )
+    for warning in verification.warnings[:5]:
+        console.print(f"    warning: {warning}", markup=False, highlight=False)
+    console.print(
+        f"\n  [dim]Continue:[/dim]  opencobalt continue {record.mission_id[:13]}\n",
         highlight=False,
     )
 
@@ -5224,7 +5366,7 @@ def why(
     any_id: str = typer.Argument(
         ..., help="Any known id: mission, mission step, run, goal, track, "
         "evidence, opportunity plan, approval request, step, execution plan, "
-        "receipt, artifact, mission extraction, or outcome"
+        "receipt, artifact, mission extraction, extraction verification, or outcome"
     ),
 ) -> None:
     """Trace the lineage of any object: what caused it, what evidence and
@@ -5236,8 +5378,8 @@ def why(
     if trace is None:
         err.print(
             f"  [red]No lineage found for: {any_id}[/red]\n"
-            "  [dim]Accepted: mis-/mstp-/mex-/emis-/ecand-/orun-/goal-/otrk-/ev-/"
-            "oplan-/areq-/astp-/oout- ids, "
+            "  [dim]Accepted: mis-/mstp-/mex-/mver-/emis-/ecand-/orun-/goal-/"
+            "otrk-/ev-/oplan-/areq-/astp-/oout- ids, "
             "or execution plan / receipt / artifact ids.[/dim]"
         )
         raise typer.Exit(1)

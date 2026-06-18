@@ -21,7 +21,10 @@ session output -> mission extraction -> structured mission state -> SQLite
   OpenCobalt final-report sections.
 - Append-only, versioned `mission_extractions` rows linked to `mission_id`.
 - `mission.extraction_attached` mission events.
-- `missions show`, `missions why`, and generic `why mex-...` visibility.
+- Deterministic local extraction verification with append-only verifier records.
+- `mission.extraction_verified` mission events.
+- `missions show`, `missions why`, and generic `why mex-...` / `why mver-...`
+  visibility.
 - `opencobalt continue MISSION_ID` cold-resume context packages.
 
 ## Commands
@@ -29,6 +32,7 @@ session output -> mission extraction -> structured mission state -> SQLite
 ```bash
 opencobalt missions ingest-session MISSION_ID --file path/to/session.txt
 opencobalt missions attach-extraction MISSION_ID --json path/to/extraction.json
+opencobalt missions verify-extraction MISSION_ID --source-file path/to/report.txt
 opencobalt missions show MISSION_ID
 opencobalt missions why MISSION_ID
 opencobalt continue MISSION_ID
@@ -42,6 +46,16 @@ persistence.
 `attach-extraction` is the v0 import path for externally generated JSON. Users
 can run an LLM outside OpenCobalt if they choose, then attach the validated
 result without introducing a hidden network boundary inside OpenCobalt.
+
+`verify-extraction` compares the latest attached extraction, or a selected
+`--extraction-id`, against a local source report supplied for that command. It
+is deterministic and local. It emits warnings for unsupported claims, completed
+status without explicit source evidence, high confidence without direct source
+support, missing limitations, missing files, missing commit or test-count
+artifacts, suspicious prompt-injection lines, and redacted token-shaped source
+content. The verifier stores compact metadata only: support status, confidence
+after verification, warning text, redaction metadata, prompt-injection counts,
+ids, and timestamps. It does not persist raw source reports.
 
 ## Schema
 
@@ -134,6 +148,9 @@ Goal:
 Status:
 Last known state:
 
+Verification:
+Verifier warnings:
+
 Findings:
 Decisions:
 Assumptions:
@@ -152,16 +169,38 @@ The package is intentionally compact and pasteable. It is not proof. A future
 agent should use it as continuity, then verify claims against the repository
 before changing files.
 
+If the latest extraction has not been verified, the package says
+`Verification: unverified`. If the verifier produced warnings, they are shown
+near the top of the package and the confidence block includes the verifier's
+overall confidence after verification.
+
+## Extraction Verifier v0
+
+The v0 verifier reduces false confidence; it does not prove truth. It uses
+local, deterministic support checks against the source report available at
+verification time. Source reports, transcripts, tool outputs, logs, diffs, and
+pasted prompts are untrusted data. The verifier does not execute instructions
+inside them, does not run a model, does not call the network, and does not
+start subprocesses.
+
+Verifier records are linked to both `mission_id` and `extraction_id`, versioned
+per extraction, and append-only. `missions show`, `missions why`, generic
+`why mver-...`, and `opencobalt continue` expose verifier status and warnings.
+
 ## Safety Boundaries
 
 - v0 is single-pass extraction.
 - v0 is heuristic real-session ingest, not a live LLM extractor.
-- The two-pass verifier is future work.
+- v0 verification is deterministic/local and is not a live LLM verifier.
+- A richer two-pass verifier is future work.
 - Live LLM extraction is deferred.
 - No hidden model/API/network calls are added.
 - No API keys, tokens, credentials, raw environment dumps, cookies, sessions,
   or secrets are stored.
 - The raw session transcript or raw agent report is not persisted by
   `ingest-session`.
+- The raw source report is not persisted by `verify-extraction`.
 - Low confidence stays visible in `show`, `why`, and `continue`.
+- Unverified or warning-bearing extractions stay visible in `show`, `why`, and
+  `continue`.
 - Uncertain claims become open questions instead of facts.

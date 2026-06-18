@@ -43,6 +43,10 @@ from .mission_extractor import (
     MissionExtraction,
     load_extraction_json,
 )
+from .mission_verifier import (
+    DeterministicMissionExtractionVerifier,
+    MissionExtractionVerification,
+)
 
 if TYPE_CHECKING:
     from opencobalt.execution.engine import ExecutionEngine
@@ -102,6 +106,7 @@ EVENT_RECEIPT_LINKED = "mission.receipt_linked"
 EVENT_VERIFICATION = "mission.verification"
 EVENT_OUTCOME_RECORDED = "mission.outcome_recorded"
 EVENT_EXTRACTION_ATTACHED = "mission.extraction_attached"
+EVENT_EXTRACTION_VERIFIED = "mission.extraction_verified"
 
 # Deterministic keyword routing: goals about improving OpenCobalt itself
 # become evolve-type missions; everything else stays a generic
@@ -321,6 +326,28 @@ class MissionExtractionRecord:
         return self.extraction.confidence.overall
 
 
+@dataclass(frozen=True)
+class MissionExtractionVerificationRecord:
+    """One append-only verifier record attached to a mission extraction."""
+
+    verification_id: str
+    mission_id: str
+    extraction_id: str
+    version: int
+    verifier: str
+    schema_version: int
+    created_at: str
+    verification: MissionExtractionVerification
+
+    @property
+    def status(self) -> str:
+        return self.verification.status
+
+    @property
+    def confidence_after(self) -> str:
+        return self.verification.overall_confidence_after_verification
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS missions (
     mission_id            TEXT PRIMARY KEY,
@@ -379,6 +406,20 @@ CREATE TABLE IF NOT EXISTS mission_extractions (
 CREATE INDEX IF NOT EXISTS idx_mission_extractions_mission
 ON mission_extractions (mission_id, version);
 
+CREATE TABLE IF NOT EXISTS mission_extraction_verifications (
+    verification_id   TEXT PRIMARY KEY,
+    mission_id        TEXT NOT NULL,
+    extraction_id     TEXT NOT NULL,
+    version           INTEGER NOT NULL,
+    verifier          TEXT NOT NULL,
+    schema_version    INTEGER NOT NULL,
+    created_at        TEXT NOT NULL,
+    verification_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mission_extraction_verifications_mission
+ON mission_extraction_verifications (mission_id, extraction_id, version);
+
 CREATE TRIGGER IF NOT EXISTS mission_events_no_update
 BEFORE UPDATE ON mission_events
 BEGIN
@@ -401,6 +442,18 @@ CREATE TRIGGER IF NOT EXISTS mission_extractions_no_delete
 BEFORE DELETE ON mission_extractions
 BEGIN
     SELECT RAISE(ABORT, 'mission_extractions is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS mission_extraction_verifications_no_update
+BEFORE UPDATE ON mission_extraction_verifications
+BEGIN
+    SELECT RAISE(ABORT, 'mission_extraction_verifications is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS mission_extraction_verifications_no_delete
+BEFORE DELETE ON mission_extraction_verifications
+BEGIN
+    SELECT RAISE(ABORT, 'mission_extraction_verifications is append-only');
 END;
 """
 
@@ -631,6 +684,99 @@ class MissionStore:
             ).fetchone()
         return _extraction_record_from_row(row) if row else None
 
+    # --- Extraction verifications (append-only, versioned per extraction) ---
+
+    def append_mission_extraction_verification(
+        self,
+        mission_id: str,
+        extraction_id: str,
+        verification: MissionExtractionVerification,
+        *,
+        verifier: str,
+        schema_version: int = 1,
+    ) -> MissionExtractionVerificationRecord:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) AS latest "
+                "FROM mission_extraction_verifications WHERE extraction_id = ?",
+                (extraction_id,),
+            ).fetchone()
+            version = int(row["latest"]) + 1
+            record = MissionExtractionVerificationRecord(
+                verification_id=_uid("mver"),
+                mission_id=mission_id,
+                extraction_id=extraction_id,
+                version=version,
+                verifier=verifier,
+                schema_version=schema_version,
+                created_at=_now_iso(),
+                verification=verification,
+            )
+            conn.execute(
+                "INSERT INTO mission_extraction_verifications VALUES "
+                "(?,?,?,?,?,?,?,?)",
+                (
+                    record.verification_id,
+                    record.mission_id,
+                    record.extraction_id,
+                    record.version,
+                    record.verifier,
+                    record.schema_version,
+                    record.created_at,
+                    record.verification.model_dump_json(),
+                ),
+            )
+        return record
+
+    def get_mission_extraction_verification(
+        self, verification_id: str
+    ) -> MissionExtractionVerificationRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM mission_extraction_verifications "
+                "WHERE verification_id = ? OR verification_id LIKE ?",
+                (verification_id, f"{verification_id}%"),
+            ).fetchone()
+        return _verification_record_from_row(row) if row else None
+
+    def list_mission_extraction_verifications(
+        self,
+        mission_id: str,
+        *,
+        extraction_id: str | None = None,
+        limit: int = 50,
+    ) -> list[MissionExtractionVerificationRecord]:
+        query = (
+            "SELECT * FROM mission_extraction_verifications WHERE mission_id = ?"
+        )
+        args: list[Any] = [mission_id]
+        if extraction_id is not None:
+            query += " AND extraction_id = ?"
+            args.append(extraction_id)
+        query += " ORDER BY created_at, version, verification_id LIMIT ?"
+        args.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, args).fetchall()
+        return [_verification_record_from_row(row) for row in rows]
+
+    def latest_mission_extraction_verification(
+        self,
+        mission_id: str,
+        *,
+        extraction_id: str | None = None,
+    ) -> MissionExtractionVerificationRecord | None:
+        query = (
+            "SELECT * FROM mission_extraction_verifications WHERE mission_id = ?"
+        )
+        args: list[Any] = [mission_id]
+        if extraction_id is not None:
+            query += " AND extraction_id = ?"
+            args.append(extraction_id)
+        query += " ORDER BY created_at DESC, version DESC, verification_id DESC LIMIT 1"
+        with self._connect() as conn:
+            row = conn.execute(query, args).fetchone()
+        return _verification_record_from_row(row) if row else None
+
 
 def _extraction_record_from_row(row: sqlite3.Row) -> MissionExtractionRecord:
     return MissionExtractionRecord(
@@ -643,6 +789,23 @@ def _extraction_record_from_row(row: sqlite3.Row) -> MissionExtractionRecord:
         schema_version=int(row["schema_version"]),
         created_at=row["created_at"],
         extraction=MissionExtraction.model_validate(json.loads(row["extraction_json"])),
+    )
+
+
+def _verification_record_from_row(
+    row: sqlite3.Row,
+) -> MissionExtractionVerificationRecord:
+    return MissionExtractionVerificationRecord(
+        verification_id=row["verification_id"],
+        mission_id=row["mission_id"],
+        extraction_id=row["extraction_id"],
+        version=int(row["version"]),
+        verifier=row["verifier"],
+        schema_version=int(row["schema_version"]),
+        created_at=row["created_at"],
+        verification=MissionExtractionVerification.model_validate(
+            json.loads(row["verification_json"])
+        ),
     )
 
 
@@ -909,6 +1072,65 @@ class MissionEngine:
             schema_version=record.schema_version,
             extracted_status=record.extraction.status,
             confidence_overall=record.extraction.confidence.overall,
+        )
+        return record
+
+    def verify_extraction(
+        self,
+        mission_id: str,
+        *,
+        source_file: Path,
+        extraction_id: str | None = None,
+        verifier: DeterministicMissionExtractionVerifier | None = None,
+    ) -> MissionExtractionVerificationRecord:
+        """Verify one extraction against a local source report.
+
+        The source report is read only for this verification call. It is not
+        persisted; the durable row stores compact verifier metadata only.
+        """
+        mission = self._require_mission(mission_id)
+        if extraction_id:
+            extraction_record = self.store.get_mission_extraction(extraction_id)
+            if (
+                extraction_record is None
+                or extraction_record.mission_id != mission.mission_id
+            ):
+                raise MissionError(
+                    f"extraction not found for mission {mission.mission_id[:13]}: "
+                    f"{extraction_id}"
+                )
+        else:
+            extraction_record = self.store.latest_mission_extraction(mission.mission_id)
+            if extraction_record is None:
+                raise MissionError(
+                    "mission has no extraction to verify; attach or ingest one first"
+                )
+
+        selected = verifier or DeterministicMissionExtractionVerifier()
+        source_text = source_file.read_text(encoding="utf-8")
+        verification = selected.verify(extraction_record.extraction, source_text)
+        record = self.store.append_mission_extraction_verification(
+            mission.mission_id,
+            extraction_record.extraction_id,
+            verification,
+            verifier=selected.__class__.__name__,
+        )
+        self._record(
+            mission,
+            EVENT_EXTRACTION_VERIFIED,
+            f"extraction {extraction_record.extraction_id[:14]} verified "
+            f"({record.status}, {len(record.verification.warnings)} warning(s))",
+            verification_id=record.verification_id,
+            extraction_id=record.extraction_id,
+            verification_version=record.version,
+            verifier=record.verifier,
+            verification_status=record.status,
+            overall_confidence_after_verification=record.confidence_after,
+            warning_count=len(record.verification.warnings),
+            redaction_count=len(record.verification.redactions_detected),
+            prompt_injection_lines_detected=(
+                record.verification.prompt_injection_lines_detected
+            ),
         )
         return record
 
