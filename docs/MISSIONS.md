@@ -105,8 +105,13 @@ The settled v0 schema contains:
 
 `opencobalt missions ingest-session MISSION_ID --file PATH` reads a local file,
 runs the deterministic v0 extractor, stores only the structured extraction, and
-emits `mission.extraction_attached`. It performs no network calls, no model
-calls, no subprocess execution, and no raw transcript persistence.
+emits `mission.extraction_attached`. It accepts hand-labeled snippets plus
+plain text, Markdown, and agent-style bullet final reports. Common real-session
+sections such as branch, base branch/SHA, final verification, worktree, local
+commit, summary, safety findings, known limitations, files changed, tests
+added, and next recommendation are mapped into the extraction schema. It
+performs no network calls, no model calls, no subprocess execution, and no raw
+transcript or raw report persistence.
 
 `opencobalt missions attach-extraction MISSION_ID --json PATH` imports
 externally generated JSON after schema validation. This is the safe path for
@@ -145,10 +150,11 @@ aid, not proof: future agents must verify claims against the repository.
 and their confidence. Generic `why` resolves `mex-` ids as mission extraction
 nodes linked from the mission.
 
-v0 is single-pass extraction. A two-pass verifier is documented future work.
-Live LLM extraction is deferred; adding it requires an explicit experimental
-flag, no default network call, no secret logging or credential storage,
-auditable failures, network-free tests, and docs that mark it experimental.
+v0 is deterministic, heuristic, line-oriented, and single-pass extraction. A
+two-pass verifier is documented future work. Live LLM extraction is deferred;
+adding it requires an explicit experimental flag, no default network call, no
+secret logging or credential storage, auditable failures, network-free tests,
+and docs that mark it experimental.
 
 ## Auto-created missions
 
@@ -236,7 +242,8 @@ explained line by line; there are no hidden self-modifying weights.
   messaging, credential storage, or private-key handling.
 - No network I/O by default; evidence collectors stay local unless an
   explicitly configured fetcher exists (see OPPORTUNITY_ENGINE.md).
-- Mission extraction treats transcript text, diffs, receipts, and tool output
-  as data. It does not obey instructions inside the transcript. Uncertain
+- Mission extraction treats transcript text, reports, diffs, receipts, and tool
+  output as data. It does not obey instructions inside those inputs. Obvious
+  token-shaped strings are redacted before structured persistence. Uncertain
   claims become open questions, and low confidence remains visible.
 - All tests are hermetic (tmp_path SQLite isolation, noop runtime).

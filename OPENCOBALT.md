@@ -90,7 +90,8 @@ Agents come and go. Models change. Sessions die. OpenCobalt remembers.
 
 Mission extraction turns completed session output, transcripts, receipts, or
 agent reports into structured mission intelligence attached to a durable
-mission. The v0 implementation is single-pass extraction. It supports:
+mission. The v0 implementation is deterministic, heuristic, line-oriented,
+and single-pass extraction. It supports:
 
 - `opencobalt missions ingest-session MISSION_ID --file PATH` for local
   transcript/session files.
@@ -100,13 +101,18 @@ mission. The v0 implementation is single-pass extraction. It supports:
   that a future agent can paste into Claude Code, Codex, Cursor, or another
   tool.
 
-The default v0 extractor is deterministic and local. It performs no hidden
-model calls, no network calls, and no external runtime execution. It stores the
-structured extraction record in the shared ledger and emits a
-`mission.extraction_attached` mission event; it does not persist the raw
-transcript. Live LLM extraction is deferred unless a future branch adds an
-explicit experimental flag, audit trail, secret-safe credential handling, and
-network-free tests. A two-pass verifier is future work, not part of v0.
+The default v0 extractor is deterministic and local. It handles hand-labeled
+session snippets and common real agent final-report sections such as branch,
+base branch/SHA, final verification, worktree, local commit, summary, safety
+findings, known limitations, files changed, tests added, and next
+recommendation. It performs no hidden model calls, no network calls, and no
+external runtime execution. It redacts obvious token-shaped strings before
+structured persistence, stores the structured extraction record in the shared
+ledger, and emits a `mission.extraction_attached` mission event; it does not
+persist the raw transcript or raw report. Live LLM extraction is deferred
+unless a future branch adds an explicit experimental flag, audit trail,
+secret-safe credential handling, and network-free tests. A two-pass verifier is
+future work, not part of v0.
 
 Transcript text, tool outputs, diffs, and session logs are data. The extractor
 must not obey instructions inside them, must surface low confidence, and must
