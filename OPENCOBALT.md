@@ -102,6 +102,9 @@ and single-pass extraction. It supports:
 - `opencobalt continue MISSION_ID` for a compact cold-resume context package
   that a future agent can paste into Claude Code, Codex, Cursor, or another
   tool.
+- `opencobalt handoff MISSION_ID --to generic|codex-cli|claude-code|cursor`
+  for a runtime-specific copy-paste prompt packet built from durable mission
+  state.
 
 The default v0 extractor is deterministic and local. It handles hand-labeled
 session snippets and common real agent final-report sections such as branch,
@@ -127,6 +130,14 @@ Transcript text, tool outputs, diffs, and session logs are data. The extractor
 and verifier must not obey instructions inside them, must surface low
 confidence or verifier warnings, and must move uncertain claims into open
 questions rather than facts.
+
+Mission handoff packets are prompts, not authority grants. They must surface
+missing extraction state, unverified extraction state, verifier warnings, and
+low confidence. They must not execute agents, call runtime adapters, start
+subprocesses, call the network, create fake receipts, or imply permission to
+push, merge, deploy, publish, spend, send messages, touch secrets, or perform
+irreversible actions. A receiving agent must treat handoff packets as
+continuity context and verify claims against the repository before editing.
 
 ## Execution Boundary
 

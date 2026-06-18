@@ -82,6 +82,7 @@ opencobalt missions run-step ID         dry-run; --execute to run; red needs --e
 opencobalt missions outcome ID VALUE    useful / neutral / wasted / abandoned
 opencobalt missions why MISSION_ID      goal, evidence, score, plan, approvals, receipts, outcome
 opencobalt continue MISSION_ID          print a cold-resume context package
+opencobalt handoff MISSION_ID --to TARGET print a runtime-specific handoff packet
 opencobalt why MISSION_ID               the generic lineage trace also resolves mis-/mstp- ids
 ```
 
@@ -93,6 +94,7 @@ intelligence:
 ```
 session output -> mission extraction -> structured state -> SQLite
                -> opencobalt continue MISSION_ID -> next agent resumes
+               -> opencobalt handoff MISSION_ID --to codex-cli -> cold agent resumes
 ```
 
 The settled v0 schema contains:
@@ -166,6 +168,35 @@ another agent without needing the original chat history. It is a continuity
 aid, not proof: future agents must verify claims against the repository.
 If the latest extraction is unverified or verifier warnings exist, that state
 is shown in the context package.
+
+`opencobalt handoff MISSION_ID --to TARGET` renders a copy-paste-ready prompt
+packet for a fresh agent session. Supported targets are `generic`, `codex-cli`,
+`claude-code`, and `cursor`. The packet includes the sentinel line, mission
+state, latest extraction and verification ids, verifier warnings, findings,
+decisions, assumptions, open questions, risks, files touched, artifacts, next
+actions, confidence, safety boundaries, continuation instructions, and required
+first commands:
+
+```
+git status -sb
+git rev-parse HEAD
+git diff --stat
+.venv/bin/ruff check .
+.venv/bin/opencobalt public-check
+.venv/bin/pytest
+```
+
+Handoff packets visibly warn when no extraction exists, the latest extraction
+is unverified, verifier warnings exist, or confidence is low. Target-specific
+wording emphasizes repository-first and test-first behavior for `codex-cli`,
+architecture and safety review for `claude-code`, editor-oriented review and
+planning for `cursor`, and neutral continuation for `generic`.
+
+Handoff packets are prompts, not authority grants. They do not execute agents,
+call runtime adapters, start subprocesses, call the network, create receipts,
+or grant permission to push, merge, deploy, publish, spend, send messages, or
+touch secrets. The receiving agent must verify claims against repository
+evidence before editing.
 
 `missions show`, `missions why`, and generic `why` expose extraction records
 and their confidence plus verifier records and warnings. Generic `why`

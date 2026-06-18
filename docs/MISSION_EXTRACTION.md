@@ -9,6 +9,7 @@ immediate demo target is cold resume:
 ```
 session output -> mission extraction -> structured mission state -> SQLite
                -> opencobalt continue MISSION_ID -> next session resumes
+               -> opencobalt handoff MISSION_ID --to codex-cli -> cold agent resumes
 ```
 
 ## What v0 ships
@@ -26,6 +27,8 @@ session output -> mission extraction -> structured mission state -> SQLite
 - `missions show`, `missions why`, and generic `why mex-...` / `why mver-...`
   visibility.
 - `opencobalt continue MISSION_ID` cold-resume context packages.
+- `opencobalt handoff MISSION_ID --to TARGET` prompt packets for `generic`,
+  `codex-cli`, `claude-code`, and `cursor`.
 
 ## Commands
 
@@ -36,6 +39,10 @@ opencobalt missions verify-extraction MISSION_ID --source-file path/to/report.tx
 opencobalt missions show MISSION_ID
 opencobalt missions why MISSION_ID
 opencobalt continue MISSION_ID
+opencobalt handoff MISSION_ID --to generic
+opencobalt handoff MISSION_ID --to codex-cli
+opencobalt handoff MISSION_ID --to claude-code
+opencobalt handoff MISSION_ID --to cursor
 ```
 
 `ingest-session` uses the deterministic local extractor. It handles plain text,
@@ -174,6 +181,47 @@ If the latest extraction has not been verified, the package says
 near the top of the package and the confidence block includes the verifier's
 overall confidence after verification.
 
+## Handoff Packets
+
+`opencobalt handoff MISSION_ID --to TARGET` renders a copy-paste-ready prompt
+packet from the same durable mission state used by `continue`. Supported
+targets are:
+
+- `generic`
+- `codex-cli`
+- `claude-code`
+- `cursor`
+
+Every packet includes the sentinel line, mission id, goal, status, latest
+extraction id, latest verification id and status when present, verifier
+warnings, findings, decisions, assumptions, open questions, risks, files
+touched, artifacts, next actions, confidence, required first commands, safety
+boundaries, and continuation instructions.
+
+Target-specific sections adapt the same state for the receiving tool:
+
+- `codex-cli` emphasizes repository inspection, `git status` / `git diff`,
+  test gates, and no push or merge without explicit authority.
+- `claude-code` emphasizes architecture and safety review, avoiding overlapping
+  file mutation outside the requested scope, and verifying mission state
+  against repository evidence.
+- `cursor` emphasizes editor-oriented review and planning, inspecting open
+  files and diffs, and no browser, cloud, or remote control unless explicitly
+  authorized.
+- `generic` stays neutral for any agent.
+
+Handoff packets visibly warn when no extraction exists, the latest extraction
+is unverified, verifier warnings exist, or confidence is low. They preserve
+structured ids and artifacts such as mission ids, extraction ids, verification
+ids, commit SHAs, test counts, file paths, and artifact identifiers that are
+already present in durable structured state.
+
+Handoff packets do not execute agents, do not call runtime adapters, do not
+start subprocesses, do not call the network, do not create receipts, and do
+not grant authority. They are prompts. A receiving agent must treat them as
+continuity context, not unquestionable truth, and must verify claims against
+the repository before editing.
+
 ## Extraction Verifier v0
 
 The v0 verifier reduces false confidence; it does not prove truth. It uses
@@ -200,7 +248,9 @@ per extraction, and append-only. `missions show`, `missions why`, generic
 - The raw session transcript or raw agent report is not persisted by
   `ingest-session`.
 - The raw source report is not persisted by `verify-extraction`.
-- Low confidence stays visible in `show`, `why`, and `continue`.
+- Low confidence stays visible in `show`, `why`, `continue`, and `handoff`.
 - Unverified or warning-bearing extractions stay visible in `show`, `why`, and
-  `continue`.
+  `continue` and `handoff`.
 - Uncertain claims become open questions instead of facts.
+- Handoff packets are prompts, not authority grants.
+- Handoff packets do not execute agents or runtimes.
