@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from opencobalt.execution.runner import redact_text
 
@@ -70,14 +70,14 @@ class MissionExtraction(BaseModel):
 
     goal: str
     status: MissionExtractionStatus
-    findings: list[str] = Field(default_factory=list)
-    decisions: list[str] = Field(default_factory=list)
-    assumptions: list[str] = Field(default_factory=list)
-    open_questions: list[str] = Field(default_factory=list)
-    next_actions: list[str] = Field(default_factory=list)
-    files_touched: list[str] = Field(default_factory=list)
-    artifacts: list[str] = Field(default_factory=list)
-    risks: list[str] = Field(default_factory=list)
+    findings: list[str]
+    decisions: list[str]
+    assumptions: list[str]
+    open_questions: list[str]
+    next_actions: list[str]
+    files_touched: list[str]
+    artifacts: list[str]
+    risks: list[str]
     confidence: MissionExtractionConfidence
 
 

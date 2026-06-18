@@ -99,6 +99,13 @@ class TestMissionExtractionSchema:
         with pytest.raises(ValidationError):
             MissionExtraction.model_validate(payload)
 
+    def test_schema_validation_rejects_missing_required_fields(self) -> None:
+        payload = _valid_extraction_payload()
+        del payload["findings"]
+
+        with pytest.raises(ValidationError):
+            MissionExtraction.model_validate(payload)
+
     def test_prompt_template_is_json_only_and_treats_transcripts_as_data(self) -> None:
         assert "produce ONLY valid JSON" in EXTRACTION_PROMPT_TEMPLATE
         assert "Return JSON only" in EXTRACTION_PROMPT_TEMPLATE
