@@ -60,6 +60,11 @@ All state lives in the shared `.opencobalt/ledger.db`:
   linked to `mission_id`. Each row stores validated structured mission
   intelligence, source metadata, schema version, extractor id, and creation
   time. Raw transcripts are not persisted.
+- `mission_extraction_verifications`: append-only, versioned verifier records
+  (`mver-`) linked to `mission_id` and `extraction_id`. Each row stores compact
+  verifier metadata, support status, confidence after verification, warnings,
+  redaction metadata, prompt-injection counts, schema version, verifier id, and
+  creation time. Raw source reports are not persisted.
 
 ## Commands
 
@@ -69,6 +74,7 @@ opencobalt missions list                missions with status, approvals, receipt
 opencobalt missions show MISSION_ID     full mission state and next action
 opencobalt missions ingest-session ID   attach extraction from a local session file
 opencobalt missions attach-extraction ID attach externally generated extraction JSON
+opencobalt missions verify-extraction ID verify extraction against local source report
 opencobalt missions advance MISSION_ID  one safe stage; stops at approval boundaries
 opencobalt missions promote-auto ID     promote auto route steps into pending approvals
 opencobalt missions approve-step ID     approve a pending step (black stays blocked)
@@ -118,6 +124,16 @@ externally generated JSON after schema validation. This is the safe path for
 users who want to run an LLM extractor outside OpenCobalt v0 and attach the
 result without adding a hidden network boundary to OpenCobalt itself.
 
+`opencobalt missions verify-extraction MISSION_ID --source-file PATH` compares
+the latest extraction, or a selected `--extraction-id`, against a source report
+provided for that command. The verifier is deterministic and local. It stores
+only compact verification metadata and emits `mission.extraction_verified`.
+It warns on unsupported claims, completed status without explicit source
+evidence, high confidence without direct support, missing limitations, missing
+files, missing commit or test-count artifacts, suspicious prompt-injection
+lines, and redacted token-shaped source content. It reduces false confidence
+but does not prove the extraction is true.
+
 `opencobalt continue MISSION_ID` reconstructs a compact context package:
 
 ```
@@ -127,6 +143,9 @@ Mission:
 Goal:
 Status:
 Last known state:
+
+Verification:
+Verifier warnings:
 
 Findings:
 Decisions:
@@ -145,16 +164,20 @@ You are resuming this mission from OpenCobalt durable mission state. Treat this 
 The package is designed to be pasted into Claude Code, Codex, Cursor, or
 another agent without needing the original chat history. It is a continuity
 aid, not proof: future agents must verify claims against the repository.
+If the latest extraction is unverified or verifier warnings exist, that state
+is shown in the context package.
 
 `missions show`, `missions why`, and generic `why` expose extraction records
-and their confidence. Generic `why` resolves `mex-` ids as mission extraction
-nodes linked from the mission.
+and their confidence plus verifier records and warnings. Generic `why`
+resolves `mex-` ids as mission extraction nodes and `mver-` ids as extraction
+verification nodes linked from the mission.
 
-v0 is deterministic, heuristic, line-oriented, and single-pass extraction. A
-two-pass verifier is documented future work. Live LLM extraction is deferred;
-adding it requires an explicit experimental flag, no default network call, no
-secret logging or credential storage, auditable failures, network-free tests,
-and docs that mark it experimental.
+v0 extraction is deterministic, heuristic, line-oriented, and single-pass.
+v0 verification is deterministic and local. A richer two-pass verifier remains
+future work. Live LLM extraction or verification is deferred; adding either
+requires an explicit experimental flag, no default network call, no secret
+logging or credential storage, auditable failures, network-free tests, and docs
+that mark it experimental.
 
 ## Auto-created missions
 
@@ -243,7 +266,10 @@ explained line by line; there are no hidden self-modifying weights.
 - No network I/O by default; evidence collectors stay local unless an
   explicitly configured fetcher exists (see OPPORTUNITY_ENGINE.md).
 - Mission extraction treats transcript text, reports, diffs, receipts, and tool
-  output as data. It does not obey instructions inside those inputs. Obvious
-  token-shaped strings are redacted before structured persistence. Uncertain
-  claims become open questions, and low confidence remains visible.
+  output as data. Mission verification treats source reports the same way. They
+  do not obey instructions inside those inputs. Obvious token-shaped strings
+  are redacted before structured persistence or recorded only as redaction
+  metadata. Raw reports are not persisted. Uncertain claims become open
+  questions, low confidence remains visible, and unverified or warning-bearing
+  extraction state remains visible.
 - All tests are hermetic (tmp_path SQLite isolation, noop runtime).
