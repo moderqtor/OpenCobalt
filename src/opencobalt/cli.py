@@ -15,6 +15,7 @@ Usage:
   opencobalt context
   opencobalt run TASK [--runtime R] [--execute] [--yes]
   opencobalt continue MISSION_ID
+  opencobalt handoff MISSION_ID --to TARGET
   opencobalt receipts list|inspect|verify
   opencobalt artifacts attach|verify|list
   opencobalt adapters list|inspect
@@ -57,6 +58,11 @@ from .agents.registry import list_agents as _list_agents
 from .core.cost import CostTracker
 from .core.ledger import Ledger
 from .core.memory import MemoryStore
+from .core.mission_handoff import (
+    MissionHandoffTargetError,
+    normalize_handoff_target,
+    render_mission_handoff,
+)
 from .core.models import MemoryRecord, SessionEvent
 from .core.models_discovery import discover_models, is_ollama_available
 from .core.public_safety import scan_directory
@@ -4863,6 +4869,51 @@ def continue_mission(
     )
     console.print(
         _render_continue_context(mission, record, verification),
+        markup=False,
+        highlight=False,
+    )
+
+
+@app.command("handoff")
+def handoff_mission(
+    mission_id: str = typer.Argument(..., help="Mission id (full or prefix)"),
+    to: str = typer.Option(
+        "generic",
+        "--to",
+        help="Handoff target: generic, codex-cli, claude-code, cursor",
+    ),
+) -> None:
+    """Print a runtime-specific copy-paste handoff packet.
+
+    This renders durable mission memory only. It does not start or contact the
+    requested runtime.
+    """
+    engine = _mission_engine()
+    mission = engine.store.get_mission(mission_id)
+    if mission is None:
+        err.print(f"  [red]Unknown mission: {mission_id}[/red]")
+        raise typer.Exit(1)
+    try:
+        target = normalize_handoff_target(to)
+    except MissionHandoffTargetError as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    record = engine.store.latest_mission_extraction(mission.mission_id)
+    verification = (
+        engine.store.latest_mission_extraction_verification(
+            mission.mission_id,
+            extraction_id=record.extraction_id,
+        )
+        if record is not None
+        else None
+    )
+    console.print(
+        render_mission_handoff(
+            mission=mission,
+            target=target,
+            extraction_record=record,
+            verification_record=verification,
+        ),
         markup=False,
         highlight=False,
     )
