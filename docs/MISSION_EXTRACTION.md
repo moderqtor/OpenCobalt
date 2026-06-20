@@ -10,6 +10,7 @@ immediate demo target is cold resume:
 session output -> mission extraction -> structured mission state -> SQLite
                -> opencobalt continue MISSION_ID -> next session resumes
                -> opencobalt handoff MISSION_ID --to codex-cli -> cold agent resumes
+               -> opencobalt demo cold-resume -> local wedge demo
 ```
 
 ## What v0 ships
@@ -29,6 +30,8 @@ session output -> mission extraction -> structured mission state -> SQLite
 - `opencobalt continue MISSION_ID` cold-resume context packages.
 - `opencobalt handoff MISSION_ID --to TARGET` prompt packets for `generic`,
   `codex-cli`, `claude-code`, and `cursor`.
+- `opencobalt demo cold-resume` for a deterministic local demo of extraction,
+  verification, handoff, and continue output.
 
 ## Commands
 
@@ -43,6 +46,8 @@ opencobalt handoff MISSION_ID --to generic
 opencobalt handoff MISSION_ID --to codex-cli
 opencobalt handoff MISSION_ID --to claude-code
 opencobalt handoff MISSION_ID --to cursor
+opencobalt demo cold-resume
+opencobalt demo cold-resume --target codex-cli
 ```
 
 `ingest-session` uses the deterministic local extractor. It handles plain text,
@@ -63,6 +68,16 @@ artifacts, suspicious prompt-injection lines, and redacted token-shaped source
 content. The verifier stores compact metadata only: support status, confidence
 after verification, warning text, redaction metadata, prompt-injection counts,
 ids, and timestamps. It does not persist raw source reports.
+
+`demo cold-resume` creates a local mission, ingests a built-in sanitized
+old-agent report fixture, verifies the resulting extraction, and prints
+mission/extraction/verification ids plus compact `continue` and `handoff`
+previews. It is deterministic and local: no live model calls, no network
+calls, no runtime execution, no adapter invocation, and no authority grants.
+The sample report includes an injected instruction line and token-shaped
+fixture content to demonstrate that report text is data, token-shaped content
+is not emitted, raw report text is not persisted, and verifier warnings remain
+visible. See `docs/COLD_RESUME_DEMO.md` for the 60-second script.
 
 ## Schema
 

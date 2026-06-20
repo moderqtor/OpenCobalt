@@ -105,6 +105,9 @@ and single-pass extraction. It supports:
 - `opencobalt handoff MISSION_ID --to generic|codex-cli|claude-code|cursor`
   for a runtime-specific copy-paste prompt packet built from durable mission
   state.
+- `opencobalt demo cold-resume` for a deterministic local demonstration of
+  old-agent report ingest, extraction, verification, handoff, and continue
+  output.
 
 The default v0 extractor is deterministic and local. It handles hand-labeled
 session snippets and common real agent final-report sections such as branch,
@@ -138,6 +141,15 @@ subprocesses, call the network, create fake receipts, or imply permission to
 push, merge, deploy, publish, spend, send messages, touch secrets, or perform
 irreversible actions. A receiving agent must treat handoff packets as
 continuity context and verify claims against the repository before editing.
+
+The cold-resume demo command is also local and deterministic. It creates a
+mission in the configured local store, ingests a built-in sanitized old-agent
+report fixture, verifies the extraction, and prints compact continue/handoff
+previews. It performs no live model calls, no runtime or adapter execution, no
+network calls, no receipt creation, and no authority grants. Demo report text
+is data; injected instructions inside the fixture must not become authority,
+token-shaped fixture content must not be emitted, raw source report text must
+not be persisted, and verification warnings must stay visible.
 
 ## Execution Boundary
 
