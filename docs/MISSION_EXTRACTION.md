@@ -167,7 +167,7 @@ The local v0 extractor recognizes common final-report sections:
 
 - branch
 - base branch/SHA
-- test baseline
+- test baseline, including `Test baseline before changes`
 - final verification
 - worktree
 - pushed or merged state
@@ -198,6 +198,17 @@ mission ids, extraction ids, and verification ids are preserved separately as
 `source_references`. Files changed are stored exactly in `files_touched`.
 Known limitations and deferred work become risks or open questions, not
 findings. Next recommendation becomes a next action.
+
+The extractor also preserves useful final-report labels that vary across
+agents instead of requiring every label to be hardcoded. Labels ending in
+`behavior`, `quality`, or `findings` become labeled findings, for example
+`Artifact hygiene quality: ...` or `Handoff quality: ...`. `Pain points`
+become risks, and `Most important missing feature` becomes an open question.
+The label text is kept in the rendered mission state so a future agent can see
+where the claim came from. This is still conservative: arbitrary labels are
+not blindly promoted, injected instructions remain data, source-mentioned
+prior-run ids stay in `source_references`, and token-shaped text is redacted
+before persistence.
 
 Confidence remains conservative. Explicit labeled facts such as a pytest count
 or a file path get high confidence. Status inferred from successful final
