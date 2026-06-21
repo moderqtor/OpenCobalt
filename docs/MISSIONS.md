@@ -75,6 +75,7 @@ opencobalt missions show MISSION_ID     full mission state and next action
 opencobalt missions ingest-session ID   attach extraction from a local session file
 opencobalt missions attach-extraction ID attach externally generated extraction JSON
 opencobalt missions verify-extraction ID verify extraction against local source report
+opencobalt missions close-session ID    ingest report; optionally verify and print handoff
 opencobalt missions advance MISSION_ID  one safe stage; stops at approval boundaries
 opencobalt missions promote-auto ID     promote auto route steps into pending approvals
 opencobalt missions approve-step ID     approve a pending step (black stays blocked)
@@ -94,6 +95,7 @@ intelligence:
 
 ```
 session output -> mission extraction -> structured state -> SQLite
+               -> opencobalt missions close-session MISSION_ID --file report.txt
                -> opencobalt continue MISSION_ID -> next agent resumes
                -> opencobalt handoff MISSION_ID --to codex-cli -> cold agent resumes
                -> opencobalt demo cold-resume -> reproducible local demo
@@ -137,6 +139,31 @@ evidence, high confidence without direct support, missing limitations, missing
 files, missing commit or test-count artifacts, suspicious prompt-injection
 lines, and redacted token-shaped source content. It reduces false confidence
 but does not prove the extraction is true.
+
+`opencobalt missions close-session MISSION_ID --file PATH` is the daily
+one-shot closeout command for a finished Codex, Claude Code, Cursor, or generic
+agent report. It reuses `ingest-session`, optionally reuses
+`verify-extraction` with `--verify`, and optionally renders the existing
+handoff packet with `--handoff-to generic|codex-cli|claude-code|cursor`:
+
+```bash
+opencobalt missions close-session MISSION_ID --file report.txt --verify --handoff-to codex-cli
+opencobalt missions close-session MISSION_ID --file report.txt --verify
+opencobalt missions close-session MISSION_ID --file report.txt --handoff-to claude-code
+opencobalt missions close-session MISSION_ID --file report.txt --handoff-to cursor
+```
+
+The command prints the mission id, extraction id, verification id when
+verification runs, verification status and warning count, `opencobalt continue`
+and `opencobalt handoff` commands, and the requested handoff packet when
+`--handoff-to` is provided. Unsupported handoff targets are rejected before a
+new extraction is attached.
+
+`close-session` is local and deterministic. It does not make live model calls,
+does not call the network, does not execute agents or runtime adapters, does
+not create receipts, does not grant authority, and does not persist raw report
+text. Mission state is continuity context, not unquestionable truth; future
+agents still need to inspect local repo evidence and review verifier warnings.
 
 `opencobalt continue MISSION_ID` reconstructs a compact context package:
 

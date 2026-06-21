@@ -38,6 +38,17 @@ Run:
 .venv/bin/opencobalt demo cold-resume
 ```
 
+Daily closeout for a real finished agent report uses the same local primitives
+without the built-in demo fixture:
+
+```bash
+.venv/bin/opencobalt missions close-session MISSION_ID --file report.txt --verify --handoff-to codex-cli
+```
+
+`close-session` creates the extraction, creates a verification when `--verify`
+is passed, and prints the `continue` and `handoff` commands. With
+`--handoff-to`, it also prints the target-specific handoff packet.
+
 Optional target-specific variants:
 
 ```bash
@@ -94,6 +105,9 @@ the created mission:
   spend, message, touch secrets, or perform irreversible actions.
 - It does not prove that every extracted claim is true; verifier warnings and
   low confidence must still be reviewed against repository evidence.
+- `close-session` follows the same boundaries: it is local and deterministic,
+  does not persist raw report text, does not call live models, does not execute
+  runtime adapters, and does not turn mission state into authority.
 
 ## Safety boundary
 

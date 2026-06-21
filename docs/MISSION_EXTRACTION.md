@@ -8,6 +8,7 @@ immediate demo target is cold resume:
 
 ```
 session output -> mission extraction -> structured mission state -> SQLite
+               -> opencobalt missions close-session MISSION_ID --file report.txt
                -> opencobalt continue MISSION_ID -> next session resumes
                -> opencobalt handoff MISSION_ID --to codex-cli -> cold agent resumes
                -> opencobalt demo cold-resume -> local wedge demo
@@ -27,6 +28,8 @@ session output -> mission extraction -> structured mission state -> SQLite
 - `mission.extraction_verified` mission events.
 - `missions show`, `missions why`, and generic `why mex-...` / `why mver-...`
   visibility.
+- `opencobalt missions close-session MISSION_ID --file PATH` as the one-shot
+  local closeout command for finished agent reports.
 - `opencobalt continue MISSION_ID` cold-resume context packages.
 - `opencobalt handoff MISSION_ID --to TARGET` prompt packets for `generic`,
   `codex-cli`, `claude-code`, and `cursor`.
@@ -39,6 +42,9 @@ session output -> mission extraction -> structured mission state -> SQLite
 opencobalt missions ingest-session MISSION_ID --file path/to/session.txt
 opencobalt missions attach-extraction MISSION_ID --json path/to/extraction.json
 opencobalt missions verify-extraction MISSION_ID --source-file path/to/report.txt
+opencobalt missions close-session MISSION_ID --file path/to/report.txt
+opencobalt missions close-session MISSION_ID --file path/to/report.txt --verify
+opencobalt missions close-session MISSION_ID --file path/to/report.txt --verify --handoff-to codex-cli
 opencobalt missions show MISSION_ID
 opencobalt missions why MISSION_ID
 opencobalt continue MISSION_ID
@@ -68,6 +74,27 @@ artifacts, suspicious prompt-injection lines, and redacted token-shaped source
 content. The verifier stores compact metadata only: support status, confidence
 after verification, warning text, redaction metadata, prompt-injection counts,
 ids, and timestamps. It does not persist raw source reports.
+
+`close-session` turns the manual ingest -> verify -> continue -> handoff
+workflow into one local command for real final reports:
+
+```bash
+opencobalt missions close-session MISSION_ID --file report.txt --verify --handoff-to codex-cli
+```
+
+It reuses the same deterministic local extractor and verifier described above.
+When `--verify` is present, the newly attached extraction is verified against
+the same source file. When `--handoff-to` is present, the command prints the
+existing target-specific handoff packet for `generic`, `codex-cli`,
+`claude-code`, or `cursor`. Unsupported targets are rejected.
+
+The command prints the mission id, extraction id, verification id when present,
+verification status and warnings, `opencobalt continue MISSION_ID`, and
+`opencobalt handoff MISSION_ID --to TARGET`. It does not persist raw report
+text, call live models, call the network, execute agents, invoke runtime
+adapters, create fake receipts, or grant authority. Report text is data, not
+instructions, and mission state remains continuity context rather than
+unquestionable truth.
 
 `demo cold-resume` creates a local mission, ingests a built-in sanitized
 old-agent report fixture, verifies the resulting extraction, and prints
@@ -263,6 +290,9 @@ per extraction, and append-only. `missions show`, `missions why`, generic
 - The raw session transcript or raw agent report is not persisted by
   `ingest-session`.
 - The raw source report is not persisted by `verify-extraction`.
+- The raw report is not persisted by `close-session`.
+- `close-session` does not call live models, execute agents, execute runtime
+  adapters, call the network, create fake receipts, or grant authority.
 - Low confidence stays visible in `show`, `why`, `continue`, and `handoff`.
 - Unverified or warning-bearing extractions stay visible in `show`, `why`, and
   `continue` and `handoff`.

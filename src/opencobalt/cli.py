@@ -4700,6 +4700,59 @@ def _print_mission_verification_summary(record) -> None:
         console.print(f"    warning: {warning}", markup=False, highlight=False)
 
 
+def _render_close_session_output(
+    *,
+    mission,
+    extraction_record,
+    verification_record=None,
+    handoff_target: str,
+    handoff_output: str | None = None,
+) -> str:
+    lines = [
+        "Mission session closed.",
+        "",
+        f"Mission: {mission.mission_id}",
+        f"Extraction: {extraction_record.extraction_id}",
+    ]
+
+    if verification_record is not None:
+        verification = verification_record.verification
+        lines.extend(
+            [
+                (
+                    f"Verification: {verification_record.verification_id} "
+                    f"{verification.status}"
+                ),
+                f"Verification status: {verification.status}",
+                f"Verification warnings: {len(verification.warnings)}",
+            ]
+        )
+        for warning in verification.warnings[:5]:
+            lines.append(f"- {warning}")
+
+    lines.extend(
+        [
+            "",
+            "Cold resume:",
+            f"opencobalt continue {mission.mission_id}",
+            "",
+            "Handoff:",
+            f"opencobalt handoff {mission.mission_id} --to {handoff_target}",
+        ]
+    )
+
+    if handoff_output is not None:
+        lines.extend(
+            [
+                "",
+                f"Handoff packet ({handoff_target}):",
+                handoff_output,
+            ]
+        )
+
+    return "\n".join(lines)
+
+
 def _mission_next_action(mission, steps) -> str | None:
     mid = mission.mission_id[:13]
     if mission.mission_type == "auto":
@@ -5340,6 +5393,87 @@ def missions_verify_extraction(
         console.print(f"    warning: {warning}", markup=False, highlight=False)
     console.print(
         f"\n  [dim]Continue:[/dim]  opencobalt continue {record.mission_id[:13]}\n",
+        highlight=False,
+    )
+
+
+@missions_app.command("close-session")
+def missions_close_session(
+    mission_id: str = typer.Argument(..., help="Mission id (full or prefix)"),
+    file: Path = typer.Option(
+        ...,
+        "--file",
+        help="Finished local agent report to close into mission memory",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+    ),
+    verify: bool = typer.Option(
+        False,
+        "--verify",
+        help="Verify the new extraction against the same local report",
+    ),
+    handoff_to: str | None = typer.Option(
+        None,
+        "--handoff-to",
+        help="Print a handoff packet for: generic, codex-cli, claude-code, cursor",
+    ),
+) -> None:
+    """Close a finished local agent report into durable mission memory.
+
+    This is a deterministic local composition of session ingest, optional
+    extraction verification, and optional handoff rendering. It does not call
+    live models, execute agents, launch runtime adapters, or persist raw report
+    text.
+    """
+    from pydantic import ValidationError
+
+    from .core.mission_engine import MissionError
+
+    try:
+        target = normalize_handoff_target(handoff_to or "generic")
+    except MissionHandoffTargetError as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    engine = _mission_engine()
+    try:
+        extraction_record = engine.ingest_session_file(mission_id, file)
+        mission = engine.store.get_mission(extraction_record.mission_id)
+        if mission is None:
+            raise MissionError(f"unknown mission: {extraction_record.mission_id}")
+        verification_record = (
+            engine.verify_extraction(
+                extraction_record.mission_id,
+                source_file=file,
+                extraction_id=extraction_record.extraction_id,
+            )
+            if verify
+            else None
+        )
+    except (KeyError, MissionError, OSError, ValidationError, ValueError) as exc:
+        err.print(f"  [red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    handoff_output = (
+        render_mission_handoff(
+            mission=mission,
+            target=target,
+            extraction_record=extraction_record,
+            verification_record=verification_record,
+        )
+        if handoff_to is not None
+        else None
+    )
+    console.print(
+        _render_close_session_output(
+            mission=mission,
+            extraction_record=extraction_record,
+            verification_record=verification_record,
+            handoff_target=target,
+            handoff_output=handoff_output,
+        ),
+        markup=False,
         highlight=False,
     )
 
