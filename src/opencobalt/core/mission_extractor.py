@@ -13,11 +13,11 @@ import re
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from opencobalt.execution.runner import redact_text
 
-MISSION_EXTRACTION_SCHEMA_VERSION = 1
+MISSION_EXTRACTION_SCHEMA_VERSION = 2
 
 MissionExtractionStatus = Literal["active", "blocked", "completed", "abandoned", "unknown"]
 MissionExtractionConfidenceLevel = Literal["high", "medium", "low"]
@@ -34,6 +34,8 @@ Rules:
 - Do not infer success from optimistic wording alone.
 - Preserve concrete file paths exactly when available.
 - Preserve concrete artifact identifiers exactly when available.
+- Separate source-mentioned prior mission/extraction/verification ids from
+  current mission state and implementation artifacts when possible.
 - Decisions are choices that were actually made, not recommendations.
 - Findings are discovered facts supported by the session.
 - Assumptions are beliefs used by the agent that may not be proven.
@@ -59,6 +61,7 @@ class MissionExtractionConfidence(BaseModel):
     open_questions: MissionExtractionConfidenceLevel
     next_actions: MissionExtractionConfidenceLevel
     files_touched: MissionExtractionConfidenceLevel
+    source_references: MissionExtractionConfidenceLevel = "low"
     artifacts: MissionExtractionConfidenceLevel
     risks: MissionExtractionConfidenceLevel
     overall: MissionExtractionConfidenceLevel
@@ -77,6 +80,7 @@ class MissionExtraction(BaseModel):
     open_questions: list[str]
     next_actions: list[str]
     files_touched: list[str]
+    source_references: list[str] = Field(default_factory=list)
     artifacts: list[str]
     risks: list[str]
     confidence: MissionExtractionConfidence
@@ -101,6 +105,7 @@ class DeterministicMissionExtractor:
             "open_questions": [],
             "next_actions": [],
             "files_touched": [],
+            "source_references": [],
             "artifacts": [],
             "risks": [],
         }
@@ -130,10 +135,20 @@ class DeterministicMissionExtractor:
             redacted = _redact_value(value)
             if not redacted:
                 return
-            fields[field].append(redacted)
+            references = _extract_source_reference_ids(redacted)
+            stored_value = (
+                _replace_source_reference_ids(redacted)
+                if field != "source_references"
+                else redacted
+            )
+            fields[field].append(stored_value)
             mark(field, level)
-            if field != "artifacts":
-                for artifact in _extract_artifact_ids(redacted):
+            if field != "source_references":
+                for reference in references:
+                    fields["source_references"].append(reference)
+                    mark("source_references", level)
+            if field not in {"artifacts", "source_references"}:
+                for artifact in _extract_artifact_ids(stored_value):
                     fields["artifacts"].append(artifact)
                     mark("artifacts", level)
 
@@ -206,6 +221,11 @@ class DeterministicMissionExtractor:
                 "schema_added",
                 "persistence_behavior",
                 "cold_resume_behavior",
+                "cli_behavior",
+                "close_session_behavior",
+                "verification_behavior",
+                "handoff_behavior",
+                "safety_behavior",
                 "manual_smoke",
                 "safety_findings",
                 "tests_added",
@@ -296,12 +316,31 @@ class DeterministicMissionExtractor:
             files_touched=_confidence_for(
                 "files_touched", direct, medium, inferred, bool(fields["files_touched"])
             ),
+            source_references=_confidence_for(
+                "source_references",
+                direct,
+                medium,
+                inferred,
+                bool(fields["source_references"]),
+            ),
             artifacts=_confidence_for(
                 "artifacts", direct, medium, inferred, bool(fields["artifacts"])
             ),
             risks=_confidence_for("risks", direct, medium, inferred, bool(fields["risks"])),
             overall=_overall_confidence(direct, medium),
         )
+        source_references = _dedupe(fields["source_references"])
+        reference_fragments = {
+            reference.split("-", 1)[1]
+            for reference in source_references
+            if "-" in reference
+        }
+        artifacts = [
+            artifact
+            for artifact in _dedupe(fields["artifacts"])
+            if artifact not in source_references and artifact not in reference_fragments
+        ]
+
         return MissionExtraction(
             goal=goal,
             status=status,
@@ -311,7 +350,8 @@ class DeterministicMissionExtractor:
             open_questions=_dedupe(fields["open_questions"]),
             next_actions=_dedupe(fields["next_actions"]),
             files_touched=_dedupe(fields["files_touched"]),
-            artifacts=_dedupe(fields["artifacts"]),
+            source_references=source_references,
+            artifacts=artifacts,
             risks=_dedupe(fields["risks"]),
             confidence=confidence,
         )
@@ -396,6 +436,11 @@ def _normalize_report_section(label: str) -> str | None:
         "persistence behavior": "persistence_behavior",
         "cold resume behavior": "cold_resume_behavior",
         "cold-resume behavior": "cold_resume_behavior",
+        "cli behavior": "cli_behavior",
+        "close session behavior": "close_session_behavior",
+        "verification behavior": "verification_behavior",
+        "handoff behavior": "handoff_behavior",
+        "safety behavior": "safety_behavior",
         "manual smoke": "manual_smoke",
         "safety findings": "safety_findings",
         "known limitations": "known_limitations",
@@ -426,6 +471,11 @@ def _report_section_title(section: str) -> str:
         "schema_added": "Schema added",
         "persistence_behavior": "Persistence behavior",
         "cold_resume_behavior": "Cold-resume behavior",
+        "cli_behavior": "CLI behavior",
+        "close_session_behavior": "Close-session behavior",
+        "verification_behavior": "Verification behavior",
+        "handoff_behavior": "Handoff behavior",
+        "safety_behavior": "Safety behavior",
         "manual_smoke": "Manual smoke",
         "safety_findings": "Safety findings",
         "tests_added": "Tests added",
@@ -487,16 +537,43 @@ def _redact_value(value: str) -> str:
 
 
 def _extract_artifact_ids(value: str) -> list[str]:
+    artifact_text = _without_source_reference_ids(value)
     patterns = (
         r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+",
         r"\b[0-9a-f]{7,40}\b",
-        r"\b(?:mis|mex|mev|mstp|apr|aplan|oplan|orun|run|trk|cand|rcpt)-[A-Za-z0-9_-]{6,}\b",
+        r"\b(?:mev|mstp|apr|aplan|oplan|orun|run|trk|cand|rcpt)-[A-Za-z0-9_-]{6,}\b",
         r"\b\d+\s+passed,\s+\d+\s+warnings?\b",
     )
     artifacts: list[str] = []
     for pattern in patterns:
-        artifacts.extend(match.group(0) for match in re.finditer(pattern, value))
+        artifacts.extend(match.group(0) for match in re.finditer(pattern, artifact_text))
     return _dedupe(artifacts)
+
+
+def _extract_source_reference_ids(value: str) -> list[str]:
+    return _dedupe(
+        match.group(0)
+        for match in re.finditer(
+            r"\b(?:mis|mex|mver)-[A-Za-z0-9_-]{6,}\b",
+            value,
+        )
+    )
+
+
+def _without_source_reference_ids(value: str) -> str:
+    return re.sub(
+        r"\b(?:mis|mex|mver)-[A-Za-z0-9_-]{6,}\b",
+        " ",
+        value,
+    )
+
+
+def _replace_source_reference_ids(value: str) -> str:
+    return re.sub(
+        r"\b(?:mis|mex|mver)-[A-Za-z0-9_-]{6,}\b",
+        "<source-reference>",
+        value,
+    )
 
 
 def _verification_supports_completion(

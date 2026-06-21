@@ -111,6 +111,7 @@ The settled v0 schema contains:
 - open questions
 - next actions
 - files touched
+- source references
 - artifacts
 - risks
 - confidence for every field plus overall confidence
@@ -121,7 +122,10 @@ emits `mission.extraction_attached`. It accepts hand-labeled snippets plus
 plain text, Markdown, and agent-style bullet final reports. Common real-session
 sections such as branch, base branch/SHA, final verification, worktree, local
 commit, summary, safety findings, known limitations, files changed, tests
-added, and next recommendation are mapped into the extraction schema. It
+added, behavior sections, and next recommendation are mapped into the
+extraction schema. It separates implementation artifacts such as branch names,
+commit SHAs, file paths, and test counts from source-mentioned prior-run
+`mis-...`, `mex-...`, and `mver-...` references. It
 performs no network calls, no model calls, no subprocess execution, and no raw
 transcript or raw report persistence.
 
@@ -203,8 +207,8 @@ packet for a fresh agent session. Supported targets are `generic`, `codex-cli`,
 `claude-code`, and `cursor`. The packet includes the sentinel line, mission
 state, latest extraction and verification ids, verifier warnings, findings,
 decisions, assumptions, open questions, risks, files touched, artifacts, next
-actions, confidence, safety boundaries, continuation instructions, and required
-first commands:
+actions, source-mentioned references, confidence, safety boundaries,
+continuation instructions, and required first commands:
 
 ```
 git status -sb
@@ -220,6 +224,11 @@ is unverified, verifier warnings exist, or confidence is low. Target-specific
 wording emphasizes repository-first and test-first behavior for `codex-cli`,
 architecture and safety review for `claude-code`, editor-oriented review and
 planning for `cursor`, and neutral continuation for `generic`.
+
+Current mission, extraction, and verification ids come from the active mission
+state and remain prominent. Historical smoke/example `mis-...`, `mex-...`, and
+`mver-...` ids found inside source reports are shown only as source-mentioned
+references, not top-level implementation artifacts.
 
 Handoff packets are prompts, not authority grants. They do not execute agents,
 call runtime adapters, start subprocesses, call the network, create receipts,

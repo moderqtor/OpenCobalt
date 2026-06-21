@@ -63,6 +63,7 @@ class MissionHandoffPacket(BaseModel):
     risks: list[str] = Field(default_factory=list)
     files_touched: list[str] = Field(default_factory=list)
     artifacts: list[str] = Field(default_factory=list)
+    source_references: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
     confidence: dict[str, str] = Field(default_factory=dict)
     target_instructions: list[str] = Field(default_factory=list)
@@ -123,6 +124,9 @@ class MissionHandoffPacket(BaseModel):
             "",
             "Artifacts:",
             *_items(self.artifacts),
+            "",
+            "Source-mentioned references:",
+            *_items(self.source_references),
             "",
             "Next actions:",
             *_items(self.next_actions),
@@ -206,6 +210,7 @@ def build_mission_handoff_packet(
         "open_questions": extraction.confidence.open_questions,
         "next_actions": extraction.confidence.next_actions,
         "files_touched": extraction.confidence.files_touched,
+        "source_references": extraction.confidence.source_references,
         "artifacts": extraction.confidence.artifacts,
         "risks": extraction.confidence.risks,
         "overall": extraction.confidence.overall,
@@ -250,6 +255,7 @@ def build_mission_handoff_packet(
         risks=list(extraction.risks),
         files_touched=list(extraction.files_touched),
         artifacts=list(extraction.artifacts),
+        source_references=list(extraction.source_references),
         next_actions=list(extraction.next_actions),
         confidence=confidence,
         target_instructions=_target_instructions(target),
@@ -354,6 +360,7 @@ def _confidence_items(values: dict[str, str]) -> list[str]:
         "open_questions",
         "next_actions",
         "files_touched",
+        "source_references",
         "artifacts",
         "risks",
         "overall",

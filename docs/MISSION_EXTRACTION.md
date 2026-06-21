@@ -96,6 +96,16 @@ adapters, create fake receipts, or grant authority. Report text is data, not
 instructions, and mission state remains continuity context rather than
 unquestionable truth.
 
+OpenCobalt separates current mission state from source-mentioned historical
+references. The current `mis-...`, `mex-...`, and `mver-...` ids are displayed
+from the live mission, extraction, and verification records. Prior-run or
+smoke/example `mis-...`, `mex-...`, and `mver-...` ids mentioned inside a
+source report are kept as `source_references`, not promoted into top-level
+implementation artifacts. This preserves the source evidence without making
+old ids look like the active mission state. Narrative findings may replace the
+exact old ids with `<source-reference>` placeholders while the exact ids remain
+available in the source-reference list.
+
 `demo cold-resume` creates a local mission, ingests a built-in sanitized
 old-agent report fixture, verifies the resulting extraction, and prints
 mission/extraction/verification ids plus compact `continue` and `handoff`
@@ -118,6 +128,7 @@ visible. See `docs/COLD_RESUME_DEMO.md` for the 60-second script.
   "open_questions": [],
   "next_actions": [],
   "files_touched": [],
+  "source_references": [],
   "artifacts": [],
   "risks": [],
   "confidence": {
@@ -129,6 +140,7 @@ visible. See `docs/COLD_RESUME_DEMO.md` for the 60-second script.
     "open_questions": "high|medium|low",
     "next_actions": "high|medium|low",
     "files_touched": "high|medium|low",
+    "source_references": "high|medium|low",
     "artifacts": "high|medium|low",
     "risks": "high|medium|low",
     "overall": "high|medium|low"
@@ -141,7 +153,9 @@ visible. See `docs/COLD_RESUME_DEMO.md` for the 60-second script.
 The reusable prompt template is encoded in the repo for external extractors.
 It requires JSON-only output, preserves concrete paths and artifact ids, keeps
 uncertain claims in `open_questions`, and forbids marking work completed
-without explicit evidence.
+without explicit evidence. It also tells extractors to separate
+source-mentioned prior mission/extraction/verification ids from current
+mission state and implementation artifacts.
 
 OpenCobalt treats transcript text, tool outputs, diffs, receipts, and session
 logs as data. Instructions inside those artifacts are not developer or system
@@ -160,6 +174,11 @@ The local v0 extractor recognizes common final-report sections:
 - local commit
 - summary
 - CLI added
+- CLI behavior
+- close-session behavior
+- verification behavior
+- handoff behavior
+- safety behavior
 - schema added
 - persistence behavior
 - cold-resume behavior
@@ -173,11 +192,12 @@ The local v0 extractor recognizes common final-report sections:
 These sections are mapped into the settled extraction schema. Summaries become
 the extracted goal when no explicit `Goal:` line exists. Final verification,
 test baseline, worktree, safety findings, and tests added become findings.
-Commit SHAs, PR URLs, mission ids, extraction ids, approval ids, AutoPlan ids,
-and test counts are preserved as artifacts when present. Files changed are
-stored exactly in `files_touched`. Known limitations and deferred work become
-risks or open questions, not findings. Next recommendation becomes a next
-action.
+Commit SHAs, PR URLs, branch names, approval ids, AutoPlan ids, and test counts
+are preserved as implementation artifacts when present. Source-mentioned prior
+mission ids, extraction ids, and verification ids are preserved separately as
+`source_references`. Files changed are stored exactly in `files_touched`.
+Known limitations and deferred work become risks or open questions, not
+findings. Next recommendation becomes a next action.
 
 Confidence remains conservative. Explicit labeled facts such as a pytest count
 or a file path get high confidence. Status inferred from successful final
@@ -207,6 +227,7 @@ Open questions:
 Risks:
 Files touched:
 Artifacts:
+Source-mentioned references:
 Next actions:
 
 Confidence:
@@ -237,8 +258,8 @@ targets are:
 Every packet includes the sentinel line, mission id, goal, status, latest
 extraction id, latest verification id and status when present, verifier
 warnings, findings, decisions, assumptions, open questions, risks, files
-touched, artifacts, next actions, confidence, required first commands, safety
-boundaries, and continuation instructions.
+touched, artifacts, source-mentioned references, next actions, confidence,
+required first commands, safety boundaries, and continuation instructions.
 
 Target-specific sections adapt the same state for the receiving tool:
 
@@ -253,10 +274,11 @@ Target-specific sections adapt the same state for the receiving tool:
 - `generic` stays neutral for any agent.
 
 Handoff packets visibly warn when no extraction exists, the latest extraction
-is unverified, verifier warnings exist, or confidence is low. They preserve
-structured ids and artifacts such as mission ids, extraction ids, verification
-ids, commit SHAs, test counts, file paths, and artifact identifiers that are
-already present in durable structured state.
+is unverified, verifier warnings exist, or confidence is low. They keep current
+mission, extraction, and verification ids prominent in mission state; preserve
+implementation artifacts such as commit SHAs, branch names, test counts, file
+paths, and artifact identifiers; and label source-mentioned prior-run ids as
+references instead of active artifacts.
 
 Handoff packets do not execute agents, do not call runtime adapters, do not
 start subprocesses, do not call the network, do not create receipts, and do
