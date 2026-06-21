@@ -4,7 +4,57 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-OpenCobalt is a local-first control and provenance layer for AI work. It routes across agent runtimes, records verifiable work receipts, preserves project memory, and enforces policy across tools such as Google Antigravity CLI, Claude Code, Codex, Aider, and Ollama.
+Agents come and go. Models change. Sessions die. OpenCobalt remembers.
+
+OpenCobalt is local-first infrastructure that turns ephemeral AI-agent work into durable, verified mission memory.
+
+OpenCobalt converts ephemeral agent work into durable mission intelligence.
+
+OpenCobalt lets AI coding sessions remember what happened, so a fresh agent can pick up where the last one stopped.
+
+The current wedge is cold resume: OpenCobalt can ingest an old agent report, extract structured mission state, verify it, and generate a handoff packet so a fresh agent can continue without the original chat history.
+
+OpenCobalt does not train models or replace coding agents. It operates at inference time as a local mission memory and handoff layer: extracting structured state from agent reports, verifying it against source output, and generating target-specific continuation packets for future agents.
+
+## Cold Resume Demo
+
+Run the deterministic local demo:
+
+```bash
+opencobalt demo cold-resume --target codex-cli
+```
+
+Other handoff targets:
+
+```bash
+opencobalt demo cold-resume --target generic
+opencobalt demo cold-resume --target claude-code
+opencobalt demo cold-resume --target cursor
+```
+
+The demo prints a mission id, extraction id, verification id, safety checks, a cold-resume command, and a handoff command. A typical run shows:
+
+- `Created mission: mis-...`
+- `Attached extraction: mex-...`
+- `Verified extraction: mver-...`
+- `opencobalt continue MISSION_ID`
+- `opencobalt handoff MISSION_ID --to codex-cli`
+
+This proves local durable mission memory, deterministic extraction, verification, warning visibility, and copy-paste handoff generation. Mission state is useful continuity context, not unquestionable truth.
+
+This demo does not call a live model, launch an agent, or grant authority. It demonstrates local durable memory, verification, and handoff.
+
+It also does not train models, improve model weights, execute repository changes, create execution receipts, or grant permission to push, merge, deploy, publish, spend, message, touch secrets, or perform irreversible actions.
+
+Deeper demo material:
+
+- [Cold resume demo guide](docs/COLD_RESUME_DEMO.md)
+- [Cold resume video script](docs/COLD_RESUME_VIDEO_SCRIPT.md)
+- [Sanitized terminal transcript](docs/assets/cold-resume-demo-transcript.txt)
+- [Expected output guide](docs/assets/cold-resume-demo-output.md)
+- [Recording checklist](docs/assets/cold-resume-recording-checklist.md)
+
+Beyond cold resume, OpenCobalt is a local-first control and provenance layer for AI work. It routes across agent runtimes, records verifiable work receipts, preserves project memory, and enforces policy across tools such as Google Antigravity CLI, Claude Code, Codex, Aider, and Ollama.
 
 It is not a chatbot, hosted service, or API proxy. The default configuration makes no API calls. Ollama and external CLI tools are optional and degrade gracefully when unavailable. OpenCobalt supports routing, diagnostics, audit logging, integration discovery, and receipt-backed execution: policy-gated one-shot runs that capture output, hash artifacts, and write verifiable work receipts (see `docs/EXECUTION_LAYER.md`).
 
