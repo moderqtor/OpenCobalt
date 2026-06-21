@@ -56,6 +56,7 @@ This uses the same local extraction, verification, and handoff paths. Mission st
 
 Deeper demo material:
 
+- [Founder feedback packet](docs/FOUNDER_FEEDBACK_PACKET.md)
 - [Cold resume demo guide](docs/COLD_RESUME_DEMO.md)
 - [Cold resume video script](docs/COLD_RESUME_VIDEO_SCRIPT.md)
 - [Sanitized terminal transcript](docs/assets/cold-resume-demo-transcript.txt)
