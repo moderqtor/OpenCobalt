@@ -156,11 +156,12 @@ class DeterministicMissionExtractor:
             for item in _split_values(value):
                 add_list_value("files_touched", item)
 
-        def add_limitation(value: str) -> None:
+        def add_limitation(value: str, *, title: str = "Known limitations") -> None:
+            labeled_value = f"{title}: {value}"
             if _looks_uncertain(value):
-                add_list_value("open_questions", value)
+                add_list_value("open_questions", labeled_value)
             else:
-                add_list_value("risks", value)
+                add_list_value("risks", labeled_value)
 
         def handle_core_label(normalized: str, value: str) -> None:
             nonlocal goal, status
@@ -188,6 +189,10 @@ class DeterministicMissionExtractor:
             nonlocal goal, status, worktree_clean, completion_state_seen
             value = _redact_value(value)
             if not value:
+                return
+            if general := _general_report_section(section):
+                field, title = general
+                add_list_value(field, f"{title}: {value}")
                 return
             if section == "branch":
                 add_list_value("findings", f"Branch: {value}")
@@ -232,7 +237,7 @@ class DeterministicMissionExtractor:
             }:
                 add_list_value("findings", f"{_report_section_title(section)}: {value}")
             elif section in {"known_limitations", "deferred"}:
-                add_limitation(value)
+                add_limitation(value, title=_report_section_title(section))
             elif section == "files_changed":
                 add_files(value)
             elif section == "next_recommendation":
@@ -409,7 +414,7 @@ def _normalize_label(label: str) -> str | None:
 
 def _normalize_report_section(label: str) -> str | None:
     normalized = _normalize_key(label)
-    return {
+    known_section = {
         "branch": "branch",
         "base": "base_branch_sha",
         "base branch": "base_branch_sha",
@@ -417,7 +422,9 @@ def _normalize_report_section(label: str) -> str | None:
         "base branch sha": "base_branch_sha",
         "base branch and sha": "base_branch_sha",
         "test baseline": "test_baseline",
+        "test baseline before changes": "test_baseline",
         "baseline": "test_baseline",
+        "baseline before changes": "test_baseline",
         "final verification": "final_verification",
         "verification": "final_verification",
         "final reported": "final_verification",
@@ -455,6 +462,12 @@ def _normalize_report_section(label: str) -> str | None:
         "open questions": "open_questions",
         "risks": "risks",
     }.get(normalized)
+    if known_section:
+        return known_section
+    general_field = _general_report_section_field(normalized)
+    if general_field:
+        return _make_general_report_section(general_field, _human_report_label(label))
+    return None
 
 
 def _normalize_key(value: str) -> str:
@@ -478,8 +491,40 @@ def _report_section_title(section: str) -> str:
         "safety_behavior": "Safety behavior",
         "manual_smoke": "Manual smoke",
         "safety_findings": "Safety findings",
+        "known_limitations": "Known limitations",
         "tests_added": "Tests added",
     }.get(section, section.replace("_", " ").title())
+
+
+def _make_general_report_section(field: str, title: str) -> str:
+    return f"general::{field}::{title}"
+
+
+def _general_report_section(section: str) -> tuple[str, str] | None:
+    prefix = "general::"
+    if not section.startswith(prefix):
+        return None
+    try:
+        _, field, title = section.split("::", 2)
+    except ValueError:
+        return None
+    if field not in {"findings", "risks", "open_questions", "next_actions"}:
+        return None
+    return field, title
+
+
+def _general_report_section_field(normalized: str) -> str | None:
+    if normalized in {"pain points", "pain point"}:
+        return "risks"
+    if normalized in {"most important missing feature", "missing feature"}:
+        return "open_questions"
+    if normalized.endswith((" behavior", " quality", " findings")):
+        return "findings"
+    return None
+
+
+def _human_report_label(label: str) -> str:
+    return " ".join(label.strip().split())
 
 
 def _explicit_status_from_report(
