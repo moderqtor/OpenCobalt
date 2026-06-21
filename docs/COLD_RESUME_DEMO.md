@@ -18,6 +18,9 @@ ingests a built-in old-agent report fixture, verifies the extraction against
 that report, and prints compact cold-resume and handoff previews. It does not
 launch Codex, Claude, Cursor, or any other runtime.
 
+For a polished 60 to 120 second screen-recording outline, see
+[Cold Resume Video Script v0](COLD_RESUME_VIDEO_SCRIPT.md).
+
 ## 60-second script
 
 Run:

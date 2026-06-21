@@ -109,6 +109,12 @@ and single-pass extraction. It supports:
   old-agent report ingest, extraction, verification, handoff, and continue
   output.
 
+Founder/user-facing recording guidance for this wedge lives in
+`docs/COLD_RESUME_VIDEO_SCRIPT.md`. The demo material must stay clear that
+OpenCobalt converts ephemeral agent work into durable mission intelligence,
+and that the demo does not call a live model, launch an agent, or grant
+authority.
+
 The default v0 extractor is deterministic and local. It handles hand-labeled
 session snippets and common real agent final-report sections such as branch,
 base branch/SHA, final verification, worktree, local commit, summary, safety
