@@ -46,6 +46,14 @@ This demo does not call a live model, launch an agent, or grant authority. It de
 
 It also does not train models, improve model weights, execute repository changes, create execution receipts, or grant permission to push, merge, deploy, publish, spend, message, touch secrets, or perform irreversible actions.
 
+For daily closeout from a real finished agent report:
+
+```bash
+opencobalt missions close-session MISSION_ID --file report.txt --verify --handoff-to codex-cli
+```
+
+This uses the same local extraction, verification, and handoff paths. Mission state is continuity context, not unquestionable truth.
+
 Deeper demo material:
 
 - [Cold resume demo guide](docs/COLD_RESUME_DEMO.md)
