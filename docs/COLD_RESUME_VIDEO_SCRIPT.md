@@ -11,6 +11,12 @@ local cold-resume demo. The recording should show the product wedge without
 claiming live model execution, agent launch, or training-time model
 improvements.
 
+Companion assets:
+
+- [Sanitized terminal transcript](assets/cold-resume-demo-transcript.txt)
+- [Expected output guide](assets/cold-resume-demo-output.md)
+- [Recording checklist](assets/cold-resume-recording-checklist.md)
+
 ## Positioning
 
 Founder-facing one-liner:
