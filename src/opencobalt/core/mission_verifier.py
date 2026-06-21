@@ -21,10 +21,12 @@ from .mission_extractor import (
     _clean_line,
     _dedupe,
     _extract_artifact_ids,
+    _extract_source_reference_ids,
     _looks_instruction_injection,
     _markdown_heading,
     _normalize_report_section,
     _split_label,
+    _without_source_reference_ids,
 )
 
 MissionVerificationSupport = Literal["direct", "partial", "missing"]
@@ -39,6 +41,7 @@ _FIELDS = (
     "open_questions",
     "next_actions",
     "files_touched",
+    "source_references",
     "artifacts",
     "risks",
     "confidence",
@@ -95,6 +98,7 @@ class DeterministicMissionExtractionVerifier:
             "open_questions",
             "next_actions",
             "files_touched",
+            "source_references",
             "artifacts",
             "risks",
         ):
@@ -174,6 +178,7 @@ class DeterministicMissionExtractionVerifier:
                     "assumptions",
                     "next_actions",
                     "files_touched",
+                    "source_references",
                     "artifacts",
                     "risks",
                 }:
@@ -307,6 +312,9 @@ class _PreparedSource:
         artifacts = _extract_artifact_ids(value)
         if artifacts and any(artifact in self.redacted_text for artifact in artifacts):
             return "direct"
+        references = _extract_source_reference_ids(value)
+        if references and any(reference in self.redacted_text for reference in references):
+            return "direct"
         tokens = [token for token in normalized.split() if len(token) >= 4]
         if len(tokens) >= 4:
             hits = sum(1 for token in tokens if token in self.normalized_support_text)
@@ -391,7 +399,9 @@ def _any_extraction_value_contains(needle: str, values: list[str]) -> bool:
 
 
 def _commit_shas(text: str) -> list[str]:
-    return _dedupe(re.findall(r"\b[0-9a-f]{7,40}\b", text))
+    return _dedupe(
+        re.findall(r"\b[0-9a-f]{7,40}\b", _without_source_reference_ids(text))
+    )
 
 
 def _test_counts(text: str) -> list[str]:

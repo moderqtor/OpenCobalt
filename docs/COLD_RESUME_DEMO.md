@@ -86,6 +86,8 @@ the created mission:
 - A prior agent-style report can become durable structured mission state.
 - Extraction and verification are attached as `mex-...` and `mver-...`
   records in the local mission store.
+- Current mission/extraction/verification ids are separated from historical or
+  example ids mentioned inside the source report.
 - Verifier warnings remain visible in cold-resume and handoff previews.
 - The built-in report's injected instruction is treated as source data, not
   as authority.
