@@ -21,6 +21,15 @@ launch Codex, Claude, Cursor, or any other runtime.
 For a polished 60 to 120 second screen-recording outline, see
 [Cold Resume Video Script v0](COLD_RESUME_VIDEO_SCRIPT.md).
 
+Repo-safe demo assets:
+
+- [Sanitized terminal transcript](assets/cold-resume-demo-transcript.txt)
+- [Expected output guide](assets/cold-resume-demo-output.md)
+- [Recording checklist](assets/cold-resume-recording-checklist.md)
+
+The assets use fake-but-valid-looking ids and avoid local private data. They
+are explanatory examples, not receipts from a live run.
+
 ## 60-second script
 
 Run:

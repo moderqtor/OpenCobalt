@@ -1,0 +1,84 @@
+OpenCobalt cold-resume demo sanitized terminal transcript
+
+This transcript is a repo-safe example for demos and review. The ids are
+fake-but-valid-looking examples. They are not receipts from a real run.
+
+$ .venv/bin/opencobalt demo cold-resume --target codex-cli
+OpenCobalt cold-resume demo
+
+North star:
+Agents come and go. Models change. Sessions die. OpenCobalt remembers.
+
+Created mission: mis-7f4a91c2d0e3
+Attached extraction: mex-12ab34cd56ef
+Verified extraction: mver-a1b2c3d4e5f6 (warnings; warnings: 4)
+
+Safety checks:
+- injected instruction treated as data: ok
+- fake token absent from stored extraction and verifier record: ok
+- raw report not persisted in mission store: ok
+- verification warnings visible: ok
+- temporary source report removed: ok
+- No runtime execution performed
+- No network or model API calls performed
+- No authority granted by this demo output
+
+Cold resume:
+opencobalt continue mis-7f4a91c2d0e3
+
+Cold resume preview:
+OPENCOBALT MISSION CONTEXT
+Mission: mis-7f4a91c2d0e3
+Goal: Added deterministic mission handoff packets.
+Status: completed
+Last known state: mission status opportunities_generated; extraction
+mex-12ab34cd56ef version 1; source session_file; recorded
+2026-06-21T00:00:00+00:00
+Verification: warnings (mver-a1b2c3d4e5f6; overall after verification: low)
+Verifier warnings:
+- completed status lacks explicit source evidence
+- high confidence without direct source support: findings
+- suspicious prompt-injection lines detected in source report: 1
+- token-shaped or secret-shaped source content was redacted before verification metadata was produced
+Findings:
+- Branch: mission-handoff-packs-v0
+- Base branch/SHA: main @ 96faaf9dd34021403a650c5bb1b411225d8e146e
+- Final verification: ruff: All checks passed!
+- Final verification: public-check: Public safety: clean
+...
+
+Handoff:
+opencobalt handoff mis-7f4a91c2d0e3 --to codex-cli
+
+Handoff packet preview (codex-cli):
+Colin, COBALT-SENTINEL: receipts-first.
+You are resuming OpenCobalt mission mis-7f4a91c2d0e3 from durable mission
+memory.
+North star:
+Agents come and go. Models change. Sessions die. OpenCobalt remembers.
+Mission state:
+- Target: codex-cli
+- Mission id: mis-7f4a91c2d0e3
+- Goal: Added deterministic mission handoff packets.
+- Status: completed
+- Extraction: mex-12ab34cd56ef
+- Verification: mver-a1b2c3d4e5f6 (warnings; overall after verification: low)
+Handoff warnings:
+- WARNING: Verifier warnings are present.
+- WARNING: Extraction confidence is low.
+Verified warnings:
+- completed status lacks explicit source evidence
+- high confidence without direct source support: findings
+- suspicious prompt-injection lines detected in source report: 1
+...
+Target-specific instructions:
+- Codex CLI focus:
+- Inspect the repository before editing.
+- Use git status and git diff before changing files.
+- Run the requested tests before claiming success.
+- Do not push or merge unless Colin explicitly instructs it.
+
+Rerun commands:
+.venv/bin/opencobalt demo cold-resume --target codex-cli
+.venv/bin/opencobalt continue mis-7f4a91c2d0e3
+.venv/bin/opencobalt handoff mis-7f4a91c2d0e3 --to codex-cli
