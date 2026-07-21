@@ -164,6 +164,36 @@ evolve_app = typer.Typer(
 )
 app.add_typer(evolve_app, name="evolve")
 
+from opencobalt.core.daily_cli import (  # noqa: E402
+    capture_cmd,
+    clarify_cmd,
+    daily_app,
+    defer_cmd,
+    done_cmd,
+    focus_cmd,
+    inbox_cmd,
+    next_cmd,
+    review_cmd,
+    search_cmd,
+    today_cmd,
+    waiting_cmd,
+)
+
+app.add_typer(daily_app, name="daily")
+
+# Top-level daily operator command aliases
+app.command("capture")(capture_cmd)
+app.command("inbox")(inbox_cmd)
+app.command("clarify")(clarify_cmd)
+app.command("today")(today_cmd)
+app.command("next")(next_cmd)
+app.command("focus")(focus_cmd)
+app.command("done")(done_cmd)
+app.command("defer")(defer_cmd)
+app.command("waiting")(waiting_cmd)
+app.command("review")(review_cmd)
+app.command("search")(search_cmd)
+
 console = Console()
 err = Console(stderr=True)
 
@@ -5720,9 +5750,10 @@ def why(
     """Trace the lineage of any object: what caused it, what evidence and
     score supported it, what approval applied, what execution and receipt
     came out of it, and what outcome was recorded."""
+    from .core.config import get_db_path
     from .core.provenance import ProvenanceBuilder, render_trace_lines
 
-    trace = ProvenanceBuilder(_DB_PATH).trace(any_id)
+    trace = ProvenanceBuilder(get_db_path()).trace(any_id)
     if trace is None:
         err.print(
             f"  [red]No lineage found for: {any_id}[/red]\n"
