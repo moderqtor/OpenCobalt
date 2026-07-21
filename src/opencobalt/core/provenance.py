@@ -124,6 +124,7 @@ class ProvenanceBuilder:
         if not any_id:
             return None
         resolvers = (
+            self._trace_daily_side,
             self._trace_mission,
             self._trace_evolve,
             self._trace_opportunity_side,
@@ -138,6 +139,41 @@ class ProvenanceBuilder:
         return None
 
     # --- Resolution by id family ---
+
+    def _trace_daily_side(self, any_id: str) -> ProvenanceTrace | None:
+        if not any_id.startswith(("cpt-", "cmt-", "fcs-", "drv-", "cev-")):
+            return None
+        from dataclasses import asdict
+
+        from .daily_store import DailyStore
+
+        store = DailyStore(self.db_path)
+        if any_id.startswith("cpt-"):
+            cpt = store.get_capture(any_id)
+            if not cpt:
+                return None
+            trace = ProvenanceTrace(focus_id=cpt.id, focus_kind="capture")
+            trace.add_node(ProvenanceNode(cpt.id, "capture", cpt.raw_text, asdict(cpt)))
+            for cmt in store.list_commitments():
+                if cmt.source_ref == cpt.id:
+                    trace.add_node(ProvenanceNode(cmt.id, "commitment", cmt.title, asdict(cmt)))
+                    trace.add_edge(cpt.id, cmt.id, "clarified_to")
+            return trace
+        elif any_id.startswith("cmt-"):
+            cmt = store.get_commitment(any_id)
+            if not cmt:
+                return None
+            trace = ProvenanceTrace(focus_id=cmt.id, focus_kind="commitment")
+            trace.add_node(ProvenanceNode(cmt.id, "commitment", cmt.title, asdict(cmt)))
+            if cmt.source_ref and cmt.source_ref.startswith("cpt-"):
+                cpt = store.get_capture(cmt.source_ref)
+                if cpt:
+                    trace.add_node(ProvenanceNode(cpt.id, "capture", cpt.raw_text, asdict(cpt)))
+                    trace.add_edge(cpt.id, cmt.id, "clarified_to")
+            if cmt.mission_id:
+                trace.add_edge(cmt.id, cmt.mission_id, "promoted_to_mission")
+            return trace
+        return None
 
     def _trace_opportunity_side(self, any_id: str) -> ProvenanceTrace | None:
         store = self._opportunity_store()

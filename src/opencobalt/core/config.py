@@ -40,3 +40,8 @@ class Config:
         with self._connect() as conn:
             rows = conn.execute("SELECT key, value FROM config ORDER BY key").fetchall()
         return {r["key"]: r["value"] for r in rows}
+
+
+def get_db_path() -> Path:
+    """Return canonical path to SQLite ledger.db."""
+    return Path(".opencobalt") / "ledger.db"
