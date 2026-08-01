@@ -75,7 +75,7 @@ def test_store_adds_versioned_schema_without_disturbing_legacy_ledger(tmp_path):
         "provider_preferences",
         "personal_ai_settings",
     }.issubset(tables)
-    assert versions == [(1,)]
+    assert versions == [(1,), (2,)]
     assert foreign_keys == {
         "personas": {("active_version_id", "persona_versions", "persona_version_id")},
         "persona_versions": {("persona_id", "personas", "persona_id")},
@@ -229,3 +229,56 @@ def test_update_message_revalidates_content_and_status(tmp_path):
         store.update_message(message.message_id, status="invented")
 
     assert store.list_messages(conversation.conversation_id)[0].content == "valid"
+
+
+def test_v2_migration_rebuilds_pre_fix_tables_without_losing_records(tmp_path):
+    db_path = tmp_path / "ledger.db"
+    store = PersonalAIStore(db_path)
+    ensure_builtin_personas(store)
+    conversation = store.create_conversation(title="Legacy conversation")
+    message = store.add_message(conversation.conversation_id, role="user", content="Legacy text")
+    route = RouteRecord(
+        request_id="legacy-request",
+        conversation_id=conversation.conversation_id,
+        request_message_id=message.message_id,
+        task_class="general_reasoning",
+        selected_provider="mock",
+        requested_persona_id="analytical",
+        actual_persona_id="analytical",
+        privacy_classification="private",
+        autonomy_level="answer_only",
+        route_score=10,
+    )
+    store.save_route(route)
+    store.update_message(message.message_id, route_id=route.route_id)
+    skill = SkillRecord(
+        name="legacy-skill",
+        description="Preserved by migration",
+        source_kind="user",
+        source_ref="local",
+    )
+    store.save_skill(skill)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        for table in ("personas", "chat_messages", "ai_route_decisions", "skill_records"):
+            conn.execute(f"CREATE TABLE {table}_legacy AS SELECT * FROM {table}")
+            conn.execute(f"DROP TABLE {table}")
+            conn.execute(f"ALTER TABLE {table}_legacy RENAME TO {table}")
+        conn.execute("DELETE FROM personal_ai_schema_versions WHERE version = 2")
+
+    reopened = PersonalAIStore(db_path)
+
+    assert reopened.get_conversation(conversation.conversation_id) is not None
+    assert reopened.list_messages(conversation.conversation_id)[0].route_id == route.route_id
+    assert reopened.get_route(route.route_id).request_id == "legacy-request"
+    assert reopened.list_skills()[0].name == "legacy-skill"
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT version FROM personal_ai_schema_versions ORDER BY version"
+        ).fetchall() == [(1,), (2,)]
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert {
+            (row[3], row[2], row[4])
+            for row in conn.execute("PRAGMA foreign_key_list(chat_messages)").fetchall()
+        } >= {("route_id", "ai_route_decisions", "route_id")}

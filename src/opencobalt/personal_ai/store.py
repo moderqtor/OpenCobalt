@@ -270,6 +270,236 @@ CREATE TABLE IF NOT EXISTS personal_ai_settings (
 );
 """
 
+_MIGRATION_V2 = """
+BEGIN IMMEDIATE;
+
+CREATE TABLE personas_v2 (
+    persona_id        TEXT PRIMARY KEY,
+    name              TEXT NOT NULL,
+    description       TEXT NOT NULL DEFAULT '',
+    built_in          INTEGER NOT NULL DEFAULT 0,
+    active_version_id TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    FOREIGN KEY (active_version_id) REFERENCES persona_versions(persona_version_id)
+);
+
+INSERT INTO personas_v2
+    (persona_id, name, description, built_in, active_version_id, created_at, updated_at)
+SELECT
+    persona_id,
+    name,
+    description,
+    built_in,
+    CASE
+        WHEN active_version_id IS NULL THEN NULL
+        WHEN EXISTS (
+            SELECT 1 FROM persona_versions pv
+            WHERE pv.persona_version_id = personas.active_version_id
+        ) THEN active_version_id
+        ELSE NULL
+    END,
+    created_at,
+    updated_at
+FROM personas;
+
+INSERT OR IGNORE INTO personas_v2
+    (persona_id, name, description, built_in, active_version_id, created_at, updated_at)
+SELECT
+    referenced.persona_id,
+    referenced.persona_id,
+    'Recovered legacy route persona reference',
+    0,
+    NULL,
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+FROM (
+    SELECT requested_persona_id AS persona_id FROM ai_route_decisions
+    UNION
+    SELECT actual_persona_id AS persona_id FROM ai_route_decisions
+) AS referenced
+WHERE referenced.persona_id IS NOT NULL;
+
+DROP TABLE personas;
+ALTER TABLE personas_v2 RENAME TO personas;
+
+CREATE TABLE chat_messages_v2 (
+    message_id          TEXT PRIMARY KEY,
+    conversation_id     TEXT NOT NULL,
+    role                TEXT NOT NULL CHECK (role IN ('user','assistant','system','tool')),
+    content             TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    persona_version_id  TEXT,
+    route_id            TEXT,
+    parent_message_id   TEXT,
+    created_at          TEXT NOT NULL,
+    metadata_json       TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    FOREIGN KEY (persona_version_id) REFERENCES persona_versions(persona_version_id),
+    FOREIGN KEY (route_id) REFERENCES ai_route_decisions(route_id),
+    FOREIGN KEY (parent_message_id) REFERENCES chat_messages_v2(message_id)
+);
+
+INSERT INTO chat_messages_v2
+    (message_id, conversation_id, role, content, status, persona_version_id,
+     route_id, parent_message_id, created_at, metadata_json)
+SELECT
+    message_id,
+    conversation_id,
+    role,
+    content,
+    status,
+    persona_version_id,
+    CASE
+        WHEN route_id IS NULL THEN NULL
+        WHEN EXISTS (
+            SELECT 1 FROM ai_route_decisions routes
+            WHERE routes.route_id = chat_messages.route_id
+        ) THEN route_id
+        ELSE NULL
+    END,
+    parent_message_id,
+    created_at,
+    metadata_json
+FROM chat_messages;
+
+DROP TABLE chat_messages;
+ALTER TABLE chat_messages_v2 RENAME TO chat_messages;
+CREATE INDEX idx_chat_messages_conversation
+ON chat_messages (conversation_id, created_at, message_id);
+
+CREATE TABLE ai_route_decisions_v2 (
+    route_id                      TEXT PRIMARY KEY,
+    request_id                    TEXT NOT NULL UNIQUE,
+    conversation_id               TEXT NOT NULL,
+    request_message_id            TEXT NOT NULL,
+    task_class                    TEXT NOT NULL,
+    task_complexity               TEXT NOT NULL,
+    selected_provider             TEXT NOT NULL,
+    selected_model                TEXT,
+    selected_runtime              TEXT,
+    requested_persona_id          TEXT NOT NULL,
+    requested_persona_version_id  TEXT,
+    actual_persona_id             TEXT NOT NULL,
+    actual_persona_version_id     TEXT,
+    selected_tools_json           TEXT NOT NULL DEFAULT '[]',
+    selected_skills_json          TEXT NOT NULL DEFAULT '[]',
+    privacy_classification        TEXT NOT NULL,
+    autonomy_level                TEXT NOT NULL,
+    approval_requirements_json    TEXT NOT NULL DEFAULT '[]',
+    estimated_cost_category       TEXT NOT NULL,
+    actual_usage_json             TEXT NOT NULL DEFAULT '{}',
+    expected_latency_category     TEXT NOT NULL,
+    route_score                   INTEGER NOT NULL,
+    reasons_json                  TEXT NOT NULL DEFAULT '[]',
+    fallback_events_json          TEXT NOT NULL DEFAULT '[]',
+    verification_strategy         TEXT NOT NULL,
+    persona_provider_mismatch     TEXT,
+    outcome_status                TEXT NOT NULL,
+    receipt_id                    TEXT,
+    created_at                    TEXT NOT NULL,
+    updated_at                    TEXT NOT NULL,
+    metadata_json                 TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    FOREIGN KEY (request_message_id) REFERENCES chat_messages(message_id),
+    FOREIGN KEY (requested_persona_id) REFERENCES personas(persona_id),
+    FOREIGN KEY (requested_persona_version_id) REFERENCES persona_versions(persona_version_id),
+    FOREIGN KEY (actual_persona_id) REFERENCES personas(persona_id),
+    FOREIGN KEY (actual_persona_version_id) REFERENCES persona_versions(persona_version_id)
+);
+
+INSERT INTO ai_route_decisions_v2
+    (route_id, request_id, conversation_id, request_message_id, task_class,
+     task_complexity, selected_provider, selected_model, selected_runtime,
+     requested_persona_id, requested_persona_version_id, actual_persona_id,
+     actual_persona_version_id, selected_tools_json, selected_skills_json,
+     privacy_classification, autonomy_level, approval_requirements_json,
+     estimated_cost_category, actual_usage_json, expected_latency_category,
+     route_score, reasons_json, fallback_events_json, verification_strategy,
+     persona_provider_mismatch, outcome_status, receipt_id, created_at, updated_at,
+     metadata_json)
+SELECT
+    route_id, request_id, conversation_id, request_message_id, task_class,
+    task_complexity, selected_provider, selected_model, selected_runtime,
+    requested_persona_id, requested_persona_version_id, actual_persona_id,
+    actual_persona_version_id, selected_tools_json, selected_skills_json,
+    privacy_classification, autonomy_level, approval_requirements_json,
+    estimated_cost_category, actual_usage_json, expected_latency_category,
+    route_score, reasons_json, fallback_events_json, verification_strategy,
+    persona_provider_mismatch, outcome_status, receipt_id, created_at, updated_at,
+    metadata_json
+FROM ai_route_decisions;
+
+DROP TABLE ai_route_decisions;
+ALTER TABLE ai_route_decisions_v2 RENAME TO ai_route_decisions;
+CREATE INDEX idx_ai_routes_created
+ON ai_route_decisions (created_at DESC);
+CREATE INDEX idx_ai_routes_conversation
+ON ai_route_decisions (conversation_id, created_at DESC);
+
+CREATE TABLE skill_records_v2 (
+    skill_id                   TEXT PRIMARY KEY,
+    name                       TEXT NOT NULL UNIQUE,
+    description                TEXT NOT NULL,
+    source_kind                TEXT NOT NULL,
+    source_ref                 TEXT NOT NULL,
+    enabled                    INTEGER NOT NULL DEFAULT 1,
+    trust_level                TEXT NOT NULL,
+    active_version_id          TEXT,
+    requested_permissions_json TEXT NOT NULL DEFAULT '[]',
+    compatibility_json         TEXT NOT NULL DEFAULT '{}',
+    last_used_at               TEXT,
+    created_at                 TEXT NOT NULL,
+    updated_at                 TEXT NOT NULL,
+    FOREIGN KEY (active_version_id) REFERENCES skill_versions(skill_version_id)
+);
+
+INSERT INTO skill_records_v2
+    (skill_id, name, description, source_kind, source_ref, enabled, trust_level,
+     active_version_id, requested_permissions_json, compatibility_json,
+     last_used_at, created_at, updated_at)
+SELECT
+    skill_id,
+    name,
+    description,
+    source_kind,
+    source_ref,
+    enabled,
+    trust_level,
+    CASE
+        WHEN active_version_id IS NULL THEN NULL
+        WHEN EXISTS (
+            SELECT 1 FROM skill_versions versions
+            WHERE versions.skill_version_id = skill_records.active_version_id
+        ) THEN active_version_id
+        ELSE NULL
+    END,
+    requested_permissions_json,
+    compatibility_json,
+    last_used_at,
+    created_at,
+    updated_at
+FROM skill_records;
+
+DROP TABLE skill_records;
+ALTER TABLE skill_records_v2 RENAME TO skill_records;
+
+INSERT OR IGNORE INTO personal_ai_schema_versions (version, applied_at)
+VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+COMMIT;
+"""
+
+_V2_REQUIRED_FOREIGN_KEYS = {
+    "personas": {("active_version_id", "persona_versions", "persona_version_id")},
+    "chat_messages": {("route_id", "ai_route_decisions", "route_id")},
+    "ai_route_decisions": {
+        ("requested_persona_id", "personas", "persona_id"),
+        ("actual_persona_id", "personas", "persona_id"),
+    },
+    "skill_records": {("active_version_id", "skill_versions", "skill_version_id")},
+}
+
 
 def _dump(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -297,6 +527,8 @@ class PersonalAIStore:
                 "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
                 (1,),
             )
+            conn.commit()
+            self._apply_v2(conn)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=5)
@@ -304,6 +536,36 @@ class PersonalAIStore:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
         return conn
+
+    def _apply_v2(self, conn: sqlite3.Connection) -> None:
+        needs_rebuild = any(
+            not required.issubset(self._foreign_keys(conn, table))
+            for table, required in _V2_REQUIRED_FOREIGN_KEYS.items()
+        )
+        if needs_rebuild:
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.executescript(_MIGRATION_V2)
+            conn.execute("PRAGMA foreign_keys = ON")
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise sqlite3.IntegrityError(
+                    f"personal AI v2 migration left foreign key violations: {violations}"
+                )
+        else:
+            conn.execute(
+                "INSERT OR IGNORE INTO personal_ai_schema_versions (version, applied_at) "
+                "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                (2,),
+            )
+
+    @staticmethod
+    def _foreign_keys(
+        conn: sqlite3.Connection, table: str
+    ) -> set[tuple[str, str, str]]:
+        return {
+            (row[3], row[2], row[4])
+            for row in conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+        }
 
     # Conversations and messages
 
