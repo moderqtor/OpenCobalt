@@ -149,6 +149,7 @@ def test_engine_backed_mock_chat_persists_messages_route_execution_and_receipt(t
     assert route.requested_persona_id == "analytical"
     assert route.actual_persona_id == "analytical"
     assert route.receipt_id is not None
+    assert route.metadata["verification"]["status"] == "passed"
     assert messages[-1].route_id == route.route_id
     receipt = execution_store.get_receipt(route.receipt_id)
     assert receipt is not None
@@ -180,6 +181,50 @@ def test_conversation_and_routes_survive_service_restart(tmp_path):
     assert reopened.get_conversation(conversation.conversation_id) is not None
     assert len(reopened.list_messages(conversation.conversation_id)) == 2
     assert reopened.list_routes(conversation_id=conversation.conversation_id)[0].receipt_id
+
+
+def test_provider_policy_context_is_bounded_before_execution(tmp_path):
+    service, store, _ = _real_mock_service(tmp_path)
+    conversation = service.create_conversation(title="Bounded context")
+    for index in range(12):
+        store.add_message(
+            conversation.conversation_id,
+            role="user" if index % 2 == 0 else "assistant",
+            content=f"history-{index}: " + ("x" * 10_000),
+        )
+
+    events = list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Summarize the bounded context",
+                provider_override="mock",
+            )
+        )
+    )
+
+    assert events[-1].event_type == "completed"
+
+
+def test_task_specific_verifier_is_not_claimed_when_only_integrity_was_checked(tmp_path):
+    service, store, _ = _real_mock_service(tmp_path)
+    conversation = service.create_conversation(title="Honest verification")
+
+    list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Write a small parser",
+                persona_id="builder",
+                provider_override="mock",
+            )
+        )
+    )
+
+    route = store.list_routes(conversation_id=conversation.conversation_id)[0]
+    assert route.verification_strategy == "tests_and_diff"
+    assert route.metadata["verification"]["status"] == "not_performed"
+    assert route.metadata["verification"]["integrity_check"] == "passed"
 
 
 def test_development_mock_is_used_only_when_no_real_provider_is_routable(tmp_path):
@@ -274,6 +319,8 @@ def test_local_only_manual_cloud_route_is_denied_without_provider_execution(tmp_
     assert events[-1].event_type == "route_failed"
     route = store.list_routes(conversation_id=conversation.conversation_id)[0]
     assert route.outcome_status == "policy_denied"
+    assert route.selected_provider == "none"
+    assert route.receipt_id is None
     assert "local-only" in " ".join(route.reasons)
     assert store.list_route_candidates(route.route_id)[0].eligible is False
     assert engine.calls == []

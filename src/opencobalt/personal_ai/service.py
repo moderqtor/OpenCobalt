@@ -617,11 +617,11 @@ class ChatService:
             usage=final_usage,
             actual_provider_id=current.provider_id,
             actual_model_id=current.model_id,
-            verification={
-                "strategy": route.verification_strategy,
-                "status": "passed" if final_receipt_id and final_content.strip() else "failed",
-                "checks": ["nonempty_response", "execution_receipt_linked"],
-            },
+            verification=self._verification_record(
+                route.verification_strategy,
+                content=final_content,
+                receipt_id=final_receipt_id,
+            ),
         )
         memory = self._propose_explicit_memory(request, user_message)
         completed = lifecycle(
@@ -822,9 +822,9 @@ class ChatService:
             message
             for message in self.store.list_messages(conversation.conversation_id, limit=30)
             if message.message_id != user_message.message_id
-        ][-12:]
+        ][-10:]
         history = "\n".join(
-            f"{message.role.title()}: {message.content[:4000]}" for message in prior
+            f"{message.role.title()}: {message.content[:3000]}" for message in prior
         )
         sections = [
             "OpenCobalt interaction policy:",
@@ -939,6 +939,31 @@ class ChatService:
         )
         self.store.save_memory(memory)
         return memory
+
+    @staticmethod
+    def _verification_record(
+        strategy: str,
+        *,
+        content: str,
+        receipt_id: str | None,
+    ) -> dict[str, Any]:
+        integrity_passed = bool(content.strip() and receipt_id)
+        if strategy == "response_integrity":
+            return {
+                "strategy": strategy,
+                "status": "passed" if integrity_passed else "failed",
+                "checks_performed": ["nonempty_response", "execution_receipt_linked"],
+                "limitations": [],
+            }
+        return {
+            "strategy": strategy,
+            "status": "not_performed",
+            "checks_performed": ["nonempty_response", "execution_receipt_linked"],
+            "integrity_check": "passed" if integrity_passed else "failed",
+            "limitations": [
+                f"the requested {strategy} verifier was not executed by this completion-only route"
+            ],
+        }
 
 
 __all__ = ["ChatLifecycleEvent", "ChatRequest", "ChatService"]
