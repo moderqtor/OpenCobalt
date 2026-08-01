@@ -291,34 +291,10 @@ SELECT
     name,
     description,
     built_in,
-    CASE
-        WHEN active_version_id IS NULL THEN NULL
-        WHEN EXISTS (
-            SELECT 1 FROM persona_versions pv
-            WHERE pv.persona_version_id = personas.active_version_id
-        ) THEN active_version_id
-        ELSE NULL
-    END,
+    active_version_id,
     created_at,
     updated_at
 FROM personas;
-
-INSERT OR IGNORE INTO personas_v2
-    (persona_id, name, description, built_in, active_version_id, created_at, updated_at)
-SELECT
-    referenced.persona_id,
-    referenced.persona_id,
-    'Recovered legacy route persona reference',
-    0,
-    NULL,
-    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-FROM (
-    SELECT requested_persona_id AS persona_id FROM ai_route_decisions
-    UNION
-    SELECT actual_persona_id AS persona_id FROM ai_route_decisions
-) AS referenced
-WHERE referenced.persona_id IS NOT NULL;
 
 DROP TABLE personas;
 ALTER TABLE personas_v2 RENAME TO personas;
@@ -350,14 +326,7 @@ SELECT
     content,
     status,
     persona_version_id,
-    CASE
-        WHEN route_id IS NULL THEN NULL
-        WHEN EXISTS (
-            SELECT 1 FROM ai_route_decisions routes
-            WHERE routes.route_id = chat_messages.route_id
-        ) THEN route_id
-        ELSE NULL
-    END,
+    route_id,
     parent_message_id,
     created_at,
     metadata_json
@@ -466,14 +435,7 @@ SELECT
     source_ref,
     enabled,
     trust_level,
-    CASE
-        WHEN active_version_id IS NULL THEN NULL
-        WHEN EXISTS (
-            SELECT 1 FROM skill_versions versions
-            WHERE versions.skill_version_id = skill_records.active_version_id
-        ) THEN active_version_id
-        ELSE NULL
-    END,
+    active_version_id,
     requested_permissions_json,
     compatibility_json,
     last_used_at,

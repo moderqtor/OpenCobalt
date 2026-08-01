@@ -12,6 +12,7 @@ from opencobalt.personal_ai.models import (
     RouteCandidate,
     RouteRecord,
     SkillRecord,
+    SkillVersion,
 )
 from opencobalt.personal_ai.personas import ensure_builtin_personas
 from opencobalt.personal_ai.store import PersonalAIStore
@@ -374,3 +375,88 @@ def test_v2_migration_rolls_back_schema_and_version_when_integrity_check_fails(t
         assert conn.execute(
             "SELECT COUNT(*) FROM chat_messages WHERE message_id = ?", (message.message_id,)
         ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    ("table", "column", "key_column", "record_kind"),
+    [
+        ("personas", "active_version_id", "persona_id", "persona"),
+        ("chat_messages", "route_id", "message_id", "message"),
+        (
+            "ai_route_decisions",
+            "requested_persona_id",
+            "route_id",
+            "route",
+        ),
+        ("ai_route_decisions", "actual_persona_id", "route_id", "route"),
+        ("skill_records", "active_version_id", "skill_id", "skill"),
+    ],
+)
+def test_v2_migration_never_erases_or_recovers_invalid_legacy_provenance(
+    tmp_path,
+    table,
+    column,
+    key_column,
+    record_kind,
+):
+    db_path = tmp_path / "ledger.db"
+    store = PersonalAIStore(db_path)
+    ensure_builtin_personas(store)
+    conversation = store.create_conversation(title="Malformed provenance fixture")
+    message = store.add_message(
+        conversation.conversation_id,
+        role="user",
+        content="Preserve the invalid reference for diagnosis",
+    )
+    route = RouteRecord(
+        request_id="malformed-provenance-request",
+        conversation_id=conversation.conversation_id,
+        request_message_id=message.message_id,
+        task_class="general_reasoning",
+        selected_provider="mock",
+        requested_persona_id="analytical",
+        actual_persona_id="analytical",
+        privacy_classification="private",
+        autonomy_level="answer_only",
+        route_score=10,
+    )
+    store.save_route(route)
+    skill = SkillRecord(
+        name="malformed-provenance-skill",
+        description="Migration fixture",
+        source_kind="user",
+        source_ref="local",
+    )
+    store.save_skill(skill)
+    skill_version = SkillVersion(
+        skill_id=skill.skill_id,
+        version="1.0.0",
+        content_hash="a" * 64,
+    )
+    store.save_skill_version(skill_version)
+    record_ids = {
+        "persona": "analytical",
+        "message": message.message_id,
+        "route": route.route_id,
+        "skill": skill.skill_id,
+    }
+    record_id = record_ids[record_kind]
+
+    with sqlite3.connect(db_path) as conn:
+        _downgrade_to_true_v1_schema(conn)
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            f"UPDATE {table} SET {column} = ? WHERE {key_column} = ?",
+            ("missing-provenance-target", record_id),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="migration left foreign key violations"):
+        PersonalAIStore(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT version FROM personal_ai_schema_versions ORDER BY version"
+        ).fetchall() == [(1,)]
+        assert conn.execute(
+            f"SELECT {column} FROM {table} WHERE {key_column} = ?", (record_id,)
+        ).fetchone()[0] == "missing-provenance-target"
