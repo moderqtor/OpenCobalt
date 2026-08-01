@@ -2005,6 +2005,7 @@ def ui_shell(
     no_browser: bool = typer.Option(False, "--no-browser", help="Skip opening browser"),
 ) -> None:
     """Start the API server and React dashboard. Opens http://localhost:5173."""
+    import os
     import shutil
     import subprocess
     import time as _time
@@ -2045,9 +2046,12 @@ def ui_shell(
         )
         procs.append(api_proc)
 
+        vite_environment = dict(os.environ)
+        vite_environment["OPENCOBALT_API_ORIGIN"] = f"http://127.0.0.1:{api_port}"
         vite_proc = subprocess.Popen(
             ["npm", "run", "dev", "--", "--port", str(port)],
             cwd=ui_dir,
+            env=vite_environment,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
