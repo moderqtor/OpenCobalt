@@ -57,6 +57,25 @@ class ProviderCapabilities(BaseModel):
     requires_network: bool = True
 
 
+class ProviderRoutingProfile(BaseModel):
+    """Declared routing contract, explicitly separate from live health evidence."""
+
+    provider_family: str = "unknown"
+    adapter_type: Literal["mock", "cli", "local_runtime", "discovery_only"] = (
+        "discovery_only"
+    )
+    billing_classification: Literal[
+        "local", "subscription_backed", "api_billed", "unknown"
+    ] = "unknown"
+    cost_category: Literal["free", "low", "standard", "high"] = "standard"
+    quality_tier: Literal["weak", "standard", "strong"] = "standard"
+    latency_category: Literal["low", "standard", "high"] = "standard"
+    task_capabilities: list[str] = Field(default_factory=list)
+    tool_names: list[str] = Field(default_factory=list)
+    evidence: Literal["opencobalt_adapter_contract"] = "opencobalt_adapter_contract"
+    statistically_calibrated: bool = False
+
+
 class ProviderStatus(BaseModel):
     """Truthful distinction between installation, auth, and readiness."""
 
@@ -68,6 +87,7 @@ class ProviderStatus(BaseModel):
     health: ProviderHealthState
     execution_supported: bool
     capabilities: ProviderCapabilities
+    routing_profile: ProviderRoutingProfile = Field(default_factory=ProviderRoutingProfile)
     limitations: list[str] = Field(default_factory=list)
     discovered_at: datetime = Field(default_factory=_now)
 
@@ -122,6 +142,7 @@ class ProviderRequest(BaseModel):
     request_id: str = Field(default_factory=lambda: _uid("preq"))
     conversation_id: str | None = None
     message: str
+    system_policy: str = Field(default="", max_length=50_000)
     model_id: str | None = None
     local_only: bool = False
     allow_fallback: bool = False
@@ -186,6 +207,85 @@ class ProviderModelCatalog(BaseModel):
     models: list[ProviderModel] = Field(default_factory=list)
     receipt_id: str | None = None
     error: ProviderError | None = None
+
+
+_BROAD_READ_ONLY_CAPABILITIES = [
+    "chat",
+    "coding",
+    "creative",
+    "data_analysis",
+    "decision_support",
+    "file_analysis",
+    "planning",
+    "reflection",
+    "repository",
+    "research",
+    "security",
+    "tools",
+    "writing",
+]
+
+_LOCAL_TEXT_CAPABILITIES = [
+    "chat",
+    "coding",
+    "creative",
+    "data_analysis",
+    "decision_support",
+    "file_analysis",
+    "planning",
+    "reflection",
+    "research",
+    "writing",
+]
+
+_ROUTING_PROFILES = {
+    "mock": ProviderRoutingProfile(
+        provider_family="mock",
+        adapter_type="mock",
+        billing_classification="local",
+        cost_category="free",
+        quality_tier="weak",
+        latency_category="low",
+        task_capabilities=_BROAD_READ_ONLY_CAPABILITIES,
+    ),
+    "codex": ProviderRoutingProfile(
+        provider_family="openai",
+        adapter_type="cli",
+        billing_classification="subscription_backed",
+        quality_tier="strong",
+        task_capabilities=_BROAD_READ_ONLY_CAPABILITIES,
+    ),
+    "antigravity": ProviderRoutingProfile(
+        provider_family="google",
+        adapter_type="cli",
+        billing_classification="subscription_backed",
+        quality_tier="strong",
+        task_capabilities=_BROAD_READ_ONLY_CAPABILITIES,
+    ),
+    "claude": ProviderRoutingProfile(
+        provider_family="anthropic",
+        adapter_type="cli",
+        billing_classification="subscription_backed",
+        quality_tier="strong",
+        task_capabilities=_BROAD_READ_ONLY_CAPABILITIES,
+    ),
+    "ollama": ProviderRoutingProfile(
+        provider_family="local",
+        adapter_type="local_runtime",
+        billing_classification="local",
+        cost_category="free",
+        quality_tier="weak",
+        latency_category="low",
+        task_capabilities=_LOCAL_TEXT_CAPABILITIES,
+    ),
+    "gemini": ProviderRoutingProfile(
+        provider_family="google",
+        adapter_type="discovery_only",
+        billing_classification="subscription_backed",
+        quality_tier="strong",
+        task_capabilities=_LOCAL_TEXT_CAPABILITIES,
+    ),
+}
 
 
 class CancellationToken:
@@ -272,12 +372,14 @@ class EngineBackedChatProvider(ChatProvider):
         engine: _EngineLike,
         adapter: _AdapterLike,
         supports_model_discovery: bool = False,
+        routing_profile: ProviderRoutingProfile | None = None,
     ) -> None:
         self.provider_id = provider_id
         self.display_name = display_name
         self.engine = engine
         self.adapter = adapter
         self.supports_model_discovery = supports_model_discovery
+        self.routing_profile = routing_profile or ProviderRoutingProfile()
 
     def status(self) -> ProviderStatus:
         snapshot = self.adapter.discover_capabilities()
@@ -287,6 +389,9 @@ class EngineBackedChatProvider(ChatProvider):
             "unknown" if snapshot.requires_credentials else "not_required"
         )
         limitations = [_public_error_text(item) for item in snapshot.limitations]
+        limitations.append(
+            "routing profile is an OpenCobalt adapter contract and heuristic, not live quality calibration"
+        )
         if snapshot.available and snapshot.requires_credentials:
             limitations.append(
                 "executable discovery does not prove authentication or successful invocation"
@@ -309,6 +414,7 @@ class EngineBackedChatProvider(ChatProvider):
                 local_only_eligible=execution_supported and not snapshot.requires_network,
                 requires_network=snapshot.requires_network,
             ),
+            routing_profile=self.routing_profile.model_copy(deep=True),
             limitations=list(dict.fromkeys(limitations)),
         )
 
@@ -366,7 +472,7 @@ class EngineBackedChatProvider(ChatProvider):
         selected_adapter = adapter or self.adapter
         try:
             outcome = self.engine.run_task(
-                task if task is not None else request.message,
+                task if task is not None else _provider_task(request),
                 runtime=selected_adapter.runtime_id,
                 model=model_id if model_id is not None else request.model_id,
                 execute=True,
@@ -401,6 +507,7 @@ class MockChatProvider(EngineBackedChatProvider):
             display_name="Mock (deterministic local)",
             engine=engine,
             adapter=NoopAdapter(),
+            routing_profile=_ROUTING_PROFILES["mock"],
         )
         if chunk_size < 1:
             raise ValueError("chunk_size must be positive")
@@ -425,9 +532,11 @@ class MockChatProvider(EngineBackedChatProvider):
                 local_only_eligible=True,
                 requires_network=False,
             ),
+            routing_profile=self.routing_profile.model_copy(deep=True),
             limitations=[
                 "deterministic development provider; not a live model",
                 "cancellation applies between simulated chunks after engine completion",
+                "routing profile is an OpenCobalt adapter contract and heuristic, not live quality calibration",
             ],
         )
 
@@ -463,15 +572,19 @@ class MockChatProvider(EngineBackedChatProvider):
         result = self._execute_through_engine(
             request,
             cancellation=cancellation,
-            task=f"Mock response: {request.message}",
+            task=f"Mock response: {_provider_task(request)}",
             model_id=model_id,
         )
-        if result.status == "complete" and result.usage.source == "unavailable":
-            result.usage = ProviderUsage(
-                input_characters=len(request.message),
-                output_characters=len(result.content),
-                source="deterministic_characters",
-            )
+        if result.status == "complete":
+            # The engine receipt retains the complete policy-bearing task while
+            # development chat remains readable and deterministic.
+            result.content = f"Mock response: {request.message}"
+            if result.usage.source == "unavailable":
+                result.usage = ProviderUsage(
+                    input_characters=len(request.message) + len(request.system_policy),
+                    output_characters=len(result.content),
+                    source="deterministic_characters",
+                )
         return result
 
     def stream(
@@ -527,6 +640,7 @@ class OllamaChatProvider(EngineBackedChatProvider):
             engine=engine,
             adapter=adapter,
             supports_model_discovery=True,
+            routing_profile=_ROUTING_PROFILES["ollama"],
         )
 
     @property
@@ -646,11 +760,13 @@ class DiscoveryOnlyChatProvider(ChatProvider):
         display_name: str,
         executable: str,
         executable_finder: Callable[[str], str | None],
+        routing_profile: ProviderRoutingProfile | None = None,
     ) -> None:
         self.provider_id = provider_id
         self.display_name = display_name
         self.executable = executable
         self.executable_finder = executable_finder
+        self.routing_profile = routing_profile or ProviderRoutingProfile()
 
     def status(self) -> ProviderStatus:
         installed = self.executable_finder(self.executable) is not None
@@ -672,8 +788,10 @@ class DiscoveryOnlyChatProvider(ChatProvider):
                 local_only_eligible=False,
                 requires_network=True,
             ),
+            routing_profile=self.routing_profile.model_copy(deep=True),
             limitations=[
-                "discovery-only: executable presence does not prove authentication or safe execution"
+                "discovery-only: executable presence does not prove authentication or safe execution",
+                "routing profile is an OpenCobalt adapter contract and heuristic, not live quality calibration",
             ],
         )
 
@@ -731,18 +849,21 @@ class ProviderRegistry:
                 display_name="Codex CLI",
                 engine=engine,
                 adapter=runtime_adapters["codex-cli"],
+                routing_profile=_ROUTING_PROFILES["codex"],
             ),
             EngineBackedChatProvider(
                 provider_id="antigravity",
                 display_name="Google Antigravity",
                 engine=engine,
                 adapter=runtime_adapters["google-antigravity"],
+                routing_profile=_ROUTING_PROFILES["antigravity"],
             ),
             EngineBackedChatProvider(
                 provider_id="claude",
                 display_name="Claude Code",
                 engine=engine,
                 adapter=runtime_adapters["claude-code"],
+                routing_profile=_ROUTING_PROFILES["claude"],
             ),
             OllamaChatProvider(
                 engine,
@@ -754,6 +875,7 @@ class ProviderRegistry:
                 display_name="Gemini CLI",
                 executable="gemini",
                 executable_finder=executable_finder,
+                routing_profile=_ROUTING_PROFILES["gemini"],
             ),
         ]
         self._providers = {provider.provider_id: provider for provider in providers}
@@ -767,6 +889,16 @@ class ProviderRegistry:
         except KeyError:
             known = ", ".join(self._providers)
             raise KeyError(f"unknown provider '{provider_id}' (known: {known})") from None
+
+
+def _provider_task(request: ProviderRequest) -> str:
+    """Compose policy and user content at the provider boundary."""
+    if not request.system_policy.strip():
+        return request.message
+    return (
+        f"{request.system_policy.rstrip()}\n\n"
+        f"Current user request:\n{request.message}"
+    )
 
 
 def _events_from_result(
@@ -1094,6 +1226,7 @@ __all__ = [
     "ProviderRegistry",
     "ProviderRequest",
     "ProviderResult",
+    "ProviderRoutingProfile",
     "ProviderStatus",
     "ProviderUsage",
 ]

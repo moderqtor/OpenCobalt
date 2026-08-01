@@ -645,6 +645,14 @@ class PersonalAIStore:
             ).fetchall()
         return [self._decode_message(row) for row in rows]
 
+    def get_message(self, message_id: str) -> ChatMessage | None:
+        """Return one durable chat message without broad conversation scans."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM chat_messages WHERE message_id = ?", (message_id,)
+            ).fetchone()
+        return self._decode_message(row) if row else None
+
     def update_message(
         self,
         message_id: str,
@@ -912,6 +920,31 @@ class PersonalAIStore:
             ).fetchone()
         return self._decode_execution(row) if row else None
 
+    def list_executions(
+        self,
+        *,
+        conversation_id: str | None = None,
+        request_id: str | None = None,
+        limit: int = 100,
+    ) -> list[ChatExecution]:
+        """List bounded chat execution attempts, newest first."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if conversation_id is not None:
+            clauses.append("conversation_id = ?")
+            params.append(conversation_id)
+        if request_id is not None:
+            clauses.append("request_id = ?")
+            params.append(request_id)
+        sql = "SELECT * FROM chat_executions"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC, execution_id DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._decode_execution(row) for row in rows]
+
     def append_stream_event(self, event: StreamEvent) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -988,6 +1021,13 @@ class PersonalAIStore:
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._decode_memory(row) for row in rows]
+
+    def get_memory(self, memory_id: str) -> MemoryEntry | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM curated_memory_entries WHERE memory_id = ?", (memory_id,)
+            ).fetchone()
+        return self._decode_memory(row) if row else None
 
     def delete_memory(self, memory_id: str) -> bool:
         with self._connect() as conn:

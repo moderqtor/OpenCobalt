@@ -145,6 +145,10 @@ def test_registry_discovery_keeps_installation_authentication_and_readiness_dist
     assert statuses["codex"].installed is True
     assert statuses["codex"].authentication == "unknown"
     assert statuses["codex"].health == "unknown"
+    assert statuses["codex"].routing_profile.provider_family == "openai"
+    assert statuses["codex"].routing_profile.evidence == "opencobalt_adapter_contract"
+    assert statuses["codex"].routing_profile.statistically_calibrated is False
+    assert "repository" in statuses["codex"].routing_profile.task_capabilities
     assert statuses["antigravity"].authentication == "unknown"
     assert statuses["claude"].installed is True
     assert statuses["claude"].authentication == "unknown"
@@ -266,23 +270,27 @@ def test_mock_execution_and_simulated_streaming_still_use_execution_engine():
     )
     provider = MockChatProvider(engine, chunk_size=8)
 
-    events = list(provider.stream(ProviderRequest(message="alpha", model_id="mock-v1")))
+    events = list(
+        provider.stream(
+            ProviderRequest(
+                message="alpha",
+                model_id="mock-v1",
+                system_policy="Interaction persona: analytical",
+            )
+        )
+    )
 
-    assert [event.event_type for event in events] == [
-        "started",
-        "text_delta",
-        "text_delta",
-        "text_delta",
-        "text_delta",
-        "usage",
-        "completed",
-    ]
+    assert events[0].event_type == "started"
+    assert [event.event_type for event in events[-2:]] == ["usage", "completed"]
+    assert all(event.event_type == "text_delta" for event in events[1:-2])
     assert "".join(
         event.text_delta or "" for event in events if event.event_type == "text_delta"
-    ) == "Mock response: alpha beta gamma"
+    ) == "Mock response: alpha"
     assert [event.sequence for event in events] == list(range(1, len(events) + 1))
     assert events[-1].receipt_id == "receipt-mock"
     assert len(engine.calls) == 1
+    assert "Interaction persona: analytical" in engine.calls[0][0]
+    assert "Current user request:\nalpha" in engine.calls[0][0]
     assert engine.calls[0][1]["runtime"] == "noop"
     assert engine.calls[0][1]["execute"] is True
 
