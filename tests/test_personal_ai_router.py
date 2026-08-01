@@ -137,7 +137,7 @@ def test_manual_provider_and_model_override_is_honored_when_available():
         requires_network=True,
         cost_category="standard",
         quality_tier="strong",
-        capabilities=frozenset({"chat"}),
+        capabilities=frozenset({"chat", "coding"}),
     )
 
     plan = router.route(
@@ -181,6 +181,30 @@ def test_persona_affinity_is_a_prior_and_native_persona_mismatch_is_disclosed():
     assert mismatch_plan.record.persona_provider_mismatch is not None
     assert "anthropic" in mismatch_plan.record.persona_provider_mismatch
     assert "local" in mismatch_plan.record.persona_provider_mismatch
+
+
+def test_persona_affinity_accepts_normalized_runtime_identity():
+    router = PersonalAIRouter()
+    persona = PersonaVersion(
+        persona_version_id="pver-builder-v1",
+        persona_id="builder",
+        version=1,
+        provider_affinities={"codex-cli": 10},
+    )
+    codex = ProviderSnapshot(
+        provider_id="codex",
+        model_id=None,
+        runtime_id="codex-cli",
+        provider_family="openai",
+        available=True,
+        local=False,
+        requires_network=True,
+        capabilities=frozenset({"chat", "coding"}),
+    )
+
+    plan = router.route(_request("Explain the implementation"), [codex], persona_version=persona)
+
+    assert plan.candidates[0].score_components["persona_affinity"] == 10
 
 
 def test_unavailable_and_tool_incompatible_candidates_have_meaningful_rejections():

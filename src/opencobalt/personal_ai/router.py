@@ -461,7 +461,13 @@ def _privacy_rank(value: PrivacyClassification) -> int:
 def _persona_affinity(snapshot: ProviderSnapshot, persona_version: PersonaVersion | None) -> int:
     if persona_version is None:
         return 0
-    return persona_version.provider_affinities.get(snapshot.provider_id, 0)
+    identities = (snapshot.provider_id, snapshot.runtime_id, snapshot.provider_family)
+    matches = [
+        persona_version.provider_affinities[identity]
+        for identity in identities
+        if identity is not None and identity in persona_version.provider_affinities
+    ]
+    return max(matches) if matches else 0
 
 
 def _privacy_fit(snapshot: ProviderSnapshot, privacy: PrivacyClassification) -> int:
