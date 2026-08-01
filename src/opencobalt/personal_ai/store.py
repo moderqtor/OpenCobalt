@@ -486,8 +486,6 @@ ALTER TABLE skill_records_v2 RENAME TO skill_records;
 
 INSERT OR IGNORE INTO personal_ai_schema_versions (version, applied_at)
 VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
-
-COMMIT;
 """
 
 _V2_REQUIRED_FOREIGN_KEYS = {
@@ -544,13 +542,23 @@ class PersonalAIStore:
         )
         if needs_rebuild:
             conn.execute("PRAGMA foreign_keys = OFF")
-            conn.executescript(_MIGRATION_V2)
-            conn.execute("PRAGMA foreign_keys = ON")
-            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
-            if violations:
-                raise sqlite3.IntegrityError(
-                    f"personal AI v2 migration left foreign key violations: {violations}"
-                )
+            try:
+                # The migration script opens its own transaction so schema and version
+                # changes remain reversible until the rebuilt graph passes validation.
+                conn.executescript(_MIGRATION_V2)
+                violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+                if violations:
+                    raise sqlite3.IntegrityError(
+                        "personal AI v2 migration left foreign key violations: "
+                        f"{violations}"
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
         else:
             conn.execute(
                 "INSERT OR IGNORE INTO personal_ai_schema_versions (version, applied_at) "

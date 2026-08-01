@@ -16,6 +16,49 @@ from opencobalt.personal_ai.models import (
 from opencobalt.personal_ai.personas import ensure_builtin_personas
 from opencobalt.personal_ai.store import PersonalAIStore
 
+_V1_REMOVED_FK_FRAGMENTS = {
+    "personas": [
+        ",\n    FOREIGN KEY (active_version_id) REFERENCES persona_versions(persona_version_id)"
+    ],
+    "chat_messages": [
+        "    FOREIGN KEY (route_id) REFERENCES ai_route_decisions(route_id),\n"
+    ],
+    "ai_route_decisions": [
+        "    FOREIGN KEY (requested_persona_id) REFERENCES personas(persona_id),\n",
+        "    FOREIGN KEY (actual_persona_id) REFERENCES personas(persona_id),\n",
+    ],
+    "skill_records": [
+        ",\n    FOREIGN KEY (active_version_id) REFERENCES skill_versions(skill_version_id)"
+    ],
+}
+
+
+def _downgrade_to_true_v1_schema(conn: sqlite3.Connection) -> None:
+    """Reproduce Task 1's committed v1 DDL while preserving every other constraint."""
+    conn.execute("PRAGMA foreign_keys = OFF")
+    for table, removed_fragments in _V1_REMOVED_FK_FRAGMENTS.items():
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+        ).fetchone()
+        assert row is not None
+        legacy_table = f"{table}_legacy_v1"
+        legacy_sql = row[0].replace(f"CREATE TABLE {table}", f"CREATE TABLE {legacy_table}")
+        for fragment in removed_fragments:
+            assert fragment in legacy_sql
+            legacy_sql = legacy_sql.replace(fragment, "")
+        conn.execute(legacy_sql)
+        columns = [
+            column[1] for column in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        ]
+        column_list = ", ".join(columns)
+        conn.execute(
+            f"INSERT INTO {legacy_table} ({column_list}) "
+            f"SELECT {column_list} FROM {table}"
+        )
+        conn.execute(f"DROP TABLE {table}")
+        conn.execute(f"ALTER TABLE {legacy_table} RENAME TO {table}")
+    conn.execute("DELETE FROM personal_ai_schema_versions WHERE version = 2")
+
 
 def test_store_adds_versioned_schema_without_disturbing_legacy_ledger(tmp_path):
     db_path = tmp_path / "ledger.db"
@@ -260,19 +303,18 @@ def test_v2_migration_rebuilds_pre_fix_tables_without_losing_records(tmp_path):
     store.save_skill(skill)
 
     with sqlite3.connect(db_path) as conn:
-        conn.execute("PRAGMA foreign_keys = OFF")
-        for table in ("personas", "chat_messages", "ai_route_decisions", "skill_records"):
-            conn.execute(f"CREATE TABLE {table}_legacy AS SELECT * FROM {table}")
-            conn.execute(f"DROP TABLE {table}")
-            conn.execute(f"ALTER TABLE {table}_legacy RENAME TO {table}")
-        conn.execute("DELETE FROM personal_ai_schema_versions WHERE version = 2")
+        _downgrade_to_true_v1_schema(conn)
 
     reopened = PersonalAIStore(db_path)
+    reopened_again = PersonalAIStore(db_path)
 
     assert reopened.get_conversation(conversation.conversation_id) is not None
     assert reopened.list_messages(conversation.conversation_id)[0].route_id == route.route_id
     assert reopened.get_route(route.route_id).request_id == "legacy-request"
     assert reopened.list_skills()[0].name == "legacy-skill"
+    assert reopened_again.get_route(route.route_id).request_id == "legacy-request"
+    with pytest.raises(sqlite3.IntegrityError):
+        reopened.update_message(message.message_id, route_id="missing-route")
     with sqlite3.connect(db_path) as conn:
         assert conn.execute(
             "SELECT version FROM personal_ai_schema_versions ORDER BY version"
@@ -282,3 +324,53 @@ def test_v2_migration_rebuilds_pre_fix_tables_without_losing_records(tmp_path):
             (row[3], row[2], row[4])
             for row in conn.execute("PRAGMA foreign_key_list(chat_messages)").fetchall()
         } >= {("route_id", "ai_route_decisions", "route_id")}
+
+
+def test_v2_migration_rolls_back_schema_and_version_when_integrity_check_fails(tmp_path):
+    db_path = tmp_path / "ledger.db"
+    store = PersonalAIStore(db_path)
+    conversation = store.create_conversation(title="Corrupt v1 fixture")
+    message = store.add_message(conversation.conversation_id, role="user", content="Keep me")
+
+    with sqlite3.connect(db_path) as conn:
+        _downgrade_to_true_v1_schema(conn)
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            "INSERT INTO ai_route_candidates "
+            "(candidate_id, route_id, provider_id, model_id, runtime_id, rank, score, "
+            "score_components_json, eligible, reasons_json, rejection_reason, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "orphan-candidate",
+                "missing-route",
+                "mock",
+                "mock-v1",
+                "mock",
+                1,
+                1,
+                "{}",
+                1,
+                "[]",
+                None,
+                "2026-08-01T00:00:00+00:00",
+            ),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="migration left foreign key violations"):
+        PersonalAIStore(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT version FROM personal_ai_schema_versions ORDER BY version"
+        ).fetchall() == [(1,)]
+        assert (
+            "route_id",
+            "ai_route_decisions",
+            "route_id",
+        ) not in {
+            (row[3], row[2], row[4])
+            for row in conn.execute("PRAGMA foreign_key_list(chat_messages)").fetchall()
+        }
+        assert conn.execute(
+            "SELECT COUNT(*) FROM chat_messages WHERE message_id = ?", (message.message_id,)
+        ).fetchone()[0] == 1
