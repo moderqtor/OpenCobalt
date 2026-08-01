@@ -647,12 +647,19 @@ class ChatService:
             for index, provider_id in enumerate(request.settings.provider_priority[:20])
         }
         snapshots: list[ProviderSnapshot] = []
-        for status in self.providers.discover():
+        statuses = self.providers.discover()
+        real_provider_available = any(
+            status.provider_id != "mock" and status.execution_supported
+            for status in statuses
+        )
+        for status in statuses:
             profile = status.routing_profile
             preference = preferences.get(status.provider_id)
             available = status.execution_supported
-            if status.provider_id == "mock" and not self.enable_mock:
-                available = False
+            if status.provider_id == "mock":
+                available = self.enable_mock and (
+                    request.provider_override == "mock" or not real_provider_available
+                )
             if preference is not None:
                 available = available and preference.enabled
                 if (

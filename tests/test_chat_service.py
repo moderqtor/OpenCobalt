@@ -182,6 +182,47 @@ def test_conversation_and_routes_survive_service_restart(tmp_path):
     assert reopened.list_routes(conversation_id=conversation.conversation_id)[0].receipt_id
 
 
+def test_development_mock_is_used_only_when_no_real_provider_is_routable(tmp_path):
+    mock_service, mock_store, _ = _real_mock_service(tmp_path / "mock-only")
+    conversation = mock_service.create_conversation(title="Automatic development route")
+
+    list(
+        mock_service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Explain this concept",
+            )
+        )
+    )
+
+    assert mock_store.list_routes(conversation_id=conversation.conversation_id)[0].selected_provider == "mock"
+
+    engine = FakeEngine(_outcome(stdout="real response", receipt_id="receipt-real"))
+    real_store = PersonalAIStore(tmp_path / "real" / "ledger.db")
+    real_service = ChatService(
+        store=real_store,
+        providers=ProviderRegistry(
+            engine,
+            adapters=_adapters(codex=True),
+            executable_finder=lambda _name: None,
+        ),
+        enable_mock=True,
+    )
+    real_conversation = real_service.create_conversation(title="Real route")
+
+    list(
+        real_service.stream_request(
+            ChatRequest(
+                conversation_id=real_conversation.conversation_id,
+                message="Explain this concept",
+            )
+        )
+    )
+
+    assert real_store.list_routes(conversation_id=real_conversation.conversation_id)[0].selected_provider == "codex"
+    assert engine.calls[0][1]["runtime"] == "codex-cli"
+
+
 def test_durable_cancellation_stops_mock_stream_and_marks_execution(tmp_path):
     service, store, _ = _real_mock_service(tmp_path)
     conversation = service.create_conversation(title="Cancellation")
