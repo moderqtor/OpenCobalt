@@ -59,7 +59,7 @@ def test_safe_local_import_is_pinned_disabled_and_receipted(tmp_path):
     assert preview.executable_files == []
     assert len(preview.content_hash) == 64
 
-    installed = service.install(preview.preview_id, approved=False)
+    installed = service.install(preview.preview_id)
 
     assert installed.skill.enabled is False
     assert installed.skill.source_kind == "imported"
@@ -91,11 +91,18 @@ def test_executable_or_permission_risk_requires_approval_and_never_executes(tmp_
     assert preview.requires_approval is True
     assert preview.executable_files == ["run.py"]
     assert set(preview.requested_permissions) == {"network", "write_workspace"}
-    with pytest.raises(PermissionError, match="explicit approval"):
-        service.install(preview.preview_id, approved=False)
+    assert preview.approval_request_id is not None
+    assert preview.approval_step_id is not None
+    with pytest.raises(PermissionError, match="ApprovalBridge"):
+        service.install(preview.preview_id)
     assert marker.exists() is False
 
-    service.install(preview.preview_id, approved=True)
+    service.approval_bridge.approve(preview.approval_request_id)
+    installed = service.install(
+        preview.preview_id,
+        approval_request_id=preview.approval_request_id,
+    )
+    assert installed.approval_decision_id is not None
     assert marker.exists() is False
 
 
@@ -132,7 +139,7 @@ def test_install_rechecks_source_hash_to_prevent_preview_install_race(tmp_path):
     instructions.write_text("Changed after review")
 
     with pytest.raises(ValueError, match="changed since preview"):
-        service.install(preview.preview_id, approved=False)
+        service.install(preview.preview_id)
     assert store.list_skills() == []
     assert [event for event in ledger.list_events() if event.event_type == "skill.imported"] == []
 
@@ -150,7 +157,7 @@ def test_install_rechecks_executable_mode_after_preview(tmp_path):
     script.chmod(0o700)
 
     with pytest.raises(ValueError, match="changed since preview"):
-        service.install(preview.preview_id, approved=False)
+        service.install(preview.preview_id)
 
 
 def test_install_root_cannot_be_redirected_through_a_symlink(tmp_path):
@@ -170,7 +177,7 @@ def test_install_root_cannot_be_redirected_through_a_symlink(tmp_path):
     preview = service.preview(source)
 
     with pytest.raises(ValueError, match="install root cannot be a symlink"):
-        service.install(preview.preview_id, approved=False)
+        service.install(preview.preview_id)
 
 
 def test_imported_versions_support_explicit_rollback_and_bounded_removal(tmp_path):
@@ -178,26 +185,38 @@ def test_imported_versions_support_explicit_rollback_and_bounded_removal(tmp_pat
     _write_manifest(source, version="1.0.0")
     (source / "SKILL.md").write_text("Version one")
     service, store, ledger = _service(tmp_path)
-    first = service.install(service.preview(source).preview_id, approved=False)
+    first = service.install(service.preview(source).preview_id)
 
     _write_manifest(source, version="2.0.0")
     (source / "SKILL.md").write_text("Version two")
-    second = service.install(service.preview(source).preview_id, approved=False)
+    second = service.install(service.preview(source).preview_id)
     assert store.get_skill(first.skill.skill_id).active_version_id == (
         second.version.skill_version_id
     )
 
+    rollback_approval = service.request_version_action(
+        first.skill.skill_id,
+        first.version.skill_version_id,
+        action="rollback",
+    )
+    service.approval_bridge.approve(rollback_approval.approval_request_id)
     rolled_back = service.rollback(
         first.skill.skill_id,
         first.version.skill_version_id,
-        approved=True,
+        approval_request_id=rollback_approval.approval_request_id,
     )
     assert rolled_back.active_version_id == first.version.skill_version_id
 
+    removal_approval = service.request_version_action(
+        first.skill.skill_id,
+        second.version.skill_version_id,
+        action="remove",
+    )
+    service.approval_bridge.approve(removal_approval.approval_request_id)
     removed_receipt = service.remove_version(
         first.skill.skill_id,
         second.version.skill_version_id,
-        approved=True,
+        approval_request_id=removal_approval.approval_request_id,
     )
     assert Path(second.version.install_path).exists() is False
     assert store.get_skill_version(second.version.skill_version_id) is not None
@@ -213,3 +232,136 @@ def test_online_skill_discovery_is_truthfully_unavailable(tmp_path):
         "available": False,
         "reason": "online skill discovery is not enabled in this local MVP",
     }
+
+
+def test_identical_reimport_is_idempotent_and_never_deletes_existing_tree(tmp_path):
+    source = tmp_path / "source"
+    _write_manifest(source)
+    (source / "SKILL.md").write_text("Pinned instructions")
+    service, store, _ = _service(tmp_path)
+    first = service.install(service.preview(source).preview_id)
+    install_path = Path(first.version.install_path)
+
+    second = service.install(service.preview(source).preview_id)
+
+    assert second.version.skill_version_id == first.version.skill_version_id
+    assert second.receipt_id == first.receipt_id
+    assert install_path.is_dir()
+    assert (install_path / "SKILL.md").read_text() == "Pinned instructions"
+    assert len(store.list_skill_versions(first.skill.skill_id)) == 1
+
+
+def test_symlink_substitution_cannot_redirect_rollback_or_removal(tmp_path):
+    source = tmp_path / "versioned"
+    _write_manifest(source, version="1.0.0")
+    (source / "SKILL.md").write_text("Version one")
+    service, _, _ = _service(tmp_path)
+    first = service.install(service.preview(source).preview_id)
+    _write_manifest(source, version="2.0.0")
+    (source / "SKILL.md").write_text("Version two")
+    second = service.install(service.preview(source).preview_id)
+
+    rollback = service.request_version_action(
+        first.skill.skill_id,
+        first.version.skill_version_id,
+        action="rollback",
+    )
+    service.approval_bridge.approve(rollback.approval_request_id)
+    service.rollback(
+        first.skill.skill_id,
+        first.version.skill_version_id,
+        approval_request_id=rollback.approval_request_id,
+    )
+    approval = service.request_version_action(
+        first.skill.skill_id,
+        second.version.skill_version_id,
+        action="remove",
+    )
+    service.approval_bridge.approve(approval.approval_request_id)
+    second_path = Path(second.version.install_path)
+    second_path.rename(second_path.with_name(second_path.name + "-real"))
+    second_path.symlink_to(Path(first.version.install_path), target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symlink"):
+        service.remove_version(
+            first.skill.skill_id,
+            second.version.skill_version_id,
+            approval_request_id=approval.approval_request_id,
+        )
+    assert Path(first.version.install_path).is_dir()
+    assert second_path.is_symlink()
+
+
+def test_bare_boolean_or_unrelated_approval_cannot_authorize_risky_import(tmp_path):
+    source = tmp_path / "risky"
+    _write_manifest(source, permissions=["network"])
+    service, _, _ = _service(tmp_path)
+    preview = service.preview(source)
+
+    with pytest.raises((TypeError, PermissionError)):
+        service.install(preview.preview_id, approved=True)
+    with pytest.raises(PermissionError, match="ApprovalBridge"):
+        service.install(preview.preview_id, approval_request_id="aprq-unrelated")
+
+
+def test_database_receipt_failure_rolls_back_records_and_only_new_files(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    _write_manifest(source)
+    (source / "SKILL.md").write_text("Atomic import")
+    service, store, _ = _service(tmp_path)
+    preview = service.preview(source)
+
+    def fail_receipt(*_args, **_kwargs):
+        raise RuntimeError("simulated receipt failure")
+
+    monkeypatch.setattr(PersonalAIStore, "_insert_event", staticmethod(fail_receipt))
+    with pytest.raises(RuntimeError, match="receipt failure"):
+        service.install(preview.preview_id)
+
+    assert store.list_skills() == []
+    assert list((tmp_path / "installed-skills").rglob("SKILL.md")) == []
+
+
+def test_removal_receipt_failure_restores_verified_canonical_tree(tmp_path, monkeypatch):
+    source = tmp_path / "versioned"
+    _write_manifest(source, version="1.0.0")
+    (source / "SKILL.md").write_text("Version one")
+    service, _, _ = _service(tmp_path)
+    first = service.install(service.preview(source).preview_id)
+    _write_manifest(source, version="2.0.0")
+    (source / "SKILL.md").write_text("Version two")
+    second = service.install(service.preview(source).preview_id)
+    rollback = service.request_version_action(
+        first.skill.skill_id,
+        first.version.skill_version_id,
+        action="rollback",
+    )
+    service.approval_bridge.approve(rollback.approval_request_id)
+    service.rollback(
+        first.skill.skill_id,
+        first.version.skill_version_id,
+        approval_request_id=rollback.approval_request_id,
+    )
+    removal = service.request_version_action(
+        first.skill.skill_id,
+        second.version.skill_version_id,
+        action="remove",
+    )
+    service.approval_bridge.approve(removal.approval_request_id)
+
+    def fail_event(_event):
+        raise RuntimeError("simulated removal receipt failure")
+
+    monkeypatch.setattr(store := service.store, "record_event", fail_event)
+    with pytest.raises(RuntimeError, match="removal receipt failure"):
+        service.remove_version(
+            first.skill.skill_id,
+            second.version.skill_version_id,
+            approval_request_id=removal.approval_request_id,
+        )
+
+    restored = Path(second.version.install_path)
+    assert restored.is_dir()
+    assert restored.is_symlink() is False
+    assert (restored / "SKILL.md").read_text() == "Version two"
+    assert store.get_skill_version(second.version.skill_version_id) is not None

@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from opencobalt.core.models import SessionEvent
+
 from .models import (
     AISettings,
     ChatExecution,
@@ -1080,6 +1082,20 @@ class PersonalAIStore:
             ).fetchone()
         return self._decode_skill_version(row) if row else None
 
+    def get_skill_version_by_identity(
+        self,
+        skill_id: str,
+        version: str,
+        content_hash: str,
+    ) -> SkillVersion | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM skill_versions WHERE skill_id = ? AND version = ? "
+                "AND content_hash = ?",
+                (skill_id, version, content_hash),
+            ).fetchone()
+        return self._decode_skill_version(row) if row else None
+
     def list_skill_versions(self, skill_id: str) -> list[SkillVersion]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -1111,6 +1127,115 @@ class PersonalAIStore:
         if skill is None:  # pragma: no cover - guarded by the update rowcount
             raise KeyError(f"unknown skill: {skill_id}")
         return skill
+
+    def save_imported_skill_with_receipt(
+        self,
+        skill: SkillRecord,
+        version: SkillVersion,
+        receipt: SessionEvent,
+    ) -> None:
+        """Atomically persist an imported skill version and its ledger receipt."""
+        if skill.skill_id != version.skill_id:
+            raise ValueError("skill version does not belong to the supplied skill")
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO skill_records "
+                "(skill_id, name, description, source_kind, source_ref, enabled, trust_level, "
+                "active_version_id, requested_permissions_json, compatibility_json, last_used_at, "
+                "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(name) DO UPDATE SET description=excluded.description, "
+                "source_ref=excluded.source_ref, enabled=excluded.enabled, "
+                "trust_level=excluded.trust_level, "
+                "requested_permissions_json=excluded.requested_permissions_json, "
+                "compatibility_json=excluded.compatibility_json, "
+                "last_used_at=excluded.last_used_at, updated_at=excluded.updated_at",
+                (
+                    skill.skill_id,
+                    skill.name,
+                    skill.description,
+                    skill.source_kind,
+                    skill.source_ref,
+                    int(skill.enabled),
+                    skill.trust_level,
+                    skill.active_version_id,
+                    _dump(skill.requested_permissions),
+                    _dump(skill.compatibility),
+                    _iso(skill.last_used_at),
+                    _iso(skill.created_at),
+                    _iso(skill.updated_at),
+                ),
+            )
+            conn.execute(
+                "INSERT INTO skill_versions "
+                "(skill_version_id, skill_id, version, content_hash, manifest_json, "
+                "install_path, receipt_id, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    version.skill_version_id,
+                    version.skill_id,
+                    version.version,
+                    version.content_hash,
+                    _dump(version.manifest),
+                    version.install_path,
+                    version.receipt_id,
+                    _iso(version.created_at),
+                ),
+            )
+            conn.execute(
+                "UPDATE skill_records SET active_version_id = ?, updated_at = ? "
+                "WHERE skill_id = ?",
+                (version.skill_version_id, _iso(version.created_at), skill.skill_id),
+            )
+            self._insert_event(conn, receipt)
+
+    def activate_skill_version_with_receipt(
+        self,
+        skill_id: str,
+        skill_version_id: str,
+        receipt: SessionEvent,
+    ) -> SkillRecord:
+        """Activate a pinned version and record the decision in one DB transaction."""
+        now = _iso(datetime.now(tz=timezone.utc))
+        with self._connect() as conn:
+            version = conn.execute(
+                "SELECT 1 FROM skill_versions WHERE skill_version_id = ? AND skill_id = ?",
+                (skill_version_id, skill_id),
+            ).fetchone()
+            if version is None:
+                raise KeyError(f"skill version does not belong to skill: {skill_version_id}")
+            cursor = conn.execute(
+                "UPDATE skill_records SET active_version_id = ?, updated_at = ? "
+                "WHERE skill_id = ?",
+                (skill_version_id, now, skill_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"unknown skill: {skill_id}")
+            self._insert_event(conn, receipt)
+        skill = self.get_skill(skill_id)
+        if skill is None:  # pragma: no cover - guarded by the update rowcount
+            raise KeyError(f"unknown skill: {skill_id}")
+        return skill
+
+    def record_event(self, event: SessionEvent) -> None:
+        with self._connect() as conn:
+            self._insert_event(conn, event)
+
+    @staticmethod
+    def _insert_event(conn: sqlite3.Connection, event: SessionEvent) -> None:
+        conn.execute(
+            "INSERT INTO events "
+            "(id, timestamp, project, source, event_type, summary, raw_ref, metadata) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                event.id,
+                event.timestamp.isoformat(),
+                event.project,
+                event.source,
+                event.event_type,
+                event.summary,
+                event.raw_ref,
+                _dump(event.metadata),
+            ),
+        )
 
     # Typed settings and provider preferences
 
