@@ -646,6 +646,7 @@ class ChatService:
             provider_id: max(-10, 10 - index)
             for index, provider_id in enumerate(request.settings.provider_priority[:20])
         }
+        historical_signals = self._historical_success_signals()
         snapshots: list[ProviderSnapshot] = []
         statuses = self.providers.discover()
         real_provider_available = any(
@@ -700,10 +701,31 @@ class ChatService:
                         capabilities=frozenset(profile.task_capabilities),
                         tool_names=frozenset(profile.tool_names),
                         latency_category=profile.latency_category,
+                        historical_success_signal=historical_signals.get(
+                            status.provider_id, 0
+                        ),
                         provider_priority=priority,
                     )
                 )
         return snapshots
+
+    def _historical_success_signals(self) -> dict[str, int]:
+        """Derive a small bounded routing signal from local outcome history."""
+        grouped: dict[str, list[str]] = {}
+        for execution in self.store.list_executions(limit=200):
+            outcomes = grouped.setdefault(execution.provider_id, [])
+            if len(outcomes) < 20 and execution.status in {
+                "complete",
+                "failed",
+                "cancelled",
+            }:
+                outcomes.append(execution.status)
+        signals: dict[str, int] = {}
+        for provider_id, outcomes in grouped.items():
+            successes = outcomes.count("complete")
+            failures = len(outcomes) - successes
+            signals[provider_id] = max(-10, min(10, 2 * (successes - failures)))
+        return signals
 
     def _persist_denied_route(
         self,

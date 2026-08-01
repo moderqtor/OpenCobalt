@@ -397,6 +397,44 @@ def test_provider_failure_never_falls_back_without_request_permission(tmp_path):
     assert len(engine.calls) == 1
 
 
+def test_local_outcome_history_is_a_bounded_routing_signal(tmp_path):
+    engine = FakeEngine(
+        _outcome(status="failed", error="authentication failed", receipt_id="receipt-1"),
+        _outcome(status="failed", error="authentication failed", receipt_id="receipt-2"),
+        _outcome(stdout="alternate provider response", receipt_id="receipt-3"),
+    )
+    store = PersonalAIStore(tmp_path / "ledger.db")
+    service = ChatService(
+        store=store,
+        providers=ProviderRegistry(
+            engine,
+            adapters=_adapters(codex=True, antigravity=True),
+            executable_finder=lambda _name: None,
+        ),
+    )
+
+    for index in range(3):
+        conversation = service.create_conversation(title=f"History {index}")
+        list(
+            service.stream_request(
+                ChatRequest(
+                    conversation_id=conversation.conversation_id,
+                    message="Explain the decision",
+                )
+            )
+        )
+
+    routes = store.list_routes()
+    assert [route.selected_provider for route in routes] == [
+        "antigravity",
+        "codex",
+        "codex",
+    ]
+    newest_candidates = store.list_route_candidates(routes[0].route_id)
+    codex = next(item for item in newest_candidates if item.provider_id == "codex")
+    assert codex.score_components["historical_success"] == -4
+
+
 def test_explicit_remember_request_creates_a_proposal_not_silent_memory(tmp_path):
     service, store, _ = _real_mock_service(tmp_path)
     conversation = service.create_conversation(title="Memory proposal")
