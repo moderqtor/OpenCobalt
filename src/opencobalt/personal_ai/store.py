@@ -1035,6 +1035,20 @@ class PersonalAIStore:
             rows = conn.execute(sql, params).fetchall()
         return [self._decode_skill(row) for row in rows]
 
+    def get_skill(self, skill_id: str) -> SkillRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM skill_records WHERE skill_id = ?", (skill_id,)
+            ).fetchone()
+        return self._decode_skill(row) if row else None
+
+    def get_skill_by_name(self, name: str) -> SkillRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM skill_records WHERE name = ?", (name,)
+            ).fetchone()
+        return self._decode_skill(row) if row else None
+
     def save_skill_version(self, version: SkillVersion, *, activate: bool = True) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -1057,6 +1071,46 @@ class PersonalAIStore:
                     "UPDATE skill_records SET active_version_id = ?, updated_at = ? WHERE skill_id = ?",
                     (version.skill_version_id, _iso(version.created_at), version.skill_id),
                 )
+
+    def get_skill_version(self, skill_version_id: str) -> SkillVersion | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM skill_versions WHERE skill_version_id = ?",
+                (skill_version_id,),
+            ).fetchone()
+        return self._decode_skill_version(row) if row else None
+
+    def list_skill_versions(self, skill_id: str) -> list[SkillVersion]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM skill_versions WHERE skill_id = ? "
+                "ORDER BY created_at DESC, skill_version_id DESC",
+                (skill_id,),
+            ).fetchall()
+        return [self._decode_skill_version(row) for row in rows]
+
+    def activate_skill_version(
+        self, skill_id: str, skill_version_id: str
+    ) -> SkillRecord:
+        now = _iso(datetime.now(tz=timezone.utc))
+        with self._connect() as conn:
+            version = conn.execute(
+                "SELECT 1 FROM skill_versions WHERE skill_version_id = ? AND skill_id = ?",
+                (skill_version_id, skill_id),
+            ).fetchone()
+            if version is None:
+                raise KeyError(f"skill version does not belong to skill: {skill_version_id}")
+            cursor = conn.execute(
+                "UPDATE skill_records SET active_version_id = ?, updated_at = ? "
+                "WHERE skill_id = ?",
+                (skill_version_id, now, skill_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"unknown skill: {skill_id}")
+        skill = self.get_skill(skill_id)
+        if skill is None:  # pragma: no cover - guarded by the update rowcount
+            raise KeyError(f"unknown skill: {skill_id}")
+        return skill
 
     # Typed settings and provider preferences
 
@@ -1274,4 +1328,17 @@ class PersonalAIStore:
             last_used_at=row["last_used_at"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _decode_skill_version(row: sqlite3.Row) -> SkillVersion:
+        return SkillVersion(
+            skill_version_id=row["skill_version_id"],
+            skill_id=row["skill_id"],
+            version=row["version"],
+            content_hash=row["content_hash"],
+            manifest=_load(row["manifest_json"], {}),
+            install_path=row["install_path"],
+            receipt_id=row["receipt_id"],
+            created_at=row["created_at"],
         )
