@@ -1,0 +1,1099 @@
+"""Normalized personal-AI provider discovery and execution boundary.
+
+Provider adapters remain responsible for provider-specific argv and capability
+evidence. This module exposes only normalized chat-facing records and routes
+every real or simulated completion through :class:`ExecutionEngine`.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import shutil
+import threading
+import uuid
+from collections.abc import Callable, Iterator, Mapping
+from datetime import datetime, timezone
+from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit, urlunsplit
+
+from pydantic import BaseModel, Field, field_validator
+
+from opencobalt.execution.adapters import (
+    AntigravityAdapter,
+    ClaudeCodeAdapter,
+    CodexCliAdapter,
+    NoopAdapter,
+    OllamaAdapter,
+)
+from opencobalt.execution.engine import ExecutionEngine
+from opencobalt.execution.models import RuntimeCapabilitySnapshot
+from opencobalt.execution.runner import redact_text
+
+AuthenticationState = Literal["unknown", "not_required", "verified"]
+ProviderHealthState = Literal["ready", "unknown", "unavailable"]
+ProviderResultStatus = Literal["complete", "failed", "blocked", "cancelled", "unavailable"]
+StreamingMode = Literal["none", "simulated", "completion_only"]
+CancellationMode = Literal["none", "normalized_stream_only"]
+
+
+def _now() -> datetime:
+    return datetime.now(tz=timezone.utc)
+
+
+def _uid(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4()}"
+
+
+class ProviderCapabilities(BaseModel):
+    """Provider-neutral capabilities proven at the current boundary."""
+
+    completion: bool = False
+    streaming: StreamingMode = "none"
+    cancellation: CancellationMode = "none"
+    model_discovery: bool = False
+    usage_reporting: bool = False
+    receipt_linkage: bool = False
+    local_only_eligible: bool = False
+    requires_network: bool = True
+
+
+class ProviderStatus(BaseModel):
+    """Truthful distinction between installation, auth, and readiness."""
+
+    provider_id: str
+    display_name: str
+    runtime_id: str | None = None
+    installed: bool
+    authentication: AuthenticationState = "unknown"
+    health: ProviderHealthState
+    execution_supported: bool
+    capabilities: ProviderCapabilities
+    limitations: list[str] = Field(default_factory=list)
+    discovered_at: datetime = Field(default_factory=_now)
+
+
+class ProviderHealth(BaseModel):
+    provider_id: str
+    state: ProviderHealthState
+    authentication: AuthenticationState
+    evidence: Literal["builtin", "capability_snapshot", "executable_only"]
+    successful_invocation_proven: bool = False
+    checked_at: datetime = Field(default_factory=_now)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class ProviderModel(BaseModel):
+    provider_id: str
+    model_id: str
+    display_name: str
+    source: Literal["builtin", "runtime_discovered"]
+
+
+class ProviderError(BaseModel):
+    category: Literal[
+        "authentication",
+        "cancelled",
+        "configuration",
+        "execution_unsupported",
+        "invalid_request",
+        "local_only_violation",
+        "policy_denied",
+        "provider_error",
+        "rate_limited",
+        "timeout",
+        "unavailable",
+    ]
+    message: str
+    retryable: bool = False
+
+
+class ProviderUsage(BaseModel):
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+    input_characters: int | None = Field(default=None, ge=0)
+    output_characters: int | None = Field(default=None, ge=0)
+    source: Literal["provider_reported", "deterministic_characters", "unavailable"] = (
+        "unavailable"
+    )
+
+
+class ProviderRequest(BaseModel):
+    request_id: str = Field(default_factory=lambda: _uid("preq"))
+    conversation_id: str | None = None
+    message: str
+    model_id: str | None = None
+    local_only: bool = False
+    allow_fallback: bool = False
+    timeout_seconds: int = Field(default=120, ge=1, le=3600)
+    cwd: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("message")
+    @classmethod
+    def _message_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("provider request message cannot be blank")
+        return value
+
+    @field_validator("model_id")
+    @classmethod
+    def _model_id_is_argv_safe(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if (
+            not value
+            or value.startswith("-")
+            or len(value) > 200
+            or any(
+                not (character.isalnum() or character in "._:/-")
+                for character in value
+            )
+        ):
+            raise ValueError("model id must be a bounded non-flag identifier")
+        return value
+
+
+class ProviderResult(BaseModel):
+    request_id: str
+    provider_id: str
+    model_id: str | None = None
+    status: ProviderResultStatus
+    content: str = ""
+    usage: ProviderUsage = Field(default_factory=ProviderUsage)
+    receipt_id: str | None = None
+    error: ProviderError | None = None
+    limitations: list[str] = Field(default_factory=list)
+
+
+class ProviderEvent(BaseModel):
+    event_id: str = Field(default_factory=lambda: _uid("pevt"))
+    request_id: str
+    provider_id: str
+    sequence: int = Field(ge=1)
+    event_type: Literal[
+        "started", "text_delta", "usage", "completed", "error", "cancelled"
+    ]
+    text_delta: str | None = None
+    usage: ProviderUsage | None = None
+    error: ProviderError | None = None
+    receipt_id: str | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+
+class ProviderModelCatalog(BaseModel):
+    provider_id: str
+    models: list[ProviderModel] = Field(default_factory=list)
+    receipt_id: str | None = None
+    error: ProviderError | None = None
+
+
+class CancellationToken:
+    """Thread-safe cooperative cancellation for normalized event emission."""
+
+    def __init__(self) -> None:
+        self._cancelled = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+
+class _EngineLike(Protocol):
+    def run_task(self, task: str, **kwargs: Any) -> Any: ...
+
+
+class _AdapterLike(Protocol):
+    runtime_id: str
+    display_name: str
+    executable: str
+
+    def discover_capabilities(self) -> RuntimeCapabilitySnapshot: ...
+
+    def build_command(self, task: str, options: Any = None) -> list[str]: ...
+
+    def supports_non_interactive(self) -> bool: ...
+
+    def default_timeout_seconds(self) -> int: ...
+
+    def risk_for_task(self, task: str) -> str: ...
+
+
+class ChatProvider:
+    """Provider-neutral interface used by routing and chat orchestration."""
+
+    provider_id: str
+    display_name: str
+
+    def status(self) -> ProviderStatus:
+        raise NotImplementedError
+
+    def health(self) -> ProviderHealth:
+        status = self.status()
+        return ProviderHealth(
+            provider_id=status.provider_id,
+            state=status.health,
+            authentication=status.authentication,
+            evidence="capability_snapshot",
+            successful_invocation_proven=False,
+            limitations=list(status.limitations),
+        )
+
+    def discover_models(self, *, local_only: bool = False) -> ProviderModelCatalog:
+        return ProviderModelCatalog(provider_id=self.provider_id)
+
+    def execute(
+        self,
+        request: ProviderRequest,
+        cancellation: CancellationToken | None = None,
+    ) -> ProviderResult:
+        raise NotImplementedError
+
+    def stream(
+        self,
+        request: ProviderRequest,
+        cancellation: CancellationToken | None = None,
+    ) -> Iterator[ProviderEvent]:
+        result = self.execute(request, cancellation)
+        yield from _events_from_result(result, cancellation, chunk_size=64)
+
+
+class EngineBackedChatProvider(ChatProvider):
+    """A normalized completion provider whose work is owned by ExecutionEngine."""
+
+    def __init__(
+        self,
+        *,
+        provider_id: str,
+        display_name: str,
+        engine: _EngineLike,
+        adapter: _AdapterLike,
+        supports_model_discovery: bool = False,
+    ) -> None:
+        self.provider_id = provider_id
+        self.display_name = display_name
+        self.engine = engine
+        self.adapter = adapter
+        self.supports_model_discovery = supports_model_discovery
+
+    def status(self) -> ProviderStatus:
+        snapshot = self.adapter.discover_capabilities()
+        execution_supported = snapshot.available and snapshot.supports_noninteractive
+        health: ProviderHealthState = "unknown" if snapshot.available else "unavailable"
+        authentication: AuthenticationState = (
+            "unknown" if snapshot.requires_credentials else "not_required"
+        )
+        limitations = [_public_error_text(item) for item in snapshot.limitations]
+        if snapshot.available and snapshot.requires_credentials:
+            limitations.append(
+                "executable discovery does not prove authentication or successful invocation"
+            )
+        return ProviderStatus(
+            provider_id=self.provider_id,
+            display_name=self.display_name,
+            runtime_id=self.adapter.runtime_id,
+            installed=snapshot.available,
+            authentication=authentication,
+            health=health,
+            execution_supported=execution_supported,
+            capabilities=ProviderCapabilities(
+                completion=execution_supported,
+                streaming="completion_only" if execution_supported else "none",
+                cancellation="none",
+                model_discovery=self.supports_model_discovery,
+                usage_reporting=False,
+                receipt_linkage=execution_supported,
+                local_only_eligible=execution_supported and not snapshot.requires_network,
+                requires_network=snapshot.requires_network,
+            ),
+            limitations=list(dict.fromkeys(limitations)),
+        )
+
+    def execute(
+        self,
+        request: ProviderRequest,
+        cancellation: CancellationToken | None = None,
+    ) -> ProviderResult:
+        return self._execute_through_engine(request, cancellation=cancellation)
+
+    def _execute_through_engine(
+        self,
+        request: ProviderRequest,
+        *,
+        cancellation: CancellationToken | None = None,
+        task: str | None = None,
+        adapter: _AdapterLike | None = None,
+        model_id: str | None = None,
+    ) -> ProviderResult:
+        if cancellation is not None and cancellation.cancelled:
+            return _pre_execution_error(
+                request,
+                self.provider_id,
+                category="cancelled",
+                message="request cancelled before execution",
+                status="cancelled",
+            )
+
+        provider_status = self.status()
+        if request.local_only and not provider_status.capabilities.local_only_eligible:
+            return _pre_execution_error(
+                request,
+                self.provider_id,
+                category="local_only_violation",
+                message="requested provider is not proven eligible for local-only execution",
+                status="blocked",
+            )
+        if not provider_status.installed:
+            return _pre_execution_error(
+                request,
+                self.provider_id,
+                category="unavailable",
+                message="provider executable is unavailable",
+                status="unavailable",
+            )
+        if not provider_status.execution_supported:
+            return _pre_execution_error(
+                request,
+                self.provider_id,
+                category="execution_unsupported",
+                message="safe non-interactive provider execution was not discovered",
+                status="unavailable",
+            )
+
+        selected_adapter = adapter or self.adapter
+        try:
+            outcome = self.engine.run_task(
+                task if task is not None else request.message,
+                runtime=selected_adapter.runtime_id,
+                model=model_id if model_id is not None else request.model_id,
+                execute=True,
+                approved=False,
+                timeout_seconds=request.timeout_seconds,
+                cwd=request.cwd,
+                unsafe_skip_permissions=False,
+                adapter=selected_adapter,
+            )
+        except (KeyError, ValueError) as exc:
+            return _pre_execution_error(
+                request,
+                self.provider_id,
+                category="configuration",
+                message=_public_error_text(str(exc)),
+                status="failed",
+            )
+        return _normalize_outcome(
+            request=request,
+            provider_id=self.provider_id,
+            model_id=model_id if model_id is not None else request.model_id,
+            outcome=outcome,
+        )
+
+
+class MockChatProvider(EngineBackedChatProvider):
+    """Deterministic development provider executed through the noop adapter."""
+
+    def __init__(self, engine: _EngineLike, *, chunk_size: int = 16) -> None:
+        super().__init__(
+            provider_id="mock",
+            display_name="Mock (deterministic local)",
+            engine=engine,
+            adapter=NoopAdapter(),
+        )
+        if chunk_size < 1:
+            raise ValueError("chunk_size must be positive")
+        self.chunk_size = chunk_size
+
+    def status(self) -> ProviderStatus:
+        return ProviderStatus(
+            provider_id=self.provider_id,
+            display_name=self.display_name,
+            runtime_id="noop",
+            installed=True,
+            authentication="not_required",
+            health="ready",
+            execution_supported=True,
+            capabilities=ProviderCapabilities(
+                completion=True,
+                streaming="simulated",
+                cancellation="normalized_stream_only",
+                model_discovery=True,
+                usage_reporting=True,
+                receipt_linkage=True,
+                local_only_eligible=True,
+                requires_network=False,
+            ),
+            limitations=[
+                "deterministic development provider; not a live model",
+                "cancellation applies between simulated chunks after engine completion",
+            ],
+        )
+
+    def health(self) -> ProviderHealth:
+        return ProviderHealth(
+            provider_id=self.provider_id,
+            state="ready",
+            authentication="not_required",
+            evidence="builtin",
+            successful_invocation_proven=False,
+            limitations=self.status().limitations,
+        )
+
+    def discover_models(self, *, local_only: bool = False) -> ProviderModelCatalog:
+        return ProviderModelCatalog(
+            provider_id=self.provider_id,
+            models=[
+                ProviderModel(
+                    provider_id=self.provider_id,
+                    model_id="mock-v1",
+                    display_name="Mock v1",
+                    source="builtin",
+                )
+            ],
+        )
+
+    def execute(
+        self,
+        request: ProviderRequest,
+        cancellation: CancellationToken | None = None,
+    ) -> ProviderResult:
+        model_id = request.model_id or "mock-v1"
+        result = self._execute_through_engine(
+            request,
+            cancellation=cancellation,
+            task=f"Mock response: {request.message}",
+            model_id=model_id,
+        )
+        if result.status == "complete" and result.usage.source == "unavailable":
+            result.usage = ProviderUsage(
+                input_characters=len(request.message),
+                output_characters=len(result.content),
+                source="deterministic_characters",
+            )
+        return result
+
+    def stream(
+        self,
+        request: ProviderRequest,
+        cancellation: CancellationToken | None = None,
+    ) -> Iterator[ProviderEvent]:
+        result = self.execute(request, cancellation)
+        yield from _events_from_result(result, cancellation, chunk_size=self.chunk_size)
+
+
+class _OllamaEndpointAdapter:
+    """Internal adapter wrapper that forces the configured loopback endpoint."""
+
+    runtime_id = "ollama"
+    display_name = "Ollama (loopback constrained)"
+    executable = "ollama"
+
+    def __init__(self, base: _AdapterLike, endpoint: str) -> None:
+        self.base = base
+        self.endpoint = endpoint
+
+    def discover_capabilities(self) -> RuntimeCapabilitySnapshot:
+        snapshot = self.base.discover_capabilities()
+        return snapshot.model_copy(update={"requires_network": False}).with_hash()
+
+    def build_command(self, task: str, options: Any = None) -> list[str]:
+        return _loopback_env_prefix(self.endpoint) + self.base.build_command(task, options)
+
+    def supports_non_interactive(self) -> bool:
+        return self.base.supports_non_interactive()
+
+    def default_timeout_seconds(self) -> int:
+        return self.base.default_timeout_seconds()
+
+    def risk_for_task(self, task: str) -> str:
+        return self.base.risk_for_task(task)
+
+
+class _OllamaModelListAdapter(_OllamaEndpointAdapter):
+    def build_command(self, task: str, options: Any = None) -> list[str]:
+        return _loopback_env_prefix(self.endpoint) + [self.base.executable, "list"]
+
+
+class OllamaChatProvider(EngineBackedChatProvider):
+    """Ollama provider with engine-backed, loopback-only model discovery."""
+
+    def __init__(self, engine: _EngineLike, adapter: _AdapterLike, endpoint: str) -> None:
+        self.endpoint = _normalized_ollama_endpoint(endpoint)
+        super().__init__(
+            provider_id="ollama",
+            display_name="Ollama",
+            engine=engine,
+            adapter=adapter,
+            supports_model_discovery=True,
+        )
+
+    @property
+    def _loopback(self) -> bool:
+        return self.endpoint is not None and _is_loopback_url(self.endpoint)
+
+    def status(self) -> ProviderStatus:
+        status = super().status()
+        status.capabilities.model_discovery = status.installed and self._loopback
+        status.capabilities.local_only_eligible = status.installed and self._loopback
+        status.capabilities.requires_network = not self._loopback
+        if not self._loopback:
+            status.execution_supported = False
+            status.capabilities.completion = False
+            status.capabilities.receipt_linkage = False
+            status.limitations.append(
+                "Ollama execution is disabled until an explicit loopback endpoint is configured"
+            )
+        return status
+
+    def execute(
+        self,
+        request: ProviderRequest,
+        cancellation: CancellationToken | None = None,
+    ) -> ProviderResult:
+        if not self._loopback:
+            category = "local_only_violation" if request.local_only else "configuration"
+            return _pre_execution_error(
+                request,
+                self.provider_id,
+                category=category,
+                message="Ollama endpoint is not proven loopback; execution is disabled",
+                status="blocked",
+            )
+        if request.model_id is None or not request.model_id.strip():
+            return _pre_execution_error(
+                request,
+                self.provider_id,
+                category="invalid_request",
+                message="Ollama execution requires an explicitly discovered model id",
+                status="blocked",
+            )
+        return self._execute_through_engine(
+            request,
+            cancellation=cancellation,
+            adapter=_OllamaEndpointAdapter(self.adapter, self.endpoint),
+        )
+
+    def discover_models(self, *, local_only: bool = False) -> ProviderModelCatalog:
+        request = ProviderRequest(
+            message="discover installed Ollama models",
+            local_only=local_only,
+            timeout_seconds=30,
+        )
+        if not self._loopback:
+            return ProviderModelCatalog(
+                provider_id=self.provider_id,
+                error=ProviderError(
+                    category="local_only_violation" if local_only else "configuration",
+                    message="Ollama model discovery requires an explicit loopback endpoint",
+                ),
+            )
+        status = self.status()
+        if not status.installed or not self.adapter.supports_non_interactive():
+            return ProviderModelCatalog(
+                provider_id=self.provider_id,
+                error=ProviderError(
+                    category="unavailable",
+                    message="Ollama executable is unavailable",
+                ),
+            )
+        outcome = self.engine.run_task(
+            request.message,
+            runtime="ollama",
+            model=None,
+            execute=True,
+            approved=False,
+            timeout_seconds=request.timeout_seconds,
+            cwd=None,
+            unsafe_skip_permissions=False,
+            adapter=_OllamaModelListAdapter(self.adapter, self.endpoint),
+        )
+        normalized = _normalize_outcome(
+            request=request,
+            provider_id=self.provider_id,
+            model_id=None,
+            outcome=outcome,
+        )
+        if normalized.status != "complete":
+            return ProviderModelCatalog(
+                provider_id=self.provider_id,
+                receipt_id=normalized.receipt_id,
+                error=normalized.error,
+            )
+        return ProviderModelCatalog(
+            provider_id=self.provider_id,
+            models=[
+                ProviderModel(
+                    provider_id=self.provider_id,
+                    model_id=model_id,
+                    display_name=model_id,
+                    source="runtime_discovered",
+                )
+                for model_id in _parse_ollama_models(normalized.content)
+            ],
+            receipt_id=normalized.receipt_id,
+        )
+
+
+class DiscoveryOnlyChatProvider(ChatProvider):
+    """Installed-tool evidence that intentionally has no execution path."""
+
+    def __init__(
+        self,
+        *,
+        provider_id: str,
+        display_name: str,
+        executable: str,
+        executable_finder: Callable[[str], str | None],
+    ) -> None:
+        self.provider_id = provider_id
+        self.display_name = display_name
+        self.executable = executable
+        self.executable_finder = executable_finder
+
+    def status(self) -> ProviderStatus:
+        installed = self.executable_finder(self.executable) is not None
+        return ProviderStatus(
+            provider_id=self.provider_id,
+            display_name=self.display_name,
+            runtime_id=None,
+            installed=installed,
+            authentication="unknown",
+            health="unknown" if installed else "unavailable",
+            execution_supported=False,
+            capabilities=ProviderCapabilities(
+                completion=False,
+                streaming="none",
+                cancellation="none",
+                model_discovery=False,
+                usage_reporting=False,
+                receipt_linkage=False,
+                local_only_eligible=False,
+                requires_network=True,
+            ),
+            limitations=[
+                "discovery-only: executable presence does not prove authentication or safe execution"
+            ],
+        )
+
+    def health(self) -> ProviderHealth:
+        status = self.status()
+        return ProviderHealth(
+            provider_id=self.provider_id,
+            state=status.health,
+            authentication="unknown",
+            evidence="executable_only",
+            successful_invocation_proven=False,
+            limitations=status.limitations,
+        )
+
+    def execute(
+        self,
+        request: ProviderRequest,
+        cancellation: CancellationToken | None = None,
+    ) -> ProviderResult:
+        return _pre_execution_error(
+            request,
+            self.provider_id,
+            category="execution_unsupported",
+            message="provider is discovery-only; no safe execution boundary is available",
+            status="unavailable",
+        )
+
+
+class ProviderRegistry:
+    """Stable registry for the bounded v1 provider set; it never falls back."""
+
+    def __init__(
+        self,
+        engine: ExecutionEngine | _EngineLike,
+        *,
+        adapters: Mapping[str, _AdapterLike] | None = None,
+        executable_finder: Callable[[str], str | None] = shutil.which,
+        ollama_endpoint: str = "http://127.0.0.1:11434",
+    ) -> None:
+        runtime_adapters: Mapping[str, _AdapterLike] = adapters or {
+            "codex-cli": CodexCliAdapter(),
+            "google-antigravity": AntigravityAdapter(),
+            "claude-code": ClaudeCodeAdapter(),
+            "ollama": OllamaAdapter(),
+        }
+        required = {"claude-code", "codex-cli", "google-antigravity", "ollama"}
+        missing = sorted(required.difference(runtime_adapters))
+        if missing:
+            raise ValueError(f"missing provider adapters: {', '.join(missing)}")
+
+        providers: list[ChatProvider] = [
+            MockChatProvider(engine),
+            EngineBackedChatProvider(
+                provider_id="codex",
+                display_name="Codex CLI",
+                engine=engine,
+                adapter=runtime_adapters["codex-cli"],
+            ),
+            EngineBackedChatProvider(
+                provider_id="antigravity",
+                display_name="Google Antigravity",
+                engine=engine,
+                adapter=runtime_adapters["google-antigravity"],
+            ),
+            EngineBackedChatProvider(
+                provider_id="claude",
+                display_name="Claude Code",
+                engine=engine,
+                adapter=runtime_adapters["claude-code"],
+            ),
+            OllamaChatProvider(
+                engine,
+                runtime_adapters["ollama"],
+                ollama_endpoint,
+            ),
+            DiscoveryOnlyChatProvider(
+                provider_id="gemini",
+                display_name="Gemini CLI",
+                executable="gemini",
+                executable_finder=executable_finder,
+            ),
+        ]
+        self._providers = {provider.provider_id: provider for provider in providers}
+
+    def discover(self) -> list[ProviderStatus]:
+        return [provider.status() for provider in self._providers.values()]
+
+    def get(self, provider_id: str) -> ChatProvider:
+        try:
+            return self._providers[provider_id]
+        except KeyError:
+            known = ", ".join(self._providers)
+            raise KeyError(f"unknown provider '{provider_id}' (known: {known})") from None
+
+
+def _events_from_result(
+    result: ProviderResult,
+    cancellation: CancellationToken | None,
+    *,
+    chunk_size: int,
+) -> Iterator[ProviderEvent]:
+    sequence = 1
+    if cancellation is not None and cancellation.cancelled:
+        yield ProviderEvent(
+            request_id=result.request_id,
+            provider_id=result.provider_id,
+            sequence=sequence,
+            event_type="cancelled",
+            error=ProviderError(category="cancelled", message="request cancelled"),
+            receipt_id=result.receipt_id,
+        )
+        return
+
+    yield ProviderEvent(
+        request_id=result.request_id,
+        provider_id=result.provider_id,
+        sequence=sequence,
+        event_type="started",
+        receipt_id=result.receipt_id,
+    )
+    sequence += 1
+
+    if result.status != "complete":
+        event_type = "cancelled" if result.status == "cancelled" else "error"
+        yield ProviderEvent(
+            request_id=result.request_id,
+            provider_id=result.provider_id,
+            sequence=sequence,
+            event_type=event_type,
+            error=result.error,
+            receipt_id=result.receipt_id,
+        )
+        return
+
+    for offset in range(0, len(result.content), chunk_size):
+        if cancellation is not None and cancellation.cancelled:
+            yield ProviderEvent(
+                request_id=result.request_id,
+                provider_id=result.provider_id,
+                sequence=sequence,
+                event_type="cancelled",
+                error=ProviderError(category="cancelled", message="stream cancelled"),
+                receipt_id=result.receipt_id,
+            )
+            return
+        yield ProviderEvent(
+            request_id=result.request_id,
+            provider_id=result.provider_id,
+            sequence=sequence,
+            event_type="text_delta",
+            text_delta=result.content[offset : offset + chunk_size],
+            receipt_id=result.receipt_id,
+        )
+        sequence += 1
+
+    yield ProviderEvent(
+        request_id=result.request_id,
+        provider_id=result.provider_id,
+        sequence=sequence,
+        event_type="usage",
+        usage=result.usage,
+        receipt_id=result.receipt_id,
+    )
+    sequence += 1
+    yield ProviderEvent(
+        request_id=result.request_id,
+        provider_id=result.provider_id,
+        sequence=sequence,
+        event_type="completed",
+        receipt_id=result.receipt_id,
+    )
+
+
+def _normalize_outcome(
+    *,
+    request: ProviderRequest,
+    provider_id: str,
+    model_id: str | None,
+    outcome: Any,
+) -> ProviderResult:
+    receipt = getattr(outcome, "receipt", None)
+    receipt_id = getattr(receipt, "receipt_id", None)
+    limitations = [
+        _public_error_text(str(item)) for item in (getattr(receipt, "limitations", []) or [])
+    ]
+    result = getattr(outcome, "result", None)
+    policy = getattr(outcome, "policy", None)
+
+    if result is None:
+        if policy is not None and not getattr(policy, "allowed", False):
+            error = ProviderError(
+                category="policy_denied",
+                message=_public_error_text(str(getattr(policy, "reason", "execution blocked"))),
+            )
+            status: ProviderResultStatus = "blocked"
+        else:
+            error = ProviderError(
+                category="unavailable",
+                message="provider execution did not start",
+            )
+            status = "unavailable"
+        return ProviderResult(
+            request_id=request.request_id,
+            provider_id=provider_id,
+            model_id=model_id,
+            status=status,
+            receipt_id=receipt_id,
+            error=error,
+            limitations=limitations,
+        )
+
+    result_status = str(getattr(result, "status", "failed"))
+    content = _public_output_text(
+        str(getattr(result, "content", "") or getattr(result, "stdout_preview", ""))
+    )
+    usage = _normalize_usage(getattr(result, "usage", None))
+    if result_status == "succeeded":
+        return ProviderResult(
+            request_id=request.request_id,
+            provider_id=provider_id,
+            model_id=model_id,
+            status="complete",
+            content=content,
+            usage=usage,
+            receipt_id=receipt_id,
+            limitations=limitations,
+        )
+
+    raw_error = str(
+        getattr(result, "error", None)
+        or getattr(result, "stderr_preview", None)
+        or f"provider execution {result_status}"
+    )
+    category, retryable = _categorize_error(raw_error, result_status)
+    return ProviderResult(
+        request_id=request.request_id,
+        provider_id=provider_id,
+        model_id=model_id,
+        status="cancelled" if category == "cancelled" else "failed",
+        content=content,
+        usage=usage,
+        receipt_id=receipt_id,
+        error=ProviderError(
+            category=category,
+            message=_public_error_text(raw_error),
+            retryable=retryable,
+        ),
+        limitations=limitations,
+    )
+
+
+def _normalize_usage(raw: Any) -> ProviderUsage:
+    if not isinstance(raw, Mapping):
+        return ProviderUsage()
+    input_tokens = _nonnegative_int(raw.get("input_tokens"))
+    output_tokens = _nonnegative_int(raw.get("output_tokens"))
+    total_tokens = _nonnegative_int(raw.get("total_tokens"))
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    input_characters = _nonnegative_int(raw.get("input_characters"))
+    output_characters = _nonnegative_int(raw.get("output_characters"))
+    known = any(
+        value is not None
+        for value in (
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            input_characters,
+            output_characters,
+        )
+    )
+    return ProviderUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        input_characters=input_characters,
+        output_characters=output_characters,
+        source="provider_reported" if known else "unavailable",
+    )
+
+
+def _nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    return None
+
+
+def _categorize_error(raw_error: str, result_status: str) -> tuple[str, bool]:
+    lowered = raw_error.lower()
+    if result_status == "timeout" or "timed out" in lowered or "timeout" in lowered:
+        return "timeout", True
+    if result_status == "cancelled" or "cancelled" in lowered or "canceled" in lowered:
+        return "cancelled", False
+    if any(word in lowered for word in ("authentication", "credential", "unauthorized", "login")):
+        return "authentication", False
+    if "rate limit" in lowered or "too many requests" in lowered:
+        return "rate_limited", True
+    if "unavailable" in lowered or "executable not found" in lowered:
+        return "unavailable", True
+    return "provider_error", False
+
+
+def _pre_execution_error(
+    request: ProviderRequest,
+    provider_id: str,
+    *,
+    category: str,
+    message: str,
+    status: ProviderResultStatus,
+) -> ProviderResult:
+    return ProviderResult(
+        request_id=request.request_id,
+        provider_id=provider_id,
+        model_id=request.model_id,
+        status=status,
+        error=ProviderError(category=category, message=_public_error_text(message)),  # type: ignore[arg-type]
+    )
+
+
+def _public_error_text(value: str) -> str:
+    return _public_output_text(value)[:500]
+
+
+def _public_output_text(value: str) -> str:
+    return redact_text(value).replace("<redacted>", "[REDACTED]")
+
+
+def _normalized_ollama_endpoint(endpoint: str) -> str | None:
+    try:
+        parsed = urlsplit(endpoint)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in ("", "/")
+        ):
+            return None
+        port = parsed.port
+    except ValueError:
+        return None
+    netloc = parsed.hostname
+    if ":" in netloc and not netloc.startswith("["):
+        netloc = f"[{netloc}]"
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return urlunsplit(("http", netloc, "", "", ""))
+
+
+def _is_loopback_url(endpoint: str) -> bool:
+    host = urlsplit(endpoint).hostname
+    if host is None:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _loopback_env_prefix(endpoint: str) -> list[str]:
+    if not _is_loopback_url(endpoint):
+        raise ValueError("Ollama endpoint must be loopback")
+    return [
+        "env",
+        "-u",
+        "HTTP_PROXY",
+        "-u",
+        "HTTPS_PROXY",
+        "-u",
+        "ALL_PROXY",
+        "-u",
+        "http_proxy",
+        "-u",
+        "https_proxy",
+        "-u",
+        "all_proxy",
+        f"OLLAMA_HOST={endpoint}",
+        "NO_PROXY=localhost,127.0.0.1,::1",
+        "no_proxy=localhost,127.0.0.1,::1",
+    ]
+
+
+def _parse_ollama_models(output: str) -> list[str]:
+    models: list[str] = []
+    for line in output.splitlines()[:257]:
+        fields = line.split()
+        if not fields or fields[0].upper() == "NAME":
+            continue
+        model_id = fields[0]
+        if len(model_id) > 200 or not all(
+            character.isalnum() or character in "._:/-" for character in model_id
+        ):
+            continue
+        if model_id not in models:
+            models.append(model_id)
+    return models
+
+
+__all__ = [
+    "CancellationToken",
+    "ChatProvider",
+    "DiscoveryOnlyChatProvider",
+    "EngineBackedChatProvider",
+    "MockChatProvider",
+    "OllamaChatProvider",
+    "ProviderCapabilities",
+    "ProviderError",
+    "ProviderEvent",
+    "ProviderHealth",
+    "ProviderModel",
+    "ProviderModelCatalog",
+    "ProviderRegistry",
+    "ProviderRequest",
+    "ProviderResult",
+    "ProviderStatus",
+    "ProviderUsage",
+]
