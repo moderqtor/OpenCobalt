@@ -8,6 +8,7 @@ from opencobalt.personal_ai.router import (
     PersonalAIRouter,
     ProviderSnapshot,
     RoutingRequest,
+    classify_task,
 )
 
 
@@ -23,6 +24,10 @@ def _provider(
     skills: frozenset[str] = frozenset(),
     provider_family: str | None = None,
     available: bool = True,
+    latency_category: str = "standard",
+    historical_success_signal: int = 0,
+    quota_pressure: int = 0,
+    provider_priority: int = 0,
 ) -> ProviderSnapshot:
     return ProviderSnapshot(
         provider_id=provider_id,
@@ -37,6 +42,10 @@ def _provider(
         capabilities=capabilities,
         tool_names=tools,
         skill_names=skills,
+        latency_category=latency_category,
+        historical_success_signal=historical_success_signal,
+        quota_pressure=quota_pressure,
+        provider_priority=provider_priority,
     )
 
 
@@ -126,7 +135,7 @@ def test_manual_provider_and_model_override_is_honored_when_available():
         available=True,
         local=False,
         requires_network=True,
-        cost_category="high",
+        cost_category="standard",
         quality_tier="strong",
         capabilities=frozenset({"chat"}),
     )
@@ -227,3 +236,134 @@ def test_route_output_is_persistence_compatible_and_never_reports_a_fallback_exe
     assert plan.record.selected_skills == ["pytest"]
     assert plan.record.verification_strategy == "repository_review"
     assert plan.candidates[0].route_id == plan.record.route_id
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        ("Explain this concept", "general_reasoning"),
+        ("Reflect on how I feel", "personal_reflection"),
+        ("Research the source material", "research"),
+        ("Implement a parser", "coding"),
+        ("Update this repository", "repository_execution"),
+        ("Write a short brief", "writing"),
+        ("Edit this paragraph", "editing"),
+        ("Analyze this PDF file", "file_analysis"),
+        ("Plan next week", "planning"),
+        ("Brainstorm product ideas", "creative_ideation"),
+        ("Analyze this CSV dataset", "data_analysis"),
+        ("Run the requested tool", "tool_operation"),
+        ("Create a multi-step mission", "multi_step_mission"),
+    ],
+)
+def test_task_classification_uses_the_explicit_router_vocabulary(prompt, expected):
+    assert classify_task(prompt) == expected
+
+
+def test_privacy_policy_and_explicit_reasoning_inputs_are_visible_in_route_metadata():
+    router = PersonalAIRouter()
+    provider = _provider("local", local=True, requires_network=False)
+
+    plan = router.route(
+        _request(
+            "Explain this concept",
+            privacy_mode="standard",
+            cognitive_policy="deep_analysis",
+            reasoning_effort="high",
+            settings=AISettings(privacy_policy="sensitive"),
+        ),
+        [provider],
+    )
+
+    assert plan.privacy_classification == "sensitive"
+    assert plan.task_complexity == "complex"
+    assert plan.record.metadata["privacy_mode"] == "standard"
+    assert plan.record.metadata["cognitive_policy"] == "deep_analysis"
+    assert plan.record.metadata["reasoning_effort"] == "high"
+    assert set(plan.candidates[0].score_components) >= {
+        "latency_fit",
+        "historical_success",
+        "quota_pressure",
+        "provider_priority",
+    }
+
+
+def test_cost_ceiling_is_an_eligibility_rule_with_a_visible_rejection_reason():
+    router = PersonalAIRouter()
+    affordable = _provider("affordable", local=True, requires_network=False, cost_category="low")
+    expensive = _provider("expensive", local=True, requires_network=False, cost_category="high")
+
+    plan = router.route(
+        _request("Explain this concept", settings=AISettings(cost_ceiling_category="low")),
+        [expensive, affordable],
+    )
+
+    assert plan.record.selected_provider == "affordable"
+    expensive_candidate = next(
+        candidate for candidate in plan.candidates if candidate.provider_id == "expensive"
+    )
+    assert expensive_candidate.eligible is False
+    assert expensive_candidate.rejection_reason == (
+        "provider cost category 'high' exceeds configured ceiling 'low'"
+    )
+
+
+def test_complex_implementation_rejects_a_weak_model_even_when_it_is_free():
+    router = PersonalAIRouter()
+    weak = _provider(
+        "weak-free",
+        local=True,
+        requires_network=False,
+        cost_category="free",
+        quality_tier="weak",
+        capabilities=frozenset({"chat", "coding"}),
+    )
+    strong = _provider(
+        "strong",
+        local=True,
+        requires_network=False,
+        quality_tier="strong",
+        capabilities=frozenset({"chat", "coding"}),
+    )
+
+    plan = router.route(
+        _request("Implement a comprehensive parser across multiple modules"),
+        [weak, strong],
+    )
+
+    assert plan.task_complexity == "complex"
+    assert plan.record.selected_provider == "strong"
+    weak_candidate = next(candidate for candidate in plan.candidates if candidate.provider_id == "weak-free")
+    assert weak_candidate.eligible is False
+    assert weak_candidate.rejection_reason == "complex implementation requires a strong model"
+
+
+def test_bounded_latency_history_quota_and_priority_signals_are_scored_explicitly():
+    router = PersonalAIRouter()
+    stronger_evidence = _provider(
+        "evidence",
+        local=True,
+        requires_network=False,
+        latency_category="low",
+        historical_success_signal=6,
+        quota_pressure=2,
+        provider_priority=4,
+    )
+    weaker_evidence = _provider(
+        "pressured",
+        local=True,
+        requires_network=False,
+        latency_category="high",
+        historical_success_signal=-3,
+        quota_pressure=8,
+        provider_priority=-2,
+    )
+
+    plan = router.route(_request("Explain this concept"), [weaker_evidence, stronger_evidence])
+
+    assert plan.record.selected_provider == "evidence"
+    components = plan.candidates[0].score_components
+    assert components["latency_fit"] == 8
+    assert components["historical_success"] == 6
+    assert components["quota_pressure"] == -2
+    assert components["provider_priority"] == 4

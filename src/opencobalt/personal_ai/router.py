@@ -15,14 +15,19 @@ from .models import AISettings, PersonaVersion, RouteCandidate, RouteRecord
 TaskClass = Literal[
     "security_review",
     "consequential_decision",
-    "repository_review",
+    "general_reasoning",
+    "personal_reflection",
+    "repository_execution",
     "coding",
     "research",
     "writing",
+    "editing",
+    "file_analysis",
     "planning",
-    "creative",
-    "reflection",
-    "general_answer",
+    "creative_ideation",
+    "data_analysis",
+    "tool_operation",
+    "multi_step_mission",
 ]
 Complexity = Literal["simple", "moderate", "complex"]
 PrivacyClassification = Literal["standard", "private", "sensitive"]
@@ -50,6 +55,22 @@ class ProviderSnapshot:
     capabilities: frozenset[str] = field(default_factory=frozenset)
     tool_names: frozenset[str] = field(default_factory=frozenset)
     skill_names: frozenset[str] = field(default_factory=frozenset)
+    latency_category: Literal["low", "standard", "high"] = "standard"
+    historical_success_signal: int = 0
+    quota_pressure: int = 0
+    provider_priority: int = 0
+
+    def __post_init__(self) -> None:
+        """Reject unbounded evidence while normalizing capability collections."""
+        if not -10 <= self.historical_success_signal <= 10:
+            raise ValueError("historical_success_signal must be between -10 and 10")
+        if not 0 <= self.quota_pressure <= 10:
+            raise ValueError("quota_pressure must be between 0 and 10")
+        if not -10 <= self.provider_priority <= 10:
+            raise ValueError("provider_priority must be between -10 and 10")
+        object.__setattr__(self, "capabilities", frozenset(self.capabilities))
+        object.__setattr__(self, "tool_names", frozenset(self.tool_names))
+        object.__setattr__(self, "skill_names", frozenset(self.skill_names))
 
 
 @dataclass(frozen=True)
@@ -62,6 +83,9 @@ class RoutingRequest:
     prompt: str
     requested_persona_id: str
     settings: AISettings = field(default_factory=AISettings)
+    privacy_mode: PrivacyClassification | None = None
+    cognitive_policy: str = "fast_answer"
+    reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "medium"
     local_only: bool | None = None
     provider_override: str | None = None
     model_override: str | None = None
@@ -99,9 +123,16 @@ class PersonalAIRouter:
         *,
         persona_version: PersonaVersion | None = None,
     ) -> RoutingPlan:
-        task_class = classify_task(request.prompt)
-        complexity = classify_complexity(request.prompt, task_class)
-        privacy = classify_privacy(request.prompt, task_class)
+        task_class = classify_task(request.prompt, request.cognitive_policy)
+        complexity = classify_complexity(
+            request.prompt, task_class, request.cognitive_policy, request.reasoning_effort
+        )
+        privacy = classify_privacy(
+            request.prompt,
+            task_class,
+            request.privacy_mode,
+            request.settings.privacy_policy,
+        )
         risk = classify_risk(request.prompt, task_class)
         route_id = f"route-{request.request_id}"
         local_only = (
@@ -179,6 +210,10 @@ class PersonalAIRouter:
                 "routing": "deterministic_snapshot_v1",
                 "risk_classification": risk,
                 "local_only": local_only,
+                "privacy_mode": request.privacy_mode,
+                "privacy_policy": request.settings.privacy_policy,
+                "cognitive_policy": request.cognitive_policy,
+                "reasoning_effort": request.reasoning_effort,
             },
         )
         return RoutingPlan(
@@ -210,6 +245,10 @@ class PersonalAIRouter:
             "privacy_fit": _privacy_fit(snapshot, privacy),
             "risk_fit": _risk_fit(snapshot, task_class, risk),
             "tool_fit": _tool_fit(snapshot, request.requested_tools),
+            "latency_fit": _latency_fit(snapshot, request),
+            "historical_success": snapshot.historical_success_signal,
+            "quota_pressure": -snapshot.quota_pressure,
+            "provider_priority": snapshot.provider_priority,
         }
         rejection = _rejection_reason(
             request=request,
@@ -226,6 +265,10 @@ class PersonalAIRouter:
             f"cost fit: {_cost_fit(snapshot.cost_category, request.settings.cost_ceiling_category)}",
             f"persona affinity: {_persona_affinity(snapshot, persona_version)}",
             f"tool fit: {_tool_fit(snapshot, request.requested_tools)}",
+            f"latency fit: {_latency_fit(snapshot, request)}",
+            f"historical success: {snapshot.historical_success_signal}",
+            f"quota pressure: {-snapshot.quota_pressure}",
+            f"provider priority: {snapshot.provider_priority}",
         ]
         if rejection:
             reasons.append(f"rejected: {rejection}")
@@ -244,52 +287,84 @@ class PersonalAIRouter:
         )
 
 
-def classify_task(prompt: str) -> TaskClass:
+def classify_task(prompt: str, cognitive_policy: str = "fast_answer") -> TaskClass:
     """Classify a request by explicit keywords, from highest consequence first."""
     text = prompt.lower()
     if _contains(text, "security", "vulnerability", "credential", "secret", "api key", "token"):
         return "security_review"
     if _contains(text, "medical", "legal", "financial", "investment", "hire", "firing"):
         return "consequential_decision"
+    if _contains(text, "multi-step", "multi step", "mission"):
+        return "multi_step_mission"
+    if _contains(text, "csv", "dataset", "spreadsheet", "data analysis"):
+        return "data_analysis"
+    if _contains(text, "pdf", "file", "document", "log"):
+        return "file_analysis"
     if _contains(text, "repository", "repo", "codebase", "pull request", "git", "diff"):
-        return "repository_review"
+        return "repository_execution"
+    if _contains(text, "run", "execute", "use tool", "call tool"):
+        return "tool_operation"
     if _contains(text, "implement", "code", "bug", "parser", "test", "refactor"):
         return "coding"
     if _contains(text, "research", "sources", "literature", "compare evidence"):
         return "research"
+    if _contains(text, "edit", "revise", "proofread"):
+        return "editing"
     if _contains(text, "write", "rewrite", "draft", "email"):
         return "writing"
     if _contains(text, "plan", "roadmap", "prioritize"):
         return "planning"
     if _contains(text, "brainstorm", "creative", "story", "ideas"):
-        return "creative"
+        return "creative_ideation"
     if _contains(text, "reflect", "emotion", "feel", "relationship"):
-        return "reflection"
-    return "general_answer"
+        return "personal_reflection"
+    return {
+        "implementation": "coding",
+        "research_synthesis": "research",
+        "creative_divergence": "creative_ideation",
+        "emotional_reflection": "personal_reflection",
+        "decision_support": "planning",
+    }.get(cognitive_policy, "general_reasoning")
 
 
-def classify_complexity(prompt: str, task_class: TaskClass) -> Complexity:
+def classify_complexity(
+    prompt: str,
+    task_class: TaskClass,
+    cognitive_policy: str = "fast_answer",
+    reasoning_effort: str = "medium",
+) -> Complexity:
     text = prompt.lower()
-    if task_class in {"security_review", "consequential_decision"} or _contains(
+    if reasoning_effort in {"high", "xhigh"}:
+        return "complex"
+    if task_class in {"security_review", "consequential_decision", "multi_step_mission"} or _contains(
         text, "comprehensive", "architecture", "multiple", "system-wide"
     ):
         return "complex"
-    if len(prompt.split()) <= 6 and task_class == "general_answer":
+    if cognitive_policy in {"deep_analysis", "skeptical_review", "implementation", "research_synthesis"}:
+        return "moderate"
+    if len(prompt.split()) <= 6 and task_class == "general_reasoning":
         return "simple"
     return "moderate"
 
 
-def classify_privacy(prompt: str, task_class: TaskClass) -> PrivacyClassification:
+def classify_privacy(
+    prompt: str,
+    task_class: TaskClass,
+    privacy_mode: PrivacyClassification | None = None,
+    settings_privacy: PrivacyClassification = "standard",
+) -> PrivacyClassification:
     text = prompt.lower()
     if task_class == "security_review" or _contains(
         text, "password", "credential", "secret", "token", "medical record"
     ):
         return "sensitive"
-    if task_class in {"repository_review", "consequential_decision", "reflection"} or _contains(
+    if task_class in {"repository_execution", "consequential_decision", "personal_reflection"} or _contains(
         text, "personal", "private", "financial"
     ):
-        return "private"
-    return "standard"
+        inferred: PrivacyClassification = "private"
+    else:
+        inferred = "standard"
+    return max((inferred, privacy_mode or "standard", settings_privacy), key=_privacy_rank)
 
 
 def classify_risk(prompt: str, task_class: TaskClass) -> RiskClassification:
@@ -298,7 +373,7 @@ def classify_risk(prompt: str, task_class: TaskClass) -> RiskClassification:
         text, "deploy", "production", "delete", "send", "publish"
     ):
         return "red"
-    if task_class in {"repository_review", "coding"}:
+    if task_class in {"repository_execution", "coding", "tool_operation", "multi_step_mission"}:
         return "yellow"
     return "green"
 
@@ -330,10 +405,17 @@ def _rejection_reason(
     missing_tools = sorted(set(request.requested_tools) - snapshot.tool_names)
     if missing_tools:
         return f"provider does not support required tools: {', '.join(missing_tools)}"
-    if task_class in {"security_review", "consequential_decision", "repository_review"} and (
+    if _cost_rank(snapshot.cost_category) > _cost_rank(request.settings.cost_ceiling_category):
+        return (
+            f"provider cost category '{snapshot.cost_category}' exceeds configured ceiling "
+            f"'{request.settings.cost_ceiling_category}'"
+        )
+    if task_class in {"security_review", "consequential_decision", "repository_execution"} and (
         snapshot.quality_tier == "weak"
     ):
         return "serious task requires a strong model; weak local/free model rejected"
+    if task_class == "coding" and complexity_is_complex(request, task_class) and snapshot.quality_tier == "weak":
+        return "complex implementation requires a strong model"
     if risk == "red" and snapshot.quality_tier == "weak":
         return "red-risk task requires a strong model"
     return None
@@ -343,14 +425,19 @@ def _task_capability(task_class: TaskClass) -> str:
     return {
         "security_review": "security",
         "consequential_decision": "decision_support",
-        "repository_review": "repository",
+        "repository_execution": "repository",
         "coding": "coding",
         "research": "research",
         "writing": "writing",
+        "editing": "writing",
+        "file_analysis": "file_analysis",
         "planning": "planning",
-        "creative": "creative",
-        "reflection": "reflection",
-        "general_answer": "chat",
+        "creative_ideation": "creative",
+        "data_analysis": "data_analysis",
+        "tool_operation": "tools",
+        "multi_step_mission": "planning",
+        "personal_reflection": "reflection",
+        "general_reasoning": "chat",
     }[task_class]
 
 
@@ -360,9 +447,15 @@ def _capability_fit(snapshot: ProviderSnapshot, task_class: TaskClass) -> int:
 
 def _cost_fit(cost_category: str, ceiling: str) -> int:
     base = {"free": 8, "low": 5, "standard": 2, "high": -4}[cost_category]
-    ceiling_rank = {"free": 0, "low": 1, "standard": 2, "high": 3}
-    cost_rank = {"free": 0, "low": 1, "standard": 2, "high": 3}
-    return base if cost_rank[cost_category] <= ceiling_rank[ceiling] else base - 10
+    return base if _cost_rank(cost_category) <= _cost_rank(ceiling) else base - 10
+
+
+def _cost_rank(value: str) -> int:
+    return {"free": 0, "low": 1, "standard": 2, "high": 3}[value]
+
+
+def _privacy_rank(value: PrivacyClassification) -> int:
+    return {"standard": 0, "private": 1, "sensitive": 2}[value]
 
 
 def _persona_affinity(snapshot: ProviderSnapshot, persona_version: PersonaVersion | None) -> int:
@@ -380,7 +473,7 @@ def _privacy_fit(snapshot: ProviderSnapshot, privacy: PrivacyClassification) -> 
 
 
 def _risk_fit(snapshot: ProviderSnapshot, task_class: TaskClass, risk: RiskClassification) -> int:
-    if task_class in {"security_review", "consequential_decision", "repository_review"}:
+    if task_class in {"security_review", "consequential_decision", "repository_execution"}:
         return {"strong": 25, "standard": 10, "weak": -30}[snapshot.quality_tier]
     return 10 if risk != "red" or snapshot.quality_tier != "weak" else -20
 
@@ -389,6 +482,27 @@ def _tool_fit(snapshot: ProviderSnapshot, requested_tools: tuple[str, ...]) -> i
     if not requested_tools:
         return 0
     return 12 if set(requested_tools).issubset(snapshot.tool_names) else -30
+
+
+def _latency_fit(snapshot: ProviderSnapshot, request: RoutingRequest) -> int:
+    complexity = classify_complexity(
+        request.prompt, classify_task(request.prompt, request.cognitive_policy),
+        request.cognitive_policy, request.reasoning_effort
+    )
+    return {
+        "simple": {"low": 8, "standard": 4, "high": 0},
+        "moderate": {"low": 7, "standard": 8, "high": 3},
+        "complex": {"low": 6, "standard": 8, "high": 5},
+    }[complexity][snapshot.latency_category]
+
+
+def complexity_is_complex(request: RoutingRequest, task_class: TaskClass) -> bool:
+    return (
+        classify_complexity(
+            request.prompt, task_class, request.cognitive_policy, request.reasoning_effort
+        )
+        == "complex"
+    )
 
 
 def _selected_skills(request: RoutingRequest, snapshot: ProviderSnapshot) -> list[str]:
@@ -433,7 +547,7 @@ def _verification_strategy(task_class: TaskClass, settings: AISettings) -> str:
         return "security_review"
     if task_class == "consequential_decision":
         return "independent_review"
-    if task_class == "repository_review":
+    if task_class == "repository_execution":
         return "repository_review"
     if task_class == "coding":
         return "tests_and_diff"
