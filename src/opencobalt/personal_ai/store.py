@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS personas (
     built_in          INTEGER NOT NULL DEFAULT 0,
     active_version_id TEXT,
     created_at        TEXT NOT NULL,
-    updated_at        TEXT NOT NULL
+    updated_at        TEXT NOT NULL,
+    FOREIGN KEY (active_version_id) REFERENCES persona_versions(persona_version_id)
 );
 
 CREATE TABLE IF NOT EXISTS persona_versions (
@@ -97,6 +98,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     metadata_json       TEXT NOT NULL DEFAULT '{}',
     FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE,
     FOREIGN KEY (persona_version_id) REFERENCES persona_versions(persona_version_id),
+    FOREIGN KEY (route_id) REFERENCES ai_route_decisions(route_id),
     FOREIGN KEY (parent_message_id) REFERENCES chat_messages(message_id)
 );
 
@@ -137,7 +139,9 @@ CREATE TABLE IF NOT EXISTS ai_route_decisions (
     metadata_json                 TEXT NOT NULL DEFAULT '{}',
     FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE,
     FOREIGN KEY (request_message_id) REFERENCES chat_messages(message_id),
+    FOREIGN KEY (requested_persona_id) REFERENCES personas(persona_id),
     FOREIGN KEY (requested_persona_version_id) REFERENCES persona_versions(persona_version_id),
+    FOREIGN KEY (actual_persona_id) REFERENCES personas(persona_id),
     FOREIGN KEY (actual_persona_version_id) REFERENCES persona_versions(persona_version_id)
 );
 
@@ -234,7 +238,8 @@ CREATE TABLE IF NOT EXISTS skill_records (
     compatibility_json         TEXT NOT NULL DEFAULT '{}',
     last_used_at               TEXT,
     created_at                 TEXT NOT NULL,
-    updated_at                 TEXT NOT NULL
+    updated_at                 TEXT NOT NULL,
+    FOREIGN KEY (active_version_id) REFERENCES skill_versions(skill_version_id)
 );
 
 CREATE TABLE IF NOT EXISTS skill_versions (
@@ -422,14 +427,16 @@ class PersonalAIStore:
             if row is None:
                 raise KeyError(f"unknown message: {message_id}")
             current = self._decode_message(row)
-            updated = current.model_copy(
-                update={
+            payload = current.model_dump()
+            payload.update(
+                {
                     "content": content if content is not None else current.content,
                     "status": status if status is not None else current.status,
                     "route_id": route_id if route_id is not None else current.route_id,
                     "metadata": metadata if metadata is not None else current.metadata,
                 }
             )
+            updated = ChatMessage.model_validate(payload)
             conn.execute(
                 "UPDATE chat_messages SET content = ?, status = ?, route_id = ?, "
                 "metadata_json = ? WHERE message_id = ?",

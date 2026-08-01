@@ -13,6 +13,7 @@ from opencobalt.personal_ai.models import (
     RouteRecord,
     SkillRecord,
 )
+from opencobalt.personal_ai.personas import ensure_builtin_personas
 from opencobalt.personal_ai.store import PersonalAIStore
 
 
@@ -40,7 +41,24 @@ def test_store_adds_versioned_schema_without_disturbing_legacy_ledger(tmp_path):
         versions = conn.execute(
             "SELECT version FROM personal_ai_schema_versions ORDER BY version"
         ).fetchall()
-        foreign_keys = conn.execute("PRAGMA foreign_key_list(chat_messages)").fetchall()
+        foreign_keys = {
+            table: {
+                (row[3], row[2], row[4])
+                for row in conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+            }
+            for table in (
+                "personas",
+                "persona_versions",
+                "chat_messages",
+                "ai_route_decisions",
+                "ai_route_candidates",
+                "chat_executions",
+                "chat_stream_events",
+                "curated_memory_entries",
+                "skill_records",
+                "skill_versions",
+            )
+        }
 
     assert {
         "conversations",
@@ -58,7 +76,37 @@ def test_store_adds_versioned_schema_without_disturbing_legacy_ledger(tmp_path):
         "personal_ai_settings",
     }.issubset(tables)
     assert versions == [(1,)]
-    assert any(row[2] == "conversations" for row in foreign_keys)
+    assert foreign_keys == {
+        "personas": {("active_version_id", "persona_versions", "persona_version_id")},
+        "persona_versions": {("persona_id", "personas", "persona_id")},
+        "chat_messages": {
+            ("conversation_id", "conversations", "conversation_id"),
+            ("persona_version_id", "persona_versions", "persona_version_id"),
+            ("route_id", "ai_route_decisions", "route_id"),
+            ("parent_message_id", "chat_messages", "message_id"),
+        },
+        "ai_route_decisions": {
+            ("conversation_id", "conversations", "conversation_id"),
+            ("request_message_id", "chat_messages", "message_id"),
+            ("requested_persona_id", "personas", "persona_id"),
+            ("requested_persona_version_id", "persona_versions", "persona_version_id"),
+            ("actual_persona_id", "personas", "persona_id"),
+            ("actual_persona_version_id", "persona_versions", "persona_version_id"),
+        },
+        "ai_route_candidates": {("route_id", "ai_route_decisions", "route_id")},
+        "chat_executions": {
+            ("route_id", "ai_route_decisions", "route_id"),
+            ("conversation_id", "conversations", "conversation_id"),
+            ("assistant_message_id", "chat_messages", "message_id"),
+        },
+        "chat_stream_events": {("execution_id", "chat_executions", "execution_id")},
+        "curated_memory_entries": {
+            ("conversation_id", "conversations", "conversation_id"),
+            ("source_message_id", "chat_messages", "message_id"),
+        },
+        "skill_records": {("active_version_id", "skill_versions", "skill_version_id")},
+        "skill_versions": {("skill_id", "skill_records", "skill_id")},
+    }
 
 
 def test_conversation_and_messages_survive_store_restart(tmp_path):
@@ -94,6 +142,7 @@ def test_conversation_and_messages_survive_store_restart(tmp_path):
 
 def test_route_execution_memory_and_skill_records_round_trip(tmp_path):
     store = PersonalAIStore(tmp_path / "ledger.db")
+    ensure_builtin_personas(store)
     conversation = store.create_conversation(title="Trace")
     message = store.add_message(conversation.conversation_id, role="user", content="Trace it")
     route = RouteRecord(
@@ -168,3 +217,15 @@ def test_foreign_keys_reject_orphan_messages(tmp_path):
     with pytest.raises(sqlite3.IntegrityError):
         store.add_message("missing-conversation", role="user", content="orphan")
 
+
+def test_update_message_revalidates_content_and_status(tmp_path):
+    store = PersonalAIStore(tmp_path / "ledger.db")
+    conversation = store.create_conversation()
+    message = store.add_message(conversation.conversation_id, role="user", content="valid")
+
+    with pytest.raises(ValueError, match="content cannot be blank"):
+        store.update_message(message.message_id, content="   ")
+    with pytest.raises(ValueError, match="status"):
+        store.update_message(message.message_id, status="invented")
+
+    assert store.list_messages(conversation.conversation_id)[0].content == "valid"
