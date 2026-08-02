@@ -1163,6 +1163,7 @@ def _parse_codex_jsonl(
             continue
         call_id = str(item.get("id") or item.get("call_id") or _uid("ptool"))
         status_value = str(item.get("status", "unknown")).lower()
+        normalized_status: Literal["complete", "failed", "unknown"]
         if status_value in {"completed", "complete", "succeeded"}:
             normalized_status = "complete"
         elif status_value in {"failed", "error"}:
@@ -1179,7 +1180,7 @@ def _parse_codex_jsonl(
             ProviderToolEvent(
                 tool_call_id=call_id[:200],
                 tool_name=item_type[:100],
-                status=normalized_status,  # type: ignore[arg-type]
+                status=normalized_status,
                 summary=_public_output_text(str(raw_summary))[:500],
             )
         )
