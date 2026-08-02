@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from opencobalt.execution.engine import ExecutionEngine
 from opencobalt.execution.models import RuntimeCapabilitySnapshot
 from opencobalt.execution.runner import ProcessRunner
@@ -116,6 +118,21 @@ def _real_mock_service(tmp_path):
         enable_mock=True,
     )
     return service, store, execution_store
+
+
+def test_chat_request_rejects_ambiguous_or_unsafe_override_identifiers():
+    with pytest.raises(ValueError, match="model override requires"):
+        ChatRequest(
+            conversation_id="conv-test",
+            message="hello",
+            model_override="model-v1",
+        )
+    with pytest.raises(ValueError, match="tool and skill identifiers"):
+        ChatRequest(
+            conversation_id="conv-test",
+            message="hello",
+            requested_tools=["--unsafe"],
+        )
 
 
 def test_engine_backed_mock_chat_persists_messages_route_execution_and_receipt(tmp_path):
@@ -501,3 +518,27 @@ def test_rerun_changes_persona_without_losing_provider_or_route_lineage(tmp_path
     )
     assert comparison[0]["route"]["requested_persona_id"] == "analytical"
     assert comparison[1]["route"]["requested_persona_id"] == "reflective"
+
+
+def test_provider_native_mismatch_persists_requested_and_actual_persona(tmp_path):
+    service, store, _ = _real_mock_service(tmp_path)
+    conversation = service.create_conversation(title="Native mismatch")
+
+    list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Help me reflect on this choice",
+                persona_id="claude-native",
+                provider_override="mock",
+            )
+        )
+    )
+
+    route = store.list_routes(conversation_id=conversation.conversation_id)[0]
+    assert route.requested_persona_id == "claude-native"
+    assert route.actual_persona_id == "provider-native"
+    assert route.persona_provider_mismatch
+    assistant = store.list_messages(conversation.conversation_id)[-1]
+    assert assistant.metadata["requested_persona_id"] == "claude-native"
+    assert assistant.metadata["actual_persona_id"] == "provider-native"

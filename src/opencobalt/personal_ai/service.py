@@ -14,7 +14,7 @@ from collections.abc import Iterator, Sequence
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from opencobalt.execution.runner import redact_text
 
@@ -98,6 +98,28 @@ class ChatRequest(BaseModel):
         if not value or len(value) > 200 or value.startswith("-"):
             raise ValueError("identifier must be a bounded non-flag value")
         return value
+
+    @field_validator("requested_tools", "requested_skills")
+    @classmethod
+    def _bounded_capability_ids(cls, value: list[str]) -> list[str]:
+        if any(
+            not item
+            or len(item) > 100
+            or item.startswith("-")
+            or any(
+                not (character.isalnum() or character in "._:/-")
+                for character in item
+            )
+            for item in value
+        ):
+            raise ValueError("tool and skill identifiers must be bounded non-flag values")
+        return list(dict.fromkeys(value))
+
+    @model_validator(mode="after")
+    def _model_override_requires_provider(self) -> ChatRequest:
+        if self.model_override is not None and self.provider_override is None:
+            raise ValueError("model override requires a provider override")
+        return self
 
 
 class ChatLifecycleEvent(BaseModel):
