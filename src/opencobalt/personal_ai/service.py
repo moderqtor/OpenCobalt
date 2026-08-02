@@ -487,6 +487,15 @@ class ChatService:
                         attempt_usage = provider_event.usage or ProviderUsage()
                         normalized_type = "usage"
                         payload = {"usage": attempt_usage.model_dump(mode="json")}
+                    elif provider_event.event_type == "tool_completed":
+                        normalized_type = "tool_completed"
+                        payload = {
+                            "tool_event": (
+                                provider_event.tool_event.model_dump(mode="json")
+                                if provider_event.tool_event
+                                else {"status": "unknown"}
+                            )
+                        }
                     elif provider_event.event_type == "completed":
                         terminal_type = "completed"
                         normalized_type = "provider_completed"

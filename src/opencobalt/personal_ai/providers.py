@@ -8,11 +8,13 @@ every real or simulated completion through :class:`ExecutionEngine`.
 from __future__ import annotations
 
 import ipaddress
+import json
 import shutil
 import threading
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -175,6 +177,15 @@ class ProviderRequest(BaseModel):
         return value
 
 
+class ProviderToolEvent(BaseModel):
+    """Redacted provider-neutral evidence of a provider-side tool operation."""
+
+    tool_call_id: str
+    tool_name: str
+    status: Literal["complete", "failed", "unknown"] = "unknown"
+    summary: str = ""
+
+
 class ProviderResult(BaseModel):
     request_id: str
     provider_id: str
@@ -185,6 +196,7 @@ class ProviderResult(BaseModel):
     receipt_id: str | None = None
     error: ProviderError | None = None
     limitations: list[str] = Field(default_factory=list)
+    tool_events: list[ProviderToolEvent] = Field(default_factory=list)
 
 
 class ProviderEvent(BaseModel):
@@ -193,11 +205,18 @@ class ProviderEvent(BaseModel):
     provider_id: str
     sequence: int = Field(ge=1)
     event_type: Literal[
-        "started", "text_delta", "usage", "completed", "error", "cancelled"
+        "started",
+        "text_delta",
+        "tool_completed",
+        "usage",
+        "completed",
+        "error",
+        "cancelled",
     ]
     text_delta: str | None = None
     usage: ProviderUsage | None = None
     error: ProviderError | None = None
+    tool_event: ProviderToolEvent | None = None
     receipt_id: str | None = None
     created_at: datetime = Field(default_factory=_now)
 
@@ -940,6 +959,17 @@ def _events_from_result(
         )
         return
 
+    for tool_event in result.tool_events:
+        yield ProviderEvent(
+            request_id=result.request_id,
+            provider_id=result.provider_id,
+            sequence=sequence,
+            event_type="tool_completed",
+            tool_event=tool_event,
+            receipt_id=result.receipt_id,
+        )
+        sequence += 1
+
     for offset in range(0, len(result.content), chunk_size):
         if cancellation is not None and cancellation.cancelled:
             yield ProviderEvent(
@@ -1018,10 +1048,14 @@ def _normalize_outcome(
         )
 
     result_status = str(getattr(result, "status", "failed"))
-    content = _public_output_text(
-        str(getattr(result, "content", "") or getattr(result, "stdout_preview", ""))
+    raw_content = _engine_result_output(result)
+    parsed_content, parsed_usage, tool_events = _normalize_provider_payload(
+        provider_id, raw_content
     )
+    content = _public_output_text(parsed_content)
     usage = _normalize_usage(getattr(result, "usage", None))
+    if usage.source == "unavailable" and parsed_usage is not None:
+        usage = _normalize_usage(parsed_usage)
     if result_status == "succeeded":
         return ProviderResult(
             request_id=request.request_id,
@@ -1032,6 +1066,7 @@ def _normalize_outcome(
             usage=usage,
             receipt_id=receipt_id,
             limitations=limitations,
+            tool_events=tool_events,
         )
 
     raw_error = str(
@@ -1054,7 +1089,103 @@ def _normalize_outcome(
             retryable=retryable,
         ),
         limitations=limitations,
+        tool_events=tool_events,
     )
+
+
+def _engine_result_output(result: Any, *, limit: int = 200_000) -> str:
+    """Read bounded engine-owned output instead of truncating chat to its preview."""
+    direct = getattr(result, "content", "")
+    if direct:
+        return str(direct)[:limit]
+    output_path = getattr(result, "stdout_path", None)
+    if output_path:
+        try:
+            with Path(output_path).open("r", encoding="utf-8", errors="replace") as handle:
+                return handle.read(limit)
+        except OSError:
+            pass
+    return str(getattr(result, "stdout_preview", ""))[:limit]
+
+
+def _normalize_provider_payload(
+    provider_id: str,
+    raw_content: str,
+) -> tuple[str, dict[str, Any] | None, list[ProviderToolEvent]]:
+    if provider_id != "codex":
+        return raw_content, None, []
+    return _parse_codex_jsonl(raw_content)
+
+
+def _parse_codex_jsonl(
+    raw_content: str,
+) -> tuple[str, dict[str, Any] | None, list[ProviderToolEvent]]:
+    """Extract assistant text, usage, and bounded tool evidence from Codex JSONL."""
+    messages: list[str] = []
+    usage: dict[str, Any] | None = None
+    tool_events: list[ProviderToolEvent] = []
+    parsed_events = 0
+    for line in raw_content.splitlines()[:2_000]:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        parsed_events += 1
+        raw_usage = event.get("usage")
+        if isinstance(raw_usage, Mapping):
+            usage = dict(raw_usage)
+        item = event.get("item")
+        if not isinstance(item, Mapping):
+            item = event if event.get("role") == "assistant" else None
+        if not isinstance(item, Mapping):
+            continue
+        item_type = str(item.get("type", ""))
+        if item_type in {"agent_message", "message"}:
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                messages.append(text)
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, Mapping) and isinstance(part.get("text"), str):
+                        messages.append(str(part["text"]))
+            continue
+        if item_type not in {
+            "command_execution",
+            "file_change",
+            "mcp_tool_call",
+            "tool_call",
+            "web_search",
+        }:
+            continue
+        call_id = str(item.get("id") or item.get("call_id") or _uid("ptool"))
+        status_value = str(item.get("status", "unknown")).lower()
+        if status_value in {"completed", "complete", "succeeded"}:
+            normalized_status = "complete"
+        elif status_value in {"failed", "error"}:
+            normalized_status = "failed"
+        else:
+            normalized_status = "unknown"
+        raw_summary = (
+            item.get("command")
+            or item.get("name")
+            or item.get("path")
+            or item_type
+        )
+        tool_events.append(
+            ProviderToolEvent(
+                tool_call_id=call_id[:200],
+                tool_name=item_type[:100],
+                status=normalized_status,  # type: ignore[arg-type]
+                summary=_public_output_text(str(raw_summary))[:500],
+            )
+        )
+    if parsed_events == 0:
+        return raw_content, None, []
+    return "\n\n".join(messages), usage, tool_events
 
 
 def _normalize_usage(raw: Any) -> ProviderUsage:
@@ -1228,5 +1359,6 @@ __all__ = [
     "ProviderResult",
     "ProviderRoutingProfile",
     "ProviderStatus",
+    "ProviderToolEvent",
     "ProviderUsage",
 ]

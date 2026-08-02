@@ -91,6 +91,7 @@ def _outcome(
     allowed: bool = True,
     policy_reason: str = "allowed",
     usage: dict | None = None,
+    stdout_path: str | None = None,
 ):
     result = None
     if status != "not_executed":
@@ -100,6 +101,7 @@ def _outcome(
             stderr_preview="",
             error=error,
             usage=usage,
+            stdout_path=stdout_path,
         )
     return SimpleNamespace(
         result=result,
@@ -234,6 +236,50 @@ def test_engine_backed_execution_returns_normalized_content_usage_and_receipt():
     assert kwargs["model"] == "model-x"
     assert kwargs["adapter"].runtime_id == "codex-cli"
     assert kwargs["unsafe_skip_permissions"] is False
+
+
+def test_engine_owned_output_file_prevents_chat_preview_truncation(tmp_path):
+    full_output = "bounded " + ("response " * 600)
+    output_path = tmp_path / "stdout.log"
+    output_path.write_text(full_output, encoding="utf-8")
+    engine = FakeEngine(
+        _outcome(
+            stdout=full_output[:2000],
+            stdout_path=str(output_path),
+            receipt_id="receipt-full",
+        )
+    )
+    registry = ProviderRegistry(engine, adapters=_adapters(), executable_finder=lambda _: None)
+
+    result = registry.get("antigravity").execute(ProviderRequest(message="long answer"))
+
+    assert result.status == "complete"
+    assert result.content == full_output
+    assert len(result.content) > 2000
+
+
+def test_codex_jsonl_is_normalized_to_text_usage_and_visible_tool_event():
+    codex_output = "\n".join(
+        [
+            '{"type":"thread.started","thread_id":"thread-1"}',
+            '{"type":"item.completed","item":{"id":"tool-1","type":"command_execution","command":"git status --short","status":"completed"}}',
+            '{"type":"item.completed","item":{"id":"message-1","type":"agent_message","text":"The repository is clean."}}',
+            '{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":6}}',
+        ]
+    )
+    engine = FakeEngine(_outcome(stdout=codex_output, receipt_id="receipt-jsonl"))
+    registry = ProviderRegistry(engine, adapters=_adapters(), executable_finder=lambda _: None)
+
+    events = list(registry.get("codex").stream(ProviderRequest(message="inspect")))
+
+    assert "".join(event.text_delta or "" for event in events) == "The repository is clean."
+    tool = next(event.tool_event for event in events if event.event_type == "tool_completed")
+    assert tool is not None
+    assert tool.tool_name == "command_execution"
+    assert tool.summary == "git status --short"
+    usage = next(event.usage for event in events if event.event_type == "usage")
+    assert usage is not None
+    assert usage.total_tokens == 18
 
 
 def test_engine_policy_failure_stays_on_requested_provider_without_fallback():
