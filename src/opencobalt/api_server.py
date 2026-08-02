@@ -24,6 +24,7 @@ from .core.ledger import Ledger
 from .core.public_safety import scan_directory
 from .core.router import route_task
 from .integrations.registry import REGISTRY as _INTEGRATION_REGISTRY
+from .personal_ai.api import router as personal_ai_router
 
 _START_TIME = time.time()
 
@@ -32,9 +33,11 @@ app = FastAPI(title="OpenCobalt API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
+
+app.include_router(personal_ai_router)
 
 
 def _ledger() -> Ledger:

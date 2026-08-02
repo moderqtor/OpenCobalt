@@ -296,6 +296,12 @@ class ChatService:
         selected_persona = persona_id or route.requested_persona_id
         preserve_policy = persona_id is None or selected_persona == route.requested_persona_id
         inherited_policy = route.metadata.get("cognitive_policy") if preserve_policy else None
+        selected_provider = provider_id or route.selected_provider
+        inherited_model = (
+            route.selected_model
+            if provider_id is None or provider_id == route.selected_provider
+            else None
+        )
         return self.stream_request(
             ChatRequest(
                 conversation_id=route.conversation_id,
@@ -305,8 +311,8 @@ class ChatService:
                 reasoning_effort=reasoning_effort or route.metadata.get("reasoning_effort", "medium"),
                 privacy_mode=route.metadata.get("privacy_mode"),
                 local_only=local_only,
-                provider_override=provider_id or route.selected_provider,
-                model_override=model_id if model_id is not None else route.selected_model,
+                provider_override=selected_provider,
+                model_override=model_id if model_id is not None else inherited_model,
                 allow_fallback=allow_fallback,
                 metadata={"rerun_of_route_id": route_id},
             )
