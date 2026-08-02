@@ -160,7 +160,13 @@ def test_engine_backed_mock_chat_persists_messages_route_execution_and_receipt(t
     execution = store.list_executions(conversation_id=conversation.conversation_id)[0]
     assert execution.status == "complete"
     assert execution.work_receipt_id == route.receipt_id
-    assert store.list_stream_events(execution.execution_id)[-1].event_type == "completed"
+    persisted_events = store.list_stream_events(execution.execution_id)
+    assert [event.event_type for event in persisted_events[:3]] == [
+        "request_accepted",
+        "route_selected",
+        "execution_started",
+    ]
+    assert persisted_events[-1].event_type == "completed"
 
 
 def test_conversation_and_routes_survive_service_restart(tmp_path):

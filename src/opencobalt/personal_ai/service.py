@@ -357,20 +357,6 @@ class ChatService:
             raise RuntimeError("selected route has no eligible candidate")
 
         current: ChatExecution | None = None
-        yield lifecycle(
-            "request_accepted",
-            execution=None,
-            payload={"message_id": user_message.message_id},
-        )
-        yield lifecycle(
-            "route_selected",
-            execution=None,
-            payload={
-                "route": route.model_dump(mode="json"),
-                "candidate_count": len(candidates),
-            },
-        )
-
         final_content = ""
         final_usage = ProviderUsage()
         final_receipt_id: str | None = None
@@ -393,7 +379,25 @@ class ChatService:
             with self._cancellation_lock:
                 self._cancellations[current.execution_id] = cancellation
 
-            if attempt_index > 0:
+            if attempt_index == 0:
+                accepted = lifecycle(
+                    "request_accepted",
+                    execution=current,
+                    payload={"message_id": user_message.message_id},
+                )
+                self._persist_lifecycle_event(current, accepted)
+                yield accepted
+                selected = lifecycle(
+                    "route_selected",
+                    execution=current,
+                    payload={
+                        "route": route.model_dump(mode="json"),
+                        "candidate_count": len(candidates),
+                    },
+                )
+                self._persist_lifecycle_event(current, selected)
+                yield selected
+            else:
                 fallback = route.fallback_events[-1]
                 event = lifecycle(
                     "fallback_started",
