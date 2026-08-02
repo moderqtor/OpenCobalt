@@ -239,7 +239,7 @@ class ChatService:
     def cancel(self, execution_id: str) -> bool:
         """Request cooperative cancellation and persist the request state."""
         with self._cancellation_lock:
-            cancellation = self._cancellations.get(execution_id)
+            cancellation = self._cancellations.pop(execution_id, None)
         if cancellation is None:
             return False
         cancellation.cancel()

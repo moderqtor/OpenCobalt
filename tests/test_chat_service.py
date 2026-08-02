@@ -286,6 +286,7 @@ def test_durable_cancellation_stops_mock_stream_and_marks_execution(tmp_path):
     assert started.event_type == "execution_started"
 
     assert service.cancel(started.execution_id) is True
+    assert service.cancel(started.execution_id) is False
     remaining = list(stream)
 
     assert remaining[-1].event_type == "cancelled"
