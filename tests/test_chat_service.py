@@ -392,6 +392,42 @@ def test_explicit_fallback_is_visible_persisted_and_uses_second_ranked_route(tmp
     assert len(engine.calls) == 2
 
 
+def test_provider_tool_events_are_visible_and_durable(tmp_path):
+    output = "\n".join(
+        [
+            '{"type":"item.completed","item":{"id":"tool-1","type":"command_execution","command":"git status --short","status":"completed"}}',
+            '{"type":"item.completed","item":{"id":"message-1","type":"agent_message","text":"Inspection complete."}}',
+        ]
+    )
+    engine = FakeEngine(_outcome(stdout=output, receipt_id="receipt-tool"))
+    store = PersonalAIStore(tmp_path / "ledger.db")
+    service = ChatService(
+        store=store,
+        providers=ProviderRegistry(
+            engine,
+            adapters=_adapters(codex=True),
+            executable_finder=lambda _name: None,
+        ),
+    )
+    conversation = service.create_conversation(title="Tool visibility")
+
+    events = list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Inspect the repository",
+                provider_override="codex",
+            )
+        )
+    )
+
+    tool_event = next(event for event in events if event.event_type == "tool_completed")
+    assert tool_event.payload["tool_event"]["summary"] == "git status --short"
+    execution = store.list_executions(conversation_id=conversation.conversation_id)[0]
+    persisted = store.list_stream_events(execution.execution_id)
+    assert any(event.event_type == "tool_completed" for event in persisted)
+
+
 def test_provider_failure_never_falls_back_without_request_permission(tmp_path):
     engine = FakeEngine(
         _outcome(status="failed", error="authentication failed", receipt_id="receipt-first")
