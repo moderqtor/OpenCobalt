@@ -436,6 +436,33 @@ def test_local_only_ollama_forces_loopback_endpoint_in_engine_owned_command():
     assert not any("dangerously" in part for part in command)
 
 
+def test_ollama_output_strips_terminal_control_sequences_before_chat():
+    engine = FakeEngine(
+        _outcome(
+            stdout=(
+                "Local answerx\x1b[1D\x1b[K\n"
+                "continues humming alo\x1b[3D\x1b[K\nalong safely.\x00"
+            ),
+            receipt_id="receipt-local",
+        )
+    )
+    registry = ProviderRegistry(
+        engine,
+        adapters=_adapters(),
+        executable_finder=lambda _: None,
+        ollama_endpoint="http://127.0.0.1:11434",
+    )
+
+    result = registry.get("ollama").execute(
+        ProviderRequest(message="local prompt", model_id="qwen2.5:7b", local_only=True)
+    )
+
+    assert result.status == "complete"
+    assert result.content == "Local answer\ncontinues humming \nalong safely."
+    assert "\x1b" not in result.content
+    assert "\x00" not in result.content
+
+
 @pytest.mark.parametrize("model_id", ["--help", "-qwen", "model name", "x" * 201])
 def test_model_selector_rejects_flag_like_or_unbounded_values(model_id):
     with pytest.raises(ValueError, match="model id"):

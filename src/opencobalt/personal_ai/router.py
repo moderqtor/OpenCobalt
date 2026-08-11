@@ -197,7 +197,7 @@ class PersonalAIRouter:
             selected_skills=selected_skills,
             privacy_classification=privacy,
             autonomy_level=_autonomy_level(risk),
-            approval_requirements=_approval_requirements(risk),
+            approval_requirements=approval_requirements(risk),
             estimated_cost_category=snapshot.cost_category,
             expected_latency_category=_latency(complexity),
             route_score=selected.score,
@@ -540,8 +540,16 @@ def _autonomy_level(risk: RiskClassification) -> str:
     return {"green": "answer_only", "yellow": "review_before_action", "red": "approval_required"}[risk]
 
 
-def _approval_requirements(risk: RiskClassification) -> list[str]:
-    return [] if risk == "green" else ["human review required before any execution"]
+def approval_requirements(risk: RiskClassification) -> list[str]:
+    if risk == "green":
+        return []
+    if risk == "yellow":
+        return [
+            "human review required before any external or mutating action based on this answer"
+        ]
+    return [
+        "explicit human approval required before any consequential action based on this answer"
+    ]
 
 
 def _latency(complexity: Complexity) -> str:

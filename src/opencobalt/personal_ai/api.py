@@ -37,6 +37,7 @@ from .models import (
     RouteRecord,
     SkillRecord,
     SkillVersion,
+    StreamEvent,
 )
 from .personas import duplicate_persona, render_persona_policy
 from .providers import (
@@ -181,10 +182,159 @@ def _execution_view(execution: ChatExecution) -> ChatExecutionView:
     return ChatExecutionView.model_validate(payload)
 
 
+class StreamEventView(BaseModel):
+    event_id: str
+    execution_id: str
+    sequence: int
+    event_type: str
+    payload: dict[str, Any]
+    created_at: datetime
+
+
+def _safe_event_identifier(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return _safe_text(value)[:500]
+
+
+def _stream_event_payload(event: StreamEvent) -> dict[str, Any]:
+    payload = event.payload
+    if event.event_type == "text_delta":
+        delta = payload.get("text_delta")
+        return {
+            "content_redacted": True,
+            "text_characters": len(delta) if isinstance(delta, str) else 0,
+        }
+
+    if event.event_type == "completed":
+        message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+        route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+        result: dict[str, Any] = {}
+        for key, value in (
+            ("message_id", message.get("message_id")),
+            ("receipt_id", payload.get("receipt_id")),
+            ("route_id", route.get("route_id")),
+            ("memory_proposal_id", payload.get("memory_proposal_id")),
+        ):
+            safe = _safe_event_identifier(value)
+            if safe is not None:
+                result[key] = safe
+        return result
+
+    if event.event_type == "route_selected":
+        route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+        result = {}
+        for key in (
+            "route_id",
+            "selected_provider",
+            "selected_model",
+            "requested_persona_id",
+        ):
+            safe = _safe_event_identifier(route.get(key))
+            if safe is not None:
+                result[key] = safe
+        candidate_count = payload.get("candidate_count")
+        if isinstance(candidate_count, int) and not isinstance(candidate_count, bool):
+            result["candidate_count"] = max(candidate_count, 0)
+        return result
+
+    if event.event_type == "usage":
+        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        result = {
+            key: value
+            for key, value in usage.items()
+            if key
+            in {
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+                "input_characters",
+                "output_characters",
+            }
+            and (value is None or isinstance(value, int))
+        }
+        source = _safe_event_identifier(usage.get("source"))
+        if source is not None:
+            result["source"] = source
+        return {"usage": result}
+
+    if event.event_type == "tool_completed":
+        tool = payload.get("tool_event") if isinstance(payload.get("tool_event"), dict) else {}
+        result = {}
+        for key in ("tool_call_id", "tool_name", "status"):
+            safe = _safe_event_identifier(tool.get(key))
+            if safe is not None:
+                result[key] = safe
+        summary = tool.get("summary")
+        if isinstance(summary, str):
+            result["summary_characters"] = len(summary)
+            result["summary_redacted"] = True
+        return {"tool_event": result}
+
+    if event.event_type in {"error", "cancelled"}:
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        safe_error: dict[str, Any] = {}
+        for key in ("category", "message"):
+            safe = _safe_event_identifier(error.get(key))
+            if safe is not None:
+                safe_error[key] = safe
+        if isinstance(error.get("retryable"), bool):
+            safe_error["retryable"] = error["retryable"]
+        result: dict[str, Any] = {"error": safe_error}
+        receipt_id = _safe_event_identifier(payload.get("receipt_id"))
+        if receipt_id is not None:
+            result["receipt_id"] = receipt_id
+        for key in ("fallback_allowed", "fallback_used"):
+            if isinstance(payload.get(key), bool):
+                result[key] = payload[key]
+        return result
+
+    allowed_keys = {
+        "request_accepted": ("message_id",),
+        "execution_started": ("provider_id", "model_id", "attempt"),
+        "provider_started": ("provider_id", "receipt_id"),
+        "provider_completed": ("receipt_id",),
+        "fallback_started": (
+            "from_provider",
+            "from_model",
+            "to_provider",
+            "to_model",
+            "reason_category",
+            "reason",
+            "failed_receipt_id",
+            "created_at",
+        ),
+    }.get(event.event_type)
+    if allowed_keys is None:
+        return {"payload_redacted": True}
+    result = {}
+    for key in allowed_keys:
+        value = payload.get(key)
+        if key == "attempt" and isinstance(value, int) and not isinstance(value, bool):
+            result[key] = max(value, 0)
+            continue
+        safe = _safe_event_identifier(value)
+        if safe is not None:
+            result[key] = safe
+    return result
+
+
+def _stream_event_view(event: StreamEvent) -> StreamEventView:
+    return StreamEventView(
+        event_id=event.event_id,
+        execution_id=event.execution_id,
+        sequence=event.sequence,
+        event_type=_safe_text(event.event_type)[:100],
+        payload=_stream_event_payload(event),
+        created_at=event.created_at,
+    )
+
+
 class RouteDetail(BaseModel):
     route: RouteRecord
     candidates: list[RouteCandidate]
     executions: list[ChatExecutionView]
+    stream_events: list[StreamEventView]
     verification: dict[str, Any] | None = None
     selected_provider: str
     selected_model: str | None = None
@@ -730,7 +880,24 @@ def cancel_execution(execution_id: str) -> CancellationResponse:
 
 def _route_detail(context: APIContext, route: RouteRecord) -> RouteDetail:
     candidates = context.store.list_route_candidates(route.route_id)
-    executions = context.store.list_executions(request_id=route.request_id)
+    executions = [
+        execution
+        for execution in context.store.list_executions(request_id=route.request_id, limit=500)
+        if execution.route_id == route.route_id
+    ]
+    stream_events = [
+        event
+        for execution in executions
+        for event in context.store.list_stream_events(execution.execution_id)
+    ]
+    stream_events.sort(
+        key=lambda event: (
+            event.created_at,
+            event.execution_id,
+            event.sequence,
+            event.event_id,
+        )
+    )
     attempted = executions[0] if executions else None
     actual_provider = route.metadata.get("actual_provider_id")
     actual_model = route.metadata.get("actual_model_id")
@@ -741,6 +908,7 @@ def _route_detail(context: APIContext, route: RouteRecord) -> RouteDetail:
         route=route,
         candidates=candidates,
         executions=[_execution_view(execution) for execution in executions],
+        stream_events=[_stream_event_view(event) for event in stream_events],
         verification=route.metadata.get("verification"),
         selected_provider=route.selected_provider,
         selected_model=route.selected_model,

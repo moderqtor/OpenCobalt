@@ -41,6 +41,7 @@ from .router import (
     PersonalAIRouter,
     ProviderSnapshot,
     RoutingRequest,
+    approval_requirements,
     classify_complexity,
     classify_privacy,
     classify_risk,
@@ -815,9 +816,7 @@ class ChatService:
                 "yellow": "review_before_action",
                 "red": "approval_required",
             }[risk],
-            approval_requirements=(
-                [] if risk == "green" else ["human review required before any execution"]
-            ),
+            approval_requirements=approval_requirements(risk),
             estimated_cost_category="unknown",
             expected_latency_category={
                 "simple": "low",

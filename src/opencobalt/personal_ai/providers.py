@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 import shutil
 import threading
 import uuid
@@ -1263,8 +1264,83 @@ def _public_error_text(value: str) -> str:
     return _public_output_text(value)[:500]
 
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_ANSI_CSI_RE = re.compile(r"\x1b\[([0-?]*)([ -/]*)([@-~])")
+_ANSI_OSC_RE = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)", re.DOTALL)
+
+
+def _render_terminal_text(value: str) -> str:
+    """Apply bounded cursor/erase controls emitted by terminal-oriented CLIs."""
+    value = _ANSI_OSC_RE.sub("", value)
+    lines: list[list[str]] = [[]]
+    row = 0
+    column = 0
+    index = 0
+    while index < len(value):
+        character = value[index]
+        if character == "\x1b":
+            match = _ANSI_CSI_RE.match(value, index)
+            if match is not None:
+                raw_parameters, _, command = match.groups()
+                first_parameter = raw_parameters.split(";", 1)[0]
+                amount = int(first_parameter) if first_parameter.isdigit() else 1
+                line = lines[row]
+                if command == "D":
+                    column = max(0, column - max(amount, 1))
+                elif command == "C":
+                    column = min(len(line), column + max(amount, 1))
+                elif command == "G":
+                    column = min(len(line), max(amount - 1, 0))
+                elif command == "K":
+                    mode = amount if first_parameter.isdigit() else 0
+                    if mode == 0:
+                        del line[column:]
+                    elif mode == 1:
+                        del line[: min(column + 1, len(line))]
+                        column = 0
+                    elif mode == 2:
+                        line.clear()
+                        column = 0
+                index = match.end()
+                continue
+            unsupported = _ANSI_ESCAPE_RE.match(value, index)
+            if unsupported is not None:
+                index = unsupported.end()
+                continue
+        if character == "\n":
+            row += 1
+            if row == len(lines):
+                lines.append([])
+            column = 0
+        elif character == "\r":
+            column = 0
+        elif character == "\b":
+            column = max(0, column - 1)
+        elif character == "\t":
+            spaces = 4 - (column % 4)
+            line = lines[row]
+            for _ in range(spaces):
+                if column < len(line):
+                    line[column] = " "
+                else:
+                    line.append(" ")
+                column += 1
+        elif ord(character) >= 32 and ord(character) != 127:
+            line = lines[row]
+            if column < len(line):
+                line[column] = character
+            else:
+                if column > len(line):
+                    line.extend(" " for _ in range(column - len(line)))
+                line.append(character)
+            column += 1
+        index += 1
+    return "\n".join("".join(line) for line in lines)
+
+
 def _public_output_text(value: str) -> str:
-    return redact_text(value).replace("<redacted>", "[REDACTED]")
+    rendered = _render_terminal_text(value)
+    return redact_text(rendered).replace("<redacted>", "[REDACTED]")
 
 
 def _normalized_ollama_endpoint(endpoint: str) -> str | None:

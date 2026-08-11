@@ -84,6 +84,9 @@ def test_security_work_is_sensitive_red_and_rejects_a_weak_free_local_model():
     assert plan.privacy_classification == "sensitive"
     assert plan.risk_classification == "red"
     assert plan.record.selected_provider == "codex-cli"
+    assert plan.record.approval_requirements == [
+        "explicit human approval required before any consequential action based on this answer"
+    ]
     weak_candidate = next(candidate for candidate in plan.candidates if candidate.provider_id == "ollama")
     assert weak_candidate.eligible is False
     assert "strong model" in weak_candidate.rejection_reason
@@ -259,6 +262,9 @@ def test_route_output_is_persistence_compatible_and_never_reports_a_fallback_exe
     assert plan.record.selected_tools == ["repository-read"]
     assert plan.record.selected_skills == ["pytest"]
     assert plan.record.verification_strategy == "repository_review"
+    assert plan.record.approval_requirements == [
+        "human review required before any external or mutating action based on this answer"
+    ]
     assert plan.candidates[0].route_id == plan.record.route_id
 
 

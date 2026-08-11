@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from opencobalt.api_server import app
 from opencobalt.core.approval_bridge import ApprovalRequest, ApprovalStep
-from opencobalt.personal_ai.models import ChatExecution
+from opencobalt.personal_ai.models import ChatExecution, StreamEvent
 from opencobalt.personal_ai.service import ChatRequest
 from opencobalt.personal_ai.store import PersonalAIStore
 
@@ -143,6 +144,138 @@ def test_mock_stream_persists_messages_route_execution_and_redacted_receipt(
     restarted_store = PersonalAIStore(Path(".opencobalt/ledger.db"))
     assert len(restarted_store.list_messages(conversation["conversation_id"])) == 2
     assert restarted_store.get_route(route_id) is not None
+
+
+def test_route_detail_exposes_durable_associated_redacted_stream_history(
+    client: TestClient,
+) -> None:
+    from opencobalt.personal_ai.api import _api_context
+
+    conversation = _conversation(client, "Stream history")
+    lifecycle = _stream_mock_chat(client, conversation["conversation_id"])
+    route_id = lifecycle[-1]["route_id"]
+    route = _api_context().store.get_route(route_id)
+    assert route is not None
+
+    earlier_execution = ChatExecution(
+        request_id=route.request_id,
+        route_id=route.route_id,
+        conversation_id=route.conversation_id,
+        provider_id="mock",
+        model_id="mock-v1",
+        status="failed",
+        created_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    )
+    _api_context().store.save_execution(earlier_execution)
+    secret_delta = f"private {Path.home()}/notes API_KEY=secret-stream-value"
+    injected = [
+        StreamEvent(
+            execution_id=earlier_execution.execution_id,
+            sequence=1,
+            event_type="text_delta",
+            payload={"text_delta": secret_delta},
+            created_at=datetime(2020, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+        ),
+        StreamEvent(
+            execution_id=earlier_execution.execution_id,
+            sequence=2,
+            event_type="completed",
+            payload={
+                "message": {"content": secret_delta, "message_id": "msg-sensitive"},
+                "route": {"route_id": route.route_id},
+                "receipt_id": "receipt-safe-id",
+            },
+            created_at=datetime(2020, 1, 1, 0, 0, 2, tzinfo=timezone.utc),
+        ),
+        StreamEvent(
+            execution_id=earlier_execution.execution_id,
+            sequence=3,
+            event_type="tool_completed",
+            payload={
+                "tool_event": {
+                    "tool_call_id": "tool-call-safe",
+                    "tool_name": "file-reader",
+                    "status": "complete",
+                    "summary": "sensitive patient diagnosis",
+                }
+            },
+            created_at=datetime(2020, 1, 1, 0, 0, 3, tzinfo=timezone.utc),
+        ),
+    ]
+    for event in injected:
+        _api_context().store.append_stream_event(event)
+
+    other = _conversation(client, "Other route")
+    other_lifecycle = _stream_mock_chat(client, other["conversation_id"])
+    other_execution_ids = {
+        item["execution_id"]
+        for item in client.get(f"/api/v1/routes/{other_lifecycle[-1]['route_id']}").json()[
+            "executions"
+        ]
+    }
+    wrong_route_execution = ChatExecution(
+        request_id=route.request_id,
+        route_id=other_lifecycle[-1]["route_id"],
+        conversation_id=other["conversation_id"],
+        provider_id="mock",
+        model_id="mock-v1",
+        status="failed",
+        created_at=datetime(2020, 1, 2, tzinfo=timezone.utc),
+        updated_at=datetime(2020, 1, 2, tzinfo=timezone.utc),
+    )
+    _api_context().store.save_execution(wrong_route_execution)
+    wrong_route_event = StreamEvent(
+        execution_id=wrong_route_execution.execution_id,
+        sequence=1,
+        event_type="text_delta",
+        payload={"text_delta": "wrong-route-sensitive-content"},
+        created_at=datetime(2020, 1, 2, 0, 0, 1, tzinfo=timezone.utc),
+    )
+    _api_context().store.append_stream_event(wrong_route_event)
+    other_execution_ids.add(wrong_route_execution.execution_id)
+
+    detail = client.get(f"/api/v1/routes/{route_id}").json()
+    history = detail["stream_events"]
+    route_execution_ids = {item["execution_id"] for item in detail["executions"]}
+
+    assert [item["event_id"] for item in history[:2]] == [
+        injected[0].event_id,
+        injected[1].event_id,
+    ]
+    assert [item["created_at"] for item in history] == sorted(
+        item["created_at"] for item in history
+    )
+    assert {item["execution_id"] for item in history} <= route_execution_ids
+    assert wrong_route_execution.execution_id not in route_execution_ids
+    assert not ({item["execution_id"] for item in history} & other_execution_ids)
+    assert history[0]["payload"] == {
+        "content_redacted": True,
+        "text_characters": len(secret_delta),
+    }
+    assert history[1]["payload"] == {
+        "message_id": "msg-sensitive",
+        "receipt_id": "receipt-safe-id",
+        "route_id": route.route_id,
+    }
+    assert history[2]["payload"] == {
+        "tool_event": {
+            "status": "complete",
+            "summary_characters": len("sensitive patient diagnosis"),
+            "summary_redacted": True,
+            "tool_call_id": "tool-call-safe",
+            "tool_name": "file-reader",
+        }
+    }
+    assert "secret-stream-value" not in json.dumps(history)
+    assert "sensitive patient diagnosis" not in json.dumps(history)
+    assert "wrong-route-sensitive-content" not in json.dumps(history)
+    assert str(Path.home()) not in json.dumps(history)
+
+    restarted = PersonalAIStore(Path(".opencobalt/ledger.db"))
+    assert [
+        item.event_id for item in restarted.list_stream_events(earlier_execution.execution_id)
+    ] == [injected[0].event_id, injected[1].event_id, injected[2].event_id]
 
 
 def test_local_only_override_cannot_route_to_cloud_cli(client: TestClient) -> None:
