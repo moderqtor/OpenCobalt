@@ -1349,7 +1349,9 @@ class ChatService:
                 "strategy": strategy,
                 "status": "passed" if integrity_passed else "failed",
                 "checks_performed": ["nonempty_response", "execution_receipt_linked"],
-                "limitations": [],
+                "limitations": [
+                    "response integrity does not verify factual correctness"
+                ],
             }
         return {
             "strategy": strategy,

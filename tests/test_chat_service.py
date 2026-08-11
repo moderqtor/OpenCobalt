@@ -175,6 +175,13 @@ def test_engine_backed_mock_chat_persists_messages_route_execution_and_receipt(t
     assert route.actual_persona_id == "analytical"
     assert route.receipt_id is not None
     assert route.metadata["verification"]["status"] == "passed"
+    assert route.metadata["verification"]["checks_performed"] == [
+        "nonempty_response",
+        "execution_receipt_linked",
+    ]
+    assert route.metadata["verification"]["limitations"] == [
+        "response integrity does not verify factual correctness"
+    ]
     assert messages[-1].route_id == route.route_id
     receipt = execution_store.get_receipt(route.receipt_id)
     assert receipt is not None

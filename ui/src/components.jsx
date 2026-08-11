@@ -130,7 +130,7 @@ export function RouteSpine({ route, onInspect }) {
     <ChevronRight size={14} aria-hidden="true" />
     <span><small>route</small><b title={routeId || undefined}>{compactId(routeId)}</b></span>
     <ChevronRight size={14} aria-hidden="true" />
-    <span><small>receipt · {compact(verification)}</small><b title={receipt || undefined}>{receiptLabel}</b></span>
+    <span><small>receipt integrity · {compact(verification)}</small><b title={receipt || undefined}>{receiptLabel}</b></span>
   </button>;
 }
 
@@ -201,6 +201,8 @@ export function RouteInspector({ route, candidates = [], providers = [], persona
   const receipt = route.receipt_id || route.work_receipt_id;
   const verificationRecord = route.verification || route.metadata?.verification;
   const verification = route.verification_status || verificationRecord?.status || route.verification_strategy;
+  const verificationChecks = verificationRecord?.checks_performed || verificationRecord?.checks || [];
+  const verificationLimitations = verificationRecord?.limitations || [];
   const actualPersona = route.actual_persona_id || route.selected_persona_id || route.persona_id;
   const executions = Array.isArray(route.executions) ? route.executions : [];
   const actualProvider = route.actual_provider_id
@@ -246,7 +248,7 @@ export function RouteInspector({ route, candidates = [], providers = [], persona
       <DetailRow label="Request ID" value={route.request_id} mono />
       <DetailRow label="Conversation ID" value={route.conversation_id} mono />
       <DetailRow label="Receipt ID" value={receipt || "not recorded"} mono />
-      <DetailRow label="Verification" value={compact(verification)} />
+      <DetailRow label="Integrity result" value={compact(verification)} />
       <DetailRow label="Task" value={compact(route.task_class)} />
       <DetailRow label="Complexity" value={compact(route.task_complexity)} />
       <DetailRow label="Selected provider" value={route.selected_provider || route.provider_id} />
@@ -271,7 +273,7 @@ export function RouteInspector({ route, candidates = [], providers = [], persona
     {route.persona_provider_mismatch && <div className="notice amber" role="note">{route.persona_provider_mismatch}</div>}
     {approvalRequirements.length > 0 && <section><h3>Approval boundary</h3><ul className="reason-list">{approvalRequirements.map((requirement) => <li key={requirement}>{requirement}</li>)}</ul></section>}
     {reasons.length > 0 && <section><h3>Why this route</h3><ul className="reason-list">{reasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul></section>}
-    <section><h3>Verification strategy</h3><p className="route-note">{compact(route.verification_strategy || "not recorded")}</p>{verificationRecord?.checks?.length > 0 && <ul className="reason-list">{verificationRecord.checks.map((check, index) => <li key={`${check}-${index}`}>{typeof check === "string" ? check : JSON.stringify(check)}</li>)}</ul>}{verificationRecord?.limitations?.length > 0 && <ul className="reason-list">{verificationRecord.limitations.map((limitation, index) => <li key={`${limitation}-${index}`}>{limitation}</li>)}</ul>}</section>
+    <section><h3>Verification boundary</h3><p className="route-note">Strategy: {compact(route.verification_strategy || "not recorded")}</p>{verificationChecks.length > 0 && <ul className="reason-list">{verificationChecks.map((check, index) => <li key={`${check}-${index}`}>{typeof check === "string" ? compact(check) : JSON.stringify(check)}</li>)}</ul>}{verificationLimitations.length > 0 && <ul className="reason-list">{verificationLimitations.map((limitation, index) => <li key={`${limitation}-${index}`}>{limitation}</li>)}</ul>}{verificationLimitations.length === 0 && route.verification_strategy === "response_integrity" && <p className="route-note">Response integrity does not verify factual correctness.</p>}</section>
     {fallbackEvents.length > 0 && <section><h3>Fallback history</h3><div className="event-history">{fallbackEvents.map((fallback, index) => <article key={`${fallback.created_at || "fallback"}-${index}`}><b>{fallback.from_provider || "unknown"} → {fallback.to_provider || "unknown"}</b><span>{fallback.reason_category ? `${compact(fallback.reason_category)} · ` : ""}{fallback.reason || "No reason recorded"}</span><code>{fallback.failed_receipt_id || "failed receipt not recorded"}</code></article>)}</div></section>}
     {streamEvents.length > 0 && <section><h3>Durable execution events</h3><div className="event-history">{streamEvents.map((event) => <article key={event.event_id || `${event.execution_id}-${event.sequence}`}><b>{compact(event.event_type)}</b><span>Execution {compactId(event.execution_id)} · sequence {event.sequence}</span><code>{event.created_at ? new Date(event.created_at).toLocaleString() : "time not recorded"}</code></article>)}</div></section>}
     {(tools.length > 0 || skills.length > 0) && <section><h3>Tools and skills</h3><div className="pill-row">{tools.map((tool) => <Pill key={`tool-${tool}`}>{tool}</Pill>)}{skills.map((skill) => <Pill key={`skill-${skill}`}>{skill}</Pill>)}</div></section>}
