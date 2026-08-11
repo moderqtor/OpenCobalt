@@ -5,6 +5,7 @@ import json
 from typer.testing import CliRunner
 
 from opencobalt.cli import app
+from opencobalt.core.ledger import Ledger
 
 runner = CliRunner()
 
@@ -102,3 +103,32 @@ def test_cli_search_and_why(tmp_path, monkeypatch):
     # Why command
     res_why = runner.invoke(app, ["why", cpt_id])
     assert res_why.exit_code == 0
+
+
+def test_cli_why_links_and_resolves_daily_completion_outcome(tmp_path, monkeypatch):
+    db_file = tmp_path / "ledger.db"
+    monkeypatch.setattr("opencobalt.core.config.get_db_path", lambda: db_file)
+
+    captured = runner.invoke(app, ["capture", "Write provenance test", "--json"])
+    capture_id = json.loads(captured.stdout)["data"]["capture_id"]
+    clarified = runner.invoke(app, ["clarify", capture_id, "--json"])
+    commitment_id = json.loads(clarified.stdout)["data"]["commitment_id"]
+    completed = runner.invoke(
+        app,
+        ["done", commitment_id, "--summary", "Provenance verified"],
+    )
+    assert completed.exit_code == 0
+
+    outcomes = Ledger(db_file).list_outcomes(tool="daily_operator")
+    assert len(outcomes) == 1
+    outcome_id = outcomes[0]["id"]
+
+    commitment_why = runner.invoke(app, ["why", commitment_id])
+    assert commitment_why.exit_code == 0
+    assert "recorded_outcome" in commitment_why.stdout
+    assert outcome_id[:14] in commitment_why.stdout
+
+    outcome_why = runner.invoke(app, ["why", outcome_id])
+    assert outcome_why.exit_code == 0
+    assert "kind: outcome" in outcome_why.stdout
+    assert commitment_id[:14] in outcome_why.stdout

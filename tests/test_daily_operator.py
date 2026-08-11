@@ -75,6 +75,21 @@ def test_focus_and_done_workflow(operator_service, test_clock):
     assert operator_service.focus_status() is None
 
 
+def test_done_from_active_focus_records_one_completion_transition(operator_service):
+    capture = operator_service.capture("Finish one focused task")
+    commitment = operator_service.clarify_capture(capture.id)
+    operator_service.focus_start(commitment.id)
+
+    operator_service.done(commitment.id, outcome_summary="Finished once")
+
+    completion_transitions = [
+        event
+        for event in operator_service.store.list_events_for_commitment(commitment.id)
+        if event.from_status == "active" and event.to_status == "completed"
+    ]
+    assert len(completion_transitions) == 1
+
+
 def test_defer_and_waiting(operator_service):
     c1 = operator_service.capture("Waiting item")
     cmt = operator_service.clarify_capture(c1.id, title="Waiting for logs")

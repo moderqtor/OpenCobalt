@@ -16,6 +16,7 @@ Read-only. Nothing here executes or mutates state.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -116,6 +117,11 @@ class ProvenanceBuilder:
 
         return ExecutionStore(self.db_path)
 
+    def _ledger(self):
+        from .ledger import Ledger
+
+        return Ledger(self.db_path)
+
     # --- Entry point ---
 
     def trace(self, any_id: str) -> ProvenanceTrace | None:
@@ -172,6 +178,9 @@ class ProvenanceBuilder:
                     trace.add_edge(cpt.id, cmt.id, "clarified_to")
             if cmt.mission_id:
                 trace.add_edge(cmt.id, cmt.mission_id, "promoted_to_mission")
+            for outcome in self._daily_completion_outcomes(cmt.id):
+                trace.add_node(self._daily_completion_outcome_node(outcome))
+                trace.add_edge(cmt.id, outcome["id"], "recorded_outcome")
             return trace
         return None
 
@@ -469,6 +478,20 @@ class ProvenanceBuilder:
         return trace
 
     def _trace_outcome(self, any_id: str) -> ProvenanceTrace | None:
+        daily_outcome = self._find_daily_completion_outcome(any_id)
+        if daily_outcome is not None:
+            trace = self._trace_daily_side(daily_outcome["task_id"])
+            if trace is None:
+                trace = ProvenanceTrace(
+                    focus_id=daily_outcome["id"],
+                    focus_kind="outcome",
+                )
+                trace.add_node(self._daily_completion_outcome_node(daily_outcome))
+            else:
+                trace.focus_id = daily_outcome["id"]
+                trace.focus_kind = "outcome"
+            return trace
+
         if not any_id.startswith("oout"):
             return None
         store = self._opportunity_store()
@@ -484,6 +507,43 @@ class ProvenanceBuilder:
         if run is not None:
             self._add_run_lineage(trace, run, only_tracks=[match["track_id"]])
         return trace
+
+    def _daily_completion_outcomes(self, commitment_id: str) -> list[dict[str, Any]]:
+        return [
+            outcome
+            for outcome in self._ledger().list_outcomes(
+                limit=500,
+                tool="daily_operator",
+            )
+            if outcome["task_id"] == commitment_id
+        ]
+
+    def _find_daily_completion_outcome(self, any_id: str) -> dict[str, Any] | None:
+        outcomes = self._ledger().list_outcomes(limit=500, tool="daily_operator")
+        exact = next((outcome for outcome in outcomes if outcome["id"] == any_id), None)
+        if exact is not None:
+            return exact
+        matches = [outcome for outcome in outcomes if outcome["id"].startswith(any_id)]
+        return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _daily_completion_outcome_node(outcome: dict[str, Any]) -> ProvenanceNode:
+        try:
+            metadata = json.loads(outcome.get("metadata") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            metadata = {}
+        return ProvenanceNode(
+            node_id=outcome["id"],
+            kind="outcome",
+            label=f"completion: {outcome['outcome']}",
+            data={
+                "task_id": outcome["task_id"],
+                "tool": outcome["tool"],
+                "timestamp": outcome["timestamp"],
+                "source_type": "daily_completion",
+                "evidence_path": metadata.get("evidence_path"),
+            },
+        )
 
     def _trace_execution_side(self, any_id: str) -> ProvenanceTrace | None:
         store = self._execution_store()

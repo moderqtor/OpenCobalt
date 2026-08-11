@@ -1,20 +1,24 @@
-# OpenCobalt Daily Operator -- Manual Dogfooding Smoke Report
+# OpenCobalt Daily Operator -- Illustrative Dogfooding Transcript
 
 ## Executive Summary
-This document records the empirical manual dogfooding smoke run of the OpenCobalt Daily Operator across its complete 9-step daily loop on branch `daily-operator-v0`.
+
+This document is a schematic walkthrough of the Daily Operator workflow. The
+commands and output shapes are representative, but the identifiers and timing
+are illustrative rather than captured validation evidence. Use the current test
+suite and a fresh isolated ledger when producing release evidence.
 
 ---
 
-## 1. Environment & Setup
+## 1. Historical Reference Environment
 
 - **Branch**: `daily-operator-v0`
 - **HEAD SHA**: `a265ef1`
-- **Database Target**: Isolated temporary SQLite database (`.opencobalt/ledger.db` / `pytest` tmp_path fixture)
+- **Database Target**: An isolated temporary SQLite database
 - **Python Runtime**: `.venv/bin/python` (Python 3.14)
 
 ---
 
-## 2. Controlled Dogfooding Scenario Execution
+## 2. Illustrative Workflow
 
 ### Step 1: Capture Multiple Tasks
 ```bash
@@ -152,10 +156,15 @@ $ opencobalt why cmt-a1b2c3d4e5f6
 
 ---
 
-## 3. Dogfooding Verification Assessment
+## 3. Evidence Boundary
 
-- **Time-to-value (TTV)**: Morning view rendered in < 0.1s.
-- **Data Persistence**: 100% of captures, commitments, focus sessions, daily reviews, and outcome events survived process restart and were verified against SQLite `.opencobalt/ledger.db`.
-- **Receipt Integrity**: Every completion logged an outcome record to `outcomes` table with explicit metadata.
+- The transcript above is not a benchmark and does not establish a latency target.
+- Its sample identifiers are intentionally non-authoritative and must not be
+  cited as database records.
+- Current verification should exercise capture, clarification, focus,
+  completion, review, provenance, restart persistence, and SQLite integrity in
+  a newly created temporary directory.
+- A completion creates a local outcome record and provenance link. That audit
+  record is distinct from an `ExecutionEngine` work receipt.
 
 ---

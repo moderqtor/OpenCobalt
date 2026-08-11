@@ -17,7 +17,9 @@ The Daily Operator reduces cognitive overhead by answering 5 fundamental questio
 ### Non-Negotiable Guarantees
 - **Local-first**: SQLite database (`.opencobalt/ledger.db`). No cloud required.
 - **Deterministic core**: Priority scores and state transitions are 100% reproducible.
-- **Receipts over claims**: Actions emit verifiable receipts and audit events.
+- **Receipts over claims**: Actions create local outcome, transition, audit, and
+  provenance records. Runtime execution uses separate `ExecutionEngine` work
+  receipts.
 - **Preserve human authority**: Machine recommends; human decides.
 - **Zero productivity theater**: No gamification, confetti, or AI fluff.
 
@@ -102,7 +104,8 @@ opencobalt done cmt-a1b2c3d4e5f6 --summary "Finished" --json
 ## 5. Storage, Backup & Privacy
 
 - **Data Location**: Single local SQLite database at `.opencobalt/ledger.db`.
-- **Backup**: Simply copy `.opencobalt/ledger.db` to your backup location.
+- **Backup**: Stop OpenCobalt, then use SQLite's `.backup` command so committed
+  WAL state is included. See [Personal AI Router](PERSONAL_AI_ROUTER.md#export-backup-and-reset).
 - **Privacy**: No telemetry or capture content leaves your local machine.
 
 ---

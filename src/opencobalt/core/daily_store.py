@@ -449,18 +449,24 @@ class DailyStore:
 
             if sess.commitment_id and outcome in ("completed", "interrupted", "abandoned"):
                 new_cmt_status = "completed" if outcome == "completed" else "ready"
-                conn.execute(
-                    "UPDATE commitments SET status = ?, updated_at = ? WHERE id = ?",
-                    (new_cmt_status, now_str, sess.commitment_id),
-                )
-                self._log_event(
-                    conn,
-                    commitment_id=sess.commitment_id,
-                    event_type="state_changed",
-                    from_status="active",
-                    to_status=new_cmt_status,
-                    payload={"focus_session_id": session_id, "duration_minutes": duration_mins, "outcome": outcome},
-                )
+                current = conn.execute(
+                    "SELECT status FROM commitments WHERE id = ?",
+                    (sess.commitment_id,),
+                ).fetchone()
+                current_status = current["status"] if current else None
+                if current_status is not None and current_status != new_cmt_status:
+                    conn.execute(
+                        "UPDATE commitments SET status = ?, updated_at = ? WHERE id = ?",
+                        (new_cmt_status, now_str, sess.commitment_id),
+                    )
+                    self._log_event(
+                        conn,
+                        commitment_id=sess.commitment_id,
+                        event_type="state_changed",
+                        from_status=current_status,
+                        to_status=new_cmt_status,
+                        payload={"focus_session_id": session_id, "duration_minutes": duration_mins, "outcome": outcome},
+                    )
 
         with self._get_conn() as conn:
             cursor = conn.execute("SELECT * FROM focus_sessions WHERE id = ?", (session_id,))
