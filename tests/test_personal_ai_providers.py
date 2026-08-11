@@ -236,6 +236,7 @@ def test_engine_backed_execution_returns_normalized_content_usage_and_receipt():
     assert kwargs["model"] == "model-x"
     assert kwargs["adapter"].runtime_id == "codex-cli"
     assert kwargs["unsafe_skip_permissions"] is False
+    assert kwargs["execution_context"] == "answer_only_inference"
 
 
 def test_engine_owned_output_file_prevents_chat_preview_truncation(tmp_path):

@@ -820,6 +820,9 @@ class PersonalAIStore:
                 "persona_provider_mismatch, outcome_status, receipt_id, created_at, updated_at, "
                 "metadata_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(route_id) DO UPDATE SET actual_usage_json=excluded.actual_usage_json, "
+                "actual_persona_id=excluded.actual_persona_id, "
+                "actual_persona_version_id=excluded.actual_persona_version_id, "
+                "persona_provider_mismatch=excluded.persona_provider_mismatch, "
                 "fallback_events_json=excluded.fallback_events_json, "
                 "outcome_status=excluded.outcome_status, receipt_id=excluded.receipt_id, "
                 "updated_at=excluded.updated_at, metadata_json=excluded.metadata_json",

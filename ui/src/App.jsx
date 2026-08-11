@@ -75,6 +75,7 @@ function routeFromDetail(detail) {
     receipt_id: detail.receipt_id || detail.route.receipt_id,
     executions: detail.executions || detail.route.executions,
     stream_events: detail.stream_events || detail.route.stream_events,
+    request_message: detail.request_message || detail.route.request_message,
   };
 }
 
@@ -149,6 +150,10 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
       ? "The selected provider is not currently installed and executable."
       : "";
   const canSend = Boolean(text.trim()) && !busy && !validationMessage;
+
+  useEffect(() => {
+    if (!controls.automatic) setExpanded(true);
+  }, [controls.automatic]);
 
   const submit = (event) => {
     event.preventDefault();
@@ -230,7 +235,7 @@ function MessageBubble({ message, route, onInspect, events = [] }) {
   </article>;
 }
 
-function ChatPage({ conversations, refreshConversations, personas, providers, settings, settingsReady, openRoute }) {
+function ChatPage({ conversations, refreshConversations, personas, providers, settings, settingsReady, openRoute, refreshSignal = 0 }) {
   const [selectedId, setSelectedId] = useState(() => localStorage.getItem("opencobalt.activeConversation") || "");
   const [messages, setMessages] = useState([]);
   const [messageState, setMessageState] = useState({ loading: false, error: null });
@@ -355,7 +360,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
         if (alive) setMessageState({ loading: false, error });
       });
     return () => { alive = false; };
-  }, [selectedId]); // Busy sends refresh their own authoritative message state.
+  }, [selectedId, refreshSignal]); // Busy sends refresh their own authoritative message state.
 
   useEffect(() => {
     const generation = routeGenerationRef.current;
@@ -570,7 +575,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       }}>
         {messageState.loading && <Loading label="Opening conversation" />}
         {messageState.error && <ErrorState error={messageState.error} retry={selectedId ? () => api.messages(selectedId).then((data) => { setMessages(data); setMessageState({ loading: false, error: null }); }) : undefined} />}
-        {!messageState.loading && !messages.length && <EmptyState title="One request. An inspectable route.">Choose a persona if it matters, then write naturally. OpenCobalt keeps the decision and receipt with the conversation.</EmptyState>}
+        {!messageState.loading && !messages.length && <EmptyState title="One request. An inspectable route.">Choose a persona if it matters, then write naturally. OpenCobalt keeps the decision, response, and any execution receipt with the conversation.</EmptyState>}
         {messages.map((message) => {
           const messageId = message.message_id || message.id;
           const matchingStreamRoute = message.route_id && streamRoute?.route_id === message.route_id ? streamRoute : null;
@@ -992,6 +997,7 @@ export default function App() {
   const providers = useLoad(api.providers);
   const settingsRecord = useLoad(api.settings);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [dataEpoch, setDataEpoch] = useState(0);
   const [inspector, setInspector] = useState({ open: false, route: null, candidates: [], loading: false, error: null, rerunning: false, promoting: false, promoted: null });
   const inspectorRequestRef = useRef(0);
   const closeNavigation = useCallback(() => setNavOpen(false), []);
@@ -1046,6 +1052,8 @@ export default function App() {
       const rerunRouteId = routeIdOf(rerunRoute);
       if (!rerunRouteId) throw new ApiError("The rerun response did not include a route identifier.", { detail: result });
       await openRoute(rerunRouteId, rerunRoute);
+      await conversations.reload();
+      setDataEpoch((current) => current + 1);
     } catch (error) {
       setInspector((current) => ({ ...current, error }));
     } finally {
@@ -1067,12 +1075,12 @@ export default function App() {
   };
 
   const coreRecords = [conversations, personas, providers, settingsRecord];
-  const coreLoading = coreRecords.some((record) => record.loading);
+  const coreLoading = coreRecords.some((record) => record.loading && record.data === null);
   const coreError = coreRecords.find((record) => record.error)?.error || null;
   const controlPlaneStatus = coreLoading ? "connecting" : coreError ? "unavailable" : "connected";
   const retryCore = () => Promise.all(coreRecords.map((record) => record.reload().catch(() => undefined)));
   const chatError = conversations.error || personas.error || providers.error || settingsRecord.error;
-  const chatLoading = conversations.loading || personas.loading || providers.loading || settingsRecord.loading;
+  const chatLoading = coreRecords.some((record) => record.loading && record.data === null);
 
   let view;
   if (page === "chat") {
@@ -1080,9 +1088,9 @@ export default function App() {
       ? <Loading label="Opening local control plane" />
       : chatError
         ? <CoreUnavailable error={chatError} retry={retryCore} />
-        : <ChatPage conversations={conversations.data || []} refreshConversations={conversations.reload} personas={personas.data || []} providers={providers.data || []} settings={settings} settingsReady={Boolean(settingsRecord.data)} openRoute={openRoute} />;
+        : <ChatPage conversations={conversations.data || []} refreshConversations={conversations.reload} personas={personas.data || []} providers={providers.data || []} settings={settings} settingsReady={Boolean(settingsRecord.data)} openRoute={openRoute} refreshSignal={dataEpoch} />;
   } else if (page === "routes") {
-    view = <RoutesPage openRoute={openRoute} />;
+    view = <RoutesPage key={`routes-${dataEpoch}`} openRoute={openRoute} />;
   } else if (page === "missions") {
     view = <MissionsPage />;
   } else if (page === "skills") {

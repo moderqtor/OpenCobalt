@@ -46,6 +46,7 @@ from .router import (
     classify_privacy,
     classify_risk,
     classify_task,
+    resolve_persona_for_provider,
 )
 from .store import PersonalAIStore
 
@@ -215,6 +216,27 @@ class ChatService:
                 metadata=request.metadata,
             )
             self.store.update_message(user_message.message_id, route_id=route.route_id)
+            denied_message = self.store.add_message(
+                conversation.conversation_id,
+                role="assistant",
+                content=(
+                    "OpenCobalt did not execute this request: no eligible provider route "
+                    "satisfies the current provider and policy constraints."
+                ),
+                status="failed",
+                persona_version_id=route.actual_persona_version_id,
+                route_id=route.route_id,
+                parent_message_id=user_message.message_id,
+                metadata={
+                    "requested_persona_id": route.requested_persona_id,
+                    "actual_persona_id": route.actual_persona_id,
+                    "provider_id": None,
+                    "model_id": None,
+                    "error_category": "policy_denied",
+                    "receipt_id": None,
+                    "persona_provider_mismatch": route.persona_provider_mismatch,
+                },
+            )
             yield ChatLifecycleEvent(
                 event_type="request_accepted",
                 request_id=request_id,
@@ -235,6 +257,7 @@ class ChatService:
                         "message": "No eligible route satisfies the current provider and policy constraints.",
                     },
                     "reasons": route.reasons,
+                    "message": denied_message.model_dump(mode="json"),
                 },
             )
             return
@@ -311,7 +334,11 @@ class ChatService:
                 cognitive_policy=cognitive_policy or inherited_policy,
                 reasoning_effort=reasoning_effort or route.metadata.get("reasoning_effort", "medium"),
                 privacy_mode=route.metadata.get("privacy_mode"),
-                local_only=local_only,
+                local_only=(
+                    bool(route.metadata.get("local_only", False))
+                    if local_only is None
+                    else local_only
+                ),
                 provider_override=selected_provider,
                 model_override=model_id if model_id is not None else inherited_model,
                 allow_fallback=allow_fallback,
@@ -449,6 +476,23 @@ class ChatService:
             yield started
 
             provider = self.providers.get(candidate.provider_id)
+            actual_persona_id, mismatch = resolve_persona_for_provider(
+                routing_request.requested_persona_id,
+                persona_version,
+                provider.status().routing_profile.provider_family,
+            )
+            route = route.model_copy(
+                update={
+                    "actual_persona_id": actual_persona_id,
+                    "actual_persona_version_id": (
+                        persona_version.persona_version_id
+                        if actual_persona_id == routing_request.requested_persona_id
+                        else None
+                    ),
+                    "persona_provider_mismatch": mismatch,
+                    "updated_at": _now(),
+                }
+            )
             rendered_policy = render_persona_policy(persona_version, cognitive_policy)
             provider_request = ProviderRequest(
                 request_id=routing_request.request_id,
@@ -569,6 +613,24 @@ class ChatService:
                     status="cancelled",
                     receipt_id=attempt_receipt,
                     usage=attempt_usage,
+                    actual_provider_id=current.provider_id,
+                    actual_model_id=current.model_id,
+                )
+                terminal_message = self._persist_terminal_assistant_message(
+                    route=route,
+                    execution=current,
+                    user_message=user_message,
+                    status="cancelled",
+                    content="The request was cancelled before a response completed.",
+                    error=final_error,
+                )
+                current = self._finish_execution(
+                    current,
+                    status="cancelled",
+                    receipt_id=attempt_receipt,
+                    usage=attempt_usage,
+                    error=final_error,
+                    assistant_message_id=terminal_message.message_id,
                 )
                 cancelled = lifecycle(
                     "cancelled",
@@ -591,6 +653,27 @@ class ChatService:
                     status="failed",
                     receipt_id=attempt_receipt,
                     usage=attempt_usage,
+                    actual_provider_id=current.provider_id,
+                    actual_model_id=current.model_id,
+                )
+                terminal_message = self._persist_terminal_assistant_message(
+                    route=route,
+                    execution=current,
+                    user_message=user_message,
+                    status="failed",
+                    content=(
+                        f"Provider {current.provider_id} did not complete the request: "
+                        f"{final_error.message}"
+                    ),
+                    error=final_error,
+                )
+                current = self._finish_execution(
+                    current,
+                    status="failed",
+                    receipt_id=attempt_receipt,
+                    usage=attempt_usage,
+                    error=final_error,
+                    assistant_message_id=terminal_message.message_id,
                 )
                 error_event = lifecycle(
                     "error",
@@ -679,6 +762,36 @@ class ChatService:
         self._persist_lifecycle_event(current, completed)
         yield completed
 
+    def _persist_terminal_assistant_message(
+        self,
+        *,
+        route: RouteRecord,
+        execution: ChatExecution,
+        user_message: ChatMessage,
+        status: Literal["failed", "cancelled"],
+        content: str,
+        error: ProviderError,
+    ) -> ChatMessage:
+        """Keep terminal provider failures visible after refresh and restart."""
+        return self.store.add_message(
+            route.conversation_id,
+            role="assistant",
+            content=content,
+            status=status,
+            persona_version_id=route.actual_persona_version_id,
+            route_id=route.route_id,
+            parent_message_id=user_message.message_id,
+            metadata={
+                "requested_persona_id": route.requested_persona_id,
+                "actual_persona_id": route.actual_persona_id,
+                "provider_id": execution.provider_id,
+                "model_id": execution.model_id,
+                "error_category": error.category,
+                "receipt_id": execution.work_receipt_id,
+                "persona_provider_mismatch": route.persona_provider_mismatch,
+            },
+        )
+
     def _provider_snapshots(self, request: RoutingRequest) -> list[ProviderSnapshot]:
         preferences = {
             preference.provider_id: preference
@@ -747,6 +860,8 @@ class ChatService:
                             status.provider_id, 0
                         ),
                         provider_priority=priority,
+                        readiness_state=status.health,
+                        authentication_state=status.authentication,
                     )
                 )
         return snapshots

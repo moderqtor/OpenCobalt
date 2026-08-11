@@ -11,7 +11,7 @@ task status (planning / running / verifying / done / failed).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -121,6 +121,7 @@ class ExecutionEngine:
         approval_id: str | None = None,
         mission_step_id: str | None = None,
         approval_step_id: str | None = None,
+        execution_context: Literal["general_task", "answer_only_inference"] = "general_task",
     ) -> ExecutionOutcome:
         """Run the full receipt-backed slice for one task.
 
@@ -158,12 +159,23 @@ class ExecutionEngine:
         if adapter is None:
             adapter = get_adapter(runtime)
 
-        # 2. Classify risk: worst of policy keywords, router, and adapter view.
-        risk = max_risk(classify_risk(task), risk_from_route, adapter.risk_for_task(task))
+        # 2. Classify process authority separately from answer-only subject matter.
+        # Personal-AI keeps consequential content risk on its route record while
+        # this engine gates the bounded, non-mutating provider invocation itself.
+        if execution_context == "answer_only_inference":
+            risk = max_risk("yellow", risk_from_route)
+            route_reason = f"{route_reason}; bounded answer-only inference process"
+        else:
+            risk = max_risk(classify_risk(task), risk_from_route, adapter.risk_for_task(task))
         needs_approval = risk in ("red", "black")
         capability_snapshot = adapter.discover_capabilities()
         capabilities = capability_snapshot.capability_details
         limitations = list(capability_snapshot.limitations)
+        if execution_context == "answer_only_inference":
+            limitations.append(
+                "bounded answer-only inference process; subject-matter and outcome risk remain "
+                "on the linked OpenCobalt route record"
+            )
 
         # 3. Build the safe command. Capability mismatches fail before any plan runs.
         options = CommandOptions(

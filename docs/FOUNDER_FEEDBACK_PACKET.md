@@ -53,7 +53,8 @@ real agent report
 - Compact `opencobalt continue MISSION_ID` output.
 - Target-specific handoff packets.
 - Public safety check.
-- Current post-merge suite: `1126 passed, 1 warning`.
+- Repository quality gates for lint, public safety, and tests; run them on the
+  checkout being evaluated rather than relying on a stale embedded count.
 
 ## Demo
 

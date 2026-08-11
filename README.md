@@ -63,9 +63,9 @@ Deeper demo material:
 - [Expected output guide](docs/assets/cold-resume-demo-output.md)
 - [Recording checklist](docs/assets/cold-resume-recording-checklist.md)
 
-Beyond cold resume, OpenCobalt is a local-first control and provenance layer for AI work. It routes across agent runtimes, records verifiable work receipts, preserves project memory, and enforces policy across tools such as Google Antigravity CLI, Claude Code, Codex, Aider, and Ollama.
+Beyond cold resume, OpenCobalt is a local-first personal AI control and provenance layer. Its web workspace provides durable chat while the control plane routes across discovered providers and agent runtimes, records verifiable work receipts, preserves project memory, and enforces policy across tools such as Google Antigravity CLI, Claude Code, Codex, Aider, and Ollama.
 
-It is not a chatbot, hosted service, or API proxy. The default configuration makes no API calls. Ollama and external CLI tools are optional and degrade gracefully when unavailable. OpenCobalt supports routing, diagnostics, audit logging, integration discovery, and receipt-backed execution: policy-gated one-shot runs that capture output, hash artifacts, and write verifiable work receipts (see `docs/EXECUTION_LAYER.md`).
+It is not a hosted service or credential broker. Starting the workspace and inspecting local records makes no provider call; executing a route may use a discovered local model or an explicitly selected external CLI. Optional providers degrade visibly when unavailable. OpenCobalt supports routing, diagnostics, audit logging, integration discovery, and receipt-backed execution: policy-gated one-shot runs that capture output, hash artifacts, and write verifiable work receipts (see `docs/EXECUTION_LAYER.md`).
 
 ## What It Does
 

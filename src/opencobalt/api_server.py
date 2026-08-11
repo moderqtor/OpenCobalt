@@ -44,11 +44,11 @@ def _ledger() -> Ledger:
     return Ledger(Path(".opencobalt") / "ledger.db")
 
 
-def _count_tests() -> int:
+def _count_tests() -> int | None:
     """Count test functions in tests/ by scanning for 'def test_' lines."""
     tests_dir = Path("tests")
     if not tests_dir.is_dir():
-        return 0
+        return None
     count = 0
     for f in tests_dir.glob("test_*.py"):
         try:
@@ -79,7 +79,10 @@ def get_status() -> dict[str, Any]:
 
     return {
         "version": version,
-        "test_count": _count_tests() or 214,
+        "test_count": (test_count := _count_tests()),
+        "test_count_evidence": (
+            "source_definition_scan" if test_count is not None else "tests_directory_unavailable"
+        ),
         "event_count": event_count,
         "public_check": public_check,
         "uptime_seconds": int(time.time() - _START_TIME),
@@ -102,8 +105,9 @@ def get_sessions() -> list[dict[str, Any]]:
             "task": d.task,
             "model": d.recommended_tool,
             "tier": d.tier,
-            "cost": "$0.000",
-            "ok": True,
+            "cost": None,
+            "ok": None,
+            "evidence": "route_decision_only",
         })
     return result
 
@@ -120,7 +124,8 @@ def get_agents() -> list[dict[str, Any]]:
             "id": p.name,
             "tier": p.tier,
             "caps": p.capabilities,
-            "on": False,
+            "on": None,
+            "availability": "unknown",
         }
         for p in profiles
     ]
@@ -237,8 +242,9 @@ def get_timeline() -> list[dict[str, Any]]:
                 "model": d.recommended_tool,
                 "tier": d.tier,
                 "scores": d.scores or d.metadata.get("_scores", {}),
-                "cost": "$0.000",
-                "status": "ok",
+                "cost": None,
+                "status": "recorded",
+                "evidence": "route_decision_only",
             })
     except Exception:
         pass
@@ -256,8 +262,9 @@ def get_timeline() -> list[dict[str, Any]]:
                 "detail": e.summary,
                 "model": e.source,
                 "tier": "",
-                "cost": "$0.000",
-                "status": "ok",
+                "cost": None,
+                "status": "recorded",
+                "evidence": "ledger_event",
             })
     except Exception:
         pass

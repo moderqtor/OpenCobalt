@@ -86,13 +86,13 @@ def _outcome(*, status="succeeded", stdout="", receipt_id="receipt-test", error=
     )
 
 
-def _adapters(*, codex=False, antigravity=False):
+def _adapters(*, codex=False, antigravity=False, claude=False):
     return {
         "codex-cli": FakeAdapter("codex-cli", available=codex),
         "google-antigravity": FakeAdapter(
             "google-antigravity", available=antigravity
         ),
-        "claude-code": FakeAdapter("claude-code"),
+        "claude-code": FakeAdapter("claude-code", available=claude),
         "ollama": FakeAdapter("ollama", requires_network=False),
     }
 
@@ -348,6 +348,11 @@ def test_local_only_manual_cloud_route_is_denied_without_provider_execution(tmp_
     assert "local-only" in " ".join(route.reasons)
     assert store.list_route_candidates(route.route_id)[0].eligible is False
     assert engine.calls == []
+    messages = store.list_messages(conversation.conversation_id)
+    assert [message.role for message in messages] == ["user", "assistant"]
+    assert messages[-1].status == "failed"
+    assert messages[-1].route_id == route.route_id
+    assert messages[-1].metadata["error_category"] == "policy_denied"
 
 
 def test_explicit_fallback_is_visible_persisted_and_uses_second_ranked_route(tmp_path):
@@ -456,6 +461,14 @@ def test_provider_failure_never_falls_back_without_request_permission(tmp_path):
     assert route.fallback_events == []
     assert len(engine.calls) == 1
 
+    messages = store.list_messages(conversation.conversation_id)
+    assert [message.role for message in messages] == ["user", "assistant"]
+    assert messages[-1].status == "failed"
+    assert messages[-1].route_id == route.route_id
+    assert "authentication failed" in messages[-1].content
+    execution = store.list_executions(conversation_id=conversation.conversation_id)[0]
+    assert execution.assistant_message_id == messages[-1].message_id
+
 
 def test_local_outcome_history_is_a_bounded_routing_signal(tmp_path):
     engine = FakeEngine(
@@ -554,6 +567,69 @@ def test_rerun_changes_persona_without_losing_provider_or_route_lineage(tmp_path
     )
     assert comparison[0]["route"]["requested_persona_id"] == "analytical"
     assert comparison[1]["route"]["requested_persona_id"] == "reflective"
+
+
+def test_rerun_preserves_recorded_local_only_boundary_when_no_override_is_given(tmp_path):
+    service, store, _ = _real_mock_service(tmp_path)
+    conversation = service.create_conversation(title="Local rerun")
+    first = list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Keep this local",
+                provider_override="mock",
+                local_only=True,
+            )
+        )
+    )
+    store.save_settings(store.get_settings().model_copy(update={"local_only_default": False}))
+
+    second = list(service.rerun(first[-1].route_id))
+
+    second_route = store.get_route(second[-1].route_id)
+    assert second_route is not None
+    assert second_route.metadata["local_only"] is True
+
+
+def test_cross_provider_fallback_recomputes_provider_native_persona_disclosure(tmp_path):
+    engine = FakeEngine(
+        _outcome(status="failed", error="authentication failed", receipt_id="receipt-claude"),
+        _outcome(stdout="fallback response", receipt_id="receipt-codex"),
+    )
+    store = PersonalAIStore(tmp_path / "ledger.db")
+    service = ChatService(
+        store=store,
+        providers=ProviderRegistry(
+            engine,
+            adapters=_adapters(codex=True, claude=True),
+            executable_finder=lambda _name: None,
+        ),
+        enable_mock=False,
+    )
+    conversation = service.create_conversation(title="Native fallback")
+
+    events = list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Help me reflect on this choice",
+                persona_id="claude-native",
+                allow_fallback=True,
+            )
+        )
+    )
+
+    assert events[-1].event_type == "completed"
+    route = store.get_route(events[-1].route_id)
+    assert route is not None
+    assert route.selected_provider == "claude"
+    assert route.metadata["actual_provider_id"] == "codex"
+    assert route.actual_persona_id == "provider-native"
+    assert route.actual_persona_version_id is None
+    assert "openai" in (route.persona_provider_mismatch or "")
+    assistant = store.list_messages(conversation.conversation_id)[-1]
+    assert assistant.metadata["actual_persona_id"] == "provider-native"
+    assert assistant.metadata["persona_provider_mismatch"] == route.persona_provider_mismatch
 
 
 def test_provider_native_mismatch_persists_requested_and_actual_persona(tmp_path):

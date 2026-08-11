@@ -59,6 +59,8 @@ class ProviderSnapshot:
     historical_success_signal: int = 0
     quota_pressure: int = 0
     provider_priority: int = 0
+    readiness_state: Literal["ready", "unknown", "unavailable"] = "unknown"
+    authentication_state: Literal["unknown", "not_required", "verified"] = "unknown"
 
     def __post_init__(self) -> None:
         """Reject unbounded evidence while normalizing capability collections."""
@@ -162,7 +164,11 @@ class PersonalAIRouter:
             for item in providers
             if item.provider_id == selected.provider_id and item.model_id == selected.model_id
         )
-        actual_persona_id, mismatch = _actual_persona(request, persona_version, snapshot)
+        actual_persona_id, mismatch = resolve_persona_for_provider(
+            request.requested_persona_id,
+            persona_version,
+            snapshot.provider_family,
+        )
         selected_tools = sorted(set(request.requested_tools) & snapshot.tool_names)
         selected_skills = _selected_skills(request, snapshot)
         reasons = list(selected.reasons)
@@ -249,6 +255,7 @@ class PersonalAIRouter:
             "historical_success": snapshot.historical_success_signal,
             "quota_pressure": -snapshot.quota_pressure,
             "provider_priority": snapshot.provider_priority,
+            "readiness_evidence": _readiness_evidence(snapshot),
         }
         rejection = _rejection_reason(
             request=request,
@@ -258,7 +265,12 @@ class PersonalAIRouter:
             local_only=local_only,
         )
         reasons = [
-            f"availability: {'available' if snapshot.available else 'unavailable'}",
+            f"execution boundary: {'discovered' if snapshot.available else 'unavailable'}",
+            (
+                f"readiness evidence: {_readiness_evidence(snapshot)} "
+                f"(health {snapshot.readiness_state}; authentication "
+                f"{label_authentication(snapshot.authentication_state)})"
+            ),
             f"capability fit: {_capability_fit(snapshot, task_class)}",
             f"privacy fit: {_privacy_fit(snapshot, privacy)}",
             f"risk fit: {_risk_fit(snapshot, task_class, risk)}",
@@ -285,6 +297,25 @@ class PersonalAIRouter:
             reasons=reasons,
             rejection_reason=rejection,
         )
+
+
+def _readiness_evidence(snapshot: ProviderSnapshot) -> int:
+    """Prefer proven/no-auth runtimes without claiming an auth probability."""
+    if not snapshot.available or snapshot.readiness_state == "unavailable":
+        return 0
+    if snapshot.readiness_state == "ready":
+        return 4
+    if snapshot.authentication_state == "verified":
+        return 3
+    if snapshot.authentication_state == "not_required":
+        return 2
+    if snapshot.requires_network:
+        return -3
+    return 0
+
+
+def label_authentication(value: str) -> str:
+    return value.replace("_", " ")
 
 
 def classify_task(prompt: str, cognitive_policy: str = "fast_answer") -> TaskClass:
@@ -517,23 +548,23 @@ def _selected_skills(request: RoutingRequest, snapshot: ProviderSnapshot) -> lis
     return sorted(set(request.requested_skills) & snapshot.skill_names)
 
 
-def _actual_persona(
-    request: RoutingRequest,
+def resolve_persona_for_provider(
+    requested_persona_id: str,
     persona_version: PersonaVersion | None,
-    snapshot: ProviderSnapshot,
+    provider_family: str,
 ) -> tuple[str, str | None]:
     if (
         persona_version is not None
         and persona_version.native_provider_family is not None
-        and persona_version.native_provider_family != snapshot.provider_family
+        and persona_version.native_provider_family != provider_family
     ):
         return (
             "provider-native",
             "requested native persona expects "
             f"{persona_version.native_provider_family}; selected provider family is "
-            f"{snapshot.provider_family}, so provider-native is an approximation",
+            f"{provider_family}, so provider-native is an approximation",
         )
-    return request.requested_persona_id, None
+    return requested_persona_id, None
 
 
 def _autonomy_level(risk: RiskClassification) -> str:

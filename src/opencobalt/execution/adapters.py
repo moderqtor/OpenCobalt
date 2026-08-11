@@ -783,6 +783,7 @@ class CodexCliAdapter(RuntimeAdapter):
         has_ephemeral = "--ephemeral" in exec_help
         has_ignore_user_config = "--ignore-user-config" in exec_help
         has_color_never = "--color" in exec_help and "never" in exec_help
+        has_skip_git_repo_check = "--skip-git-repo-check" in exec_help
         has_model = "--model" in combined_help
 
         self._capabilities = {
@@ -830,6 +831,10 @@ class CodexCliAdapter(RuntimeAdapter):
             },
             "color_never": {
                 "supported": has_color_never,
+                "source": "codex exec --help" if exec_help else "unknown",
+            },
+            "skip_git_repo_check": {
+                "supported": has_skip_git_repo_check,
                 "source": "codex exec --help" if exec_help else "unknown",
             },
             "model_selection": {
@@ -968,6 +973,8 @@ class CodexCliAdapter(RuntimeAdapter):
         )
         if caps.get("json_events", {}).get("supported") is True:
             argv.append("--json")
+        if caps.get("skip_git_repo_check", {}).get("supported") is True:
+            argv.append("--skip-git-repo-check")
         if caps.get("ephemeral_session", {}).get("supported") is True:
             argv.append("--ephemeral")
         if caps.get("ignore_user_config", {}).get("supported") is True:

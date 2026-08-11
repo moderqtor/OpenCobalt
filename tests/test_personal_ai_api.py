@@ -236,6 +236,7 @@ def test_route_detail_exposes_durable_associated_redacted_stream_history(
     other_execution_ids.add(wrong_route_execution.execution_id)
 
     detail = client.get(f"/api/v1/routes/{route_id}").json()
+    assert detail["request_message"]["content"] == "Explain the route in one sentence."
     history = detail["stream_events"]
     route_execution_ids = {item["execution_id"] for item in detail["executions"]}
 

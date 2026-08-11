@@ -500,6 +500,7 @@ class EngineBackedChatProvider(ChatProvider):
                 timeout_seconds=request.timeout_seconds,
                 cwd=request.cwd,
                 unsafe_skip_permissions=False,
+                execution_context="answer_only_inference",
                 adapter=selected_adapter,
             )
         except (KeyError, ValueError) as exc:

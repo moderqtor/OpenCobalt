@@ -1998,6 +1998,25 @@ def adapters_inspect(
 
 # ── UI command ────────────────────────────────────────────────────────────────
 
+
+def _require_available_ui_port(label: str, port: int) -> None:
+    """Fail before child startup when a requested loopback port cannot be bound."""
+    import socket
+
+    if not 1 <= port <= 65535:
+        err.print(f"\n[{_RED}]{label} port must be between 1 and 65535.[/{_RED}]\n")
+        raise typer.Exit(1)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", port))
+    except OSError:
+        err.print(
+            f"\n[{_RED}]{label} port {port} is already in use.[/{_RED}]  "
+            "Choose another port and try again.\n"
+        )
+        raise typer.Exit(1) from None
+
+
 @app.command("ui")
 def ui_shell(
     port: int = typer.Option(5173, "--port", help="Vite dev server port"),
@@ -2014,6 +2033,12 @@ def ui_shell(
     if not shutil.which("npm"):
         err.print(f"\n[{_RED}]npm not found.[/{_RED}]  Install Node.js from https://nodejs.org\n")
         raise typer.Exit(1)
+
+    if port == api_port:
+        err.print(f"\n[{_RED}]UI and API ports must be different.[/{_RED}]\n")
+        raise typer.Exit(1)
+    _require_available_ui_port("UI", port)
+    _require_available_ui_port("API", api_port)
 
     ui_dir = Path("ui")
     if not ui_dir.exists():
@@ -2061,14 +2086,12 @@ def ui_shell(
         console.print(f"  [{_GREEN}]Dashboard running at[/{_GREEN}]  http://localhost:{port}")
         console.print("  [dim]Ctrl+C to stop.[/dim]\n")
 
-        # Wait for servers to start, then verify API is up before opening browser
-        _time.sleep(3)
+        # Open the browser only after the API is actually ready. Child failures and
+        # transient loopback resets remain bounded and produce a useful CLI error.
         import urllib.error
         import urllib.request
-        try:
-            urllib.request.urlopen(f"http://localhost:{api_port}/api/status", timeout=3)
-        except urllib.error.URLError:
-            # API failed -- could be missing server extras
+        readiness_deadline = _time.monotonic() + 10
+        while True:
             if api_proc.poll() is not None:
                 err.print(
                     f"\n[{_RED}]API server failed to start.[/{_RED}]  "
@@ -2076,6 +2099,26 @@ def ui_shell(
                 )
                 vite_proc.terminate()
                 raise typer.Exit(1)
+            if vite_proc.poll() is not None:
+                err.print(
+                    f"\n[{_RED}]UI server failed to start.[/{_RED}]  "
+                    "Run: npm install --prefix ui\n"
+                )
+                api_proc.terminate()
+                raise typer.Exit(1)
+            try:
+                response = urllib.request.urlopen(
+                    f"http://127.0.0.1:{api_port}/api/status", timeout=1
+                )
+                response.close()
+                break
+            except (urllib.error.URLError, OSError):
+                if _time.monotonic() >= readiness_deadline:
+                    err.print(
+                        f"\n[{_RED}]API server did not become ready within 10 seconds.[/{_RED}]\n"
+                    )
+                    raise typer.Exit(1) from None
+                _time.sleep(0.1)
 
         if not no_browser:
             webbrowser.open(f"http://localhost:{port}")

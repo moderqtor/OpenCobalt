@@ -28,6 +28,8 @@ def _provider(
     historical_success_signal: int = 0,
     quota_pressure: int = 0,
     provider_priority: int = 0,
+    readiness_state: str = "unknown",
+    authentication_state: str = "unknown",
 ) -> ProviderSnapshot:
     return ProviderSnapshot(
         provider_id=provider_id,
@@ -46,6 +48,8 @@ def _provider(
         historical_success_signal=historical_success_signal,
         quota_pressure=quota_pressure,
         provider_priority=provider_priority,
+        readiness_state=readiness_state,
+        authentication_state=authentication_state,
     )
 
 
@@ -397,3 +401,33 @@ def test_bounded_latency_history_quota_and_priority_signals_are_scored_explicitl
     assert components["historical_success"] == 6
     assert components["quota_pressure"] == -2
     assert components["provider_priority"] == 4
+
+
+def test_unknown_cloud_auth_is_ranked_below_no_auth_local_runtime_without_overrides():
+    router = PersonalAIRouter()
+    cloud = _provider(
+        "codex",
+        local=False,
+        requires_network=True,
+        provider_family="openai",
+        authentication_state="unknown",
+        readiness_state="unknown",
+    )
+    local = _provider(
+        "ollama",
+        local=True,
+        requires_network=False,
+        cost_category="free",
+        authentication_state="not_required",
+        readiness_state="unknown",
+    )
+
+    plan = router.route(_request("Explain this concept"), [cloud, local])
+
+    assert plan.record.selected_provider == "ollama"
+    cloud_candidate = next(item for item in plan.candidates if item.provider_id == "codex")
+    local_candidate = next(item for item in plan.candidates if item.provider_id == "ollama")
+    assert cloud_candidate.score_components["readiness_evidence"] == -3
+    assert local_candidate.score_components["readiness_evidence"] == 2
+    assert any("authentication unknown" in reason for reason in cloud_candidate.reasons)
+    assert any("authentication not required" in reason for reason in local_candidate.reasons)

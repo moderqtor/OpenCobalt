@@ -725,6 +725,34 @@ Options:
             "OpenCobalt read-only planning request:\nsummarize",
         ]
 
+    def test_codex_skips_repo_trust_check_only_when_exec_help_advertises_it(
+        self, tmp_path, monkeypatch
+    ):
+        fake_codex = _fake_codex_binary(tmp_path)
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: str(fake_codex) if command == "codex" else None,
+        )
+        adapter = CodexCliAdapter(
+            help_text=_codex_help(),
+            exec_help_text="""
+Run Codex non-interactively
+Usage: codex exec [OPTIONS] [PROMPT]
+Options:
+  --json
+  --skip-git-repo-check
+""",
+        )
+
+        argv = adapter.build_command("summarize")
+
+        exec_index = argv.index("exec")
+        assert argv[exec_index + 1 : exec_index + 3] == [
+            "--json",
+            "--skip-git-repo-check",
+        ]
+        assert "--dangerously-bypass-approvals-and-sandbox" not in argv
+
     def test_codex_missing_safe_flags_is_discovery_only(self, tmp_path, monkeypatch):
         fake_codex = _fake_codex_binary(tmp_path)
         monkeypatch.setattr(
@@ -1101,6 +1129,22 @@ class TestExecutionEngine:
         assert not outcome.policy.allowed
         assert outcome.result is None
         assert engine_receipt_exists(tmp_path, outcome.receipt.receipt_id)
+
+    def test_answer_only_inference_separates_prompt_topic_from_process_authority(
+        self, tmp_path
+    ):
+        outcome = _engine(tmp_path).run_task(
+            "Explain how to rotate an API key without taking action",
+            runtime="noop",
+            execute=True,
+            execution_context="answer_only_inference",
+        )
+
+        assert outcome.policy.allowed
+        assert outcome.executed
+        assert outcome.plan.risk_level == "yellow"
+        assert outcome.plan.approval_required is False
+        assert any("answer-only inference" in item for item in outcome.receipt.limitations)
 
     def test_red_task_executes_with_approval(self, tmp_path):
         outcome = _engine(tmp_path).run_task(

@@ -332,6 +332,7 @@ def _stream_event_view(event: StreamEvent) -> StreamEventView:
 
 class RouteDetail(BaseModel):
     route: RouteRecord
+    request_message: ChatMessage | None = None
     candidates: list[RouteCandidate]
     executions: list[ChatExecutionView]
     stream_events: list[StreamEventView]
@@ -906,6 +907,7 @@ def _route_detail(context: APIContext, route: RouteRecord) -> RouteDetail:
         actual_model = attempted.model_id
     return RouteDetail(
         route=route,
+        request_message=context.store.get_message(route.request_message_id),
         candidates=candidates,
         executions=[_execution_view(execution) for execution in executions],
         stream_events=[_stream_event_view(event) for event in stream_events],
