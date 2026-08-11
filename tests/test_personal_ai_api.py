@@ -11,8 +11,9 @@ from fastapi.testclient import TestClient
 
 from opencobalt.api_server import app
 from opencobalt.core.approval_bridge import ApprovalRequest, ApprovalStep
+from opencobalt.personal_ai.api import _stream_ndjson
 from opencobalt.personal_ai.models import ChatExecution, StreamEvent
-from opencobalt.personal_ai.service import ChatRequest
+from opencobalt.personal_ai.service import ChatLifecycleEvent, ChatRequest
 from opencobalt.personal_ai.store import PersonalAIStore
 
 
@@ -52,6 +53,34 @@ def _stream_mock_chat(
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/x-ndjson")
     return [json.loads(line) for line in response.text.splitlines() if line]
+
+
+def test_ndjson_disconnect_tracks_execution_before_execution_started() -> None:
+    class FakeService:
+        def __init__(self) -> None:
+            self.abandoned = []
+
+        def stream_request(self, _request):
+            yield ChatLifecycleEvent(
+                event_type="request_accepted",
+                request_id="req-1",
+                conversation_id="conv-1",
+                route_id="route-1",
+                execution_id="chatx-1",
+                sequence=1,
+            )
+
+        def abandon(self, execution_id):
+            self.abandoned.append(execution_id)
+            return True
+
+    service = FakeService()
+    stream = _stream_ndjson(service, object())
+    assert "request_accepted" in next(stream)
+
+    stream.close()
+
+    assert service.abandoned == ["chatx-1"]
 
 
 def test_context_is_keyed_by_resolved_ledger_path(
@@ -369,7 +398,7 @@ def test_chat_enforces_unimplemented_approval_and_tool_boundaries(
     assert len(client.get("/api/v1/routes").json()) == 1
 
 
-def test_closing_stream_requests_cooperative_cancellation(client: TestClient) -> None:
+def test_closing_stream_finalizes_durable_cancellation(client: TestClient) -> None:
     from opencobalt.personal_ai.api import _api_context, _stream_ndjson
 
     conversation = _conversation(client)
@@ -397,7 +426,50 @@ def test_closing_stream_requests_cooperative_cancellation(client: TestClient) ->
 
     execution = context.store.get_execution(started["execution_id"])
     assert execution is not None
-    assert execution.status == "cancel_requested"
+    assert execution.status == "cancelled"
+    route = context.store.get_route(started["route_id"])
+    assert route is not None and route.outcome_status == "cancelled"
+    messages = context.store.list_messages(conversation["conversation_id"])
+    assert messages[-1].status == "cancelled"
+    confirmed = client.post(f"/api/v1/executions/{execution.execution_id}/cancel")
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "cancelled"
+
+
+def test_cancel_request_then_stream_close_preserves_user_intent(client: TestClient) -> None:
+    from opencobalt.personal_ai.api import _api_context, _stream_ndjson
+
+    conversation = _conversation(client)
+    context = _api_context()
+    stream = _stream_ndjson(
+        context.service,
+        ChatRequest(
+            conversation_id=conversation["conversation_id"],
+            message="Stop this request explicitly.",
+            provider_override="mock",
+            model_override="mock-v1",
+            local_only=True,
+        ),
+    )
+    started = None
+    for _ in range(3):
+        event = json.loads(next(stream))
+        started = event if event["event_type"] == "execution_started" else started
+    assert started is not None
+
+    requested = client.post(f"/api/v1/executions/{started['execution_id']}/cancel")
+    assert requested.status_code == 200
+    assert requested.json()["status"] == "cancel_requested"
+    stream.close()
+
+    execution = context.store.get_execution(started["execution_id"])
+    assert execution is not None and execution.status == "cancelled"
+    events = context.store.list_stream_events(execution.execution_id)
+    assert events[-1].event_type == "cancelled"
+    assert events[-1].payload["reason"] == "user_requested"
+    confirmed = client.post(f"/api/v1/executions/{execution.execution_id}/cancel")
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "cancelled"
 
 
 def test_route_rerun_returns_new_inspectable_route(client: TestClient) -> None:

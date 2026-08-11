@@ -2017,6 +2017,45 @@ def _require_available_ui_port(label: str, port: int) -> None:
         raise typer.Exit(1) from None
 
 
+def _stop_ui_processes(processes: list, *, timeout_seconds: float = 5.0) -> None:
+    """Terminate launcher-owned process groups and wait for their ports to release."""
+    import os
+    import signal
+    import subprocess
+    import time
+
+    def send(process, signal_number: int) -> None:
+        if process.poll() is not None:
+            return
+        pid = getattr(process, "pid", None)
+        if os.name == "posix" and isinstance(pid, int):
+            try:
+                process_group = os.getpgid(pid)
+                if process_group != os.getpgrp():
+                    os.killpg(process_group, signal_number)
+                    return
+            except (OSError, ProcessLookupError):
+                pass
+        if signal_number == signal.SIGTERM:
+            process.terminate()
+        else:
+            process.kill()
+
+    for process in processes:
+        send(process, signal.SIGTERM)
+    deadline = time.monotonic() + timeout_seconds
+    for process in processes:
+        remaining = max(0.01, deadline - time.monotonic())
+        try:
+            process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            send(process, signal.SIGKILL)
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+
+
 @app.command("ui")
 def ui_shell(
     port: int = typer.Option(5173, "--port", help="Vite dev server port"),
@@ -2068,6 +2107,7 @@ def ui_shell(
              "--port", str(api_port), "--log-level", "warning"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=os.name == "posix",
         )
         procs.append(api_proc)
 
@@ -2079,6 +2119,7 @@ def ui_shell(
             env=vite_environment,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=os.name == "posix",
         )
         procs.append(vite_proc)
 
@@ -2123,15 +2164,25 @@ def ui_shell(
         if not no_browser:
             webbrowser.open(f"http://localhost:{port}")
 
-        for p in procs:
-            p.wait()
+        while True:
+            api_status = api_proc.poll()
+            vite_status = vite_proc.poll()
+            if api_status is not None:
+                err.print(
+                    f"\n[{_RED}]API server stopped unexpectedly (exit {api_status}).[/{_RED}]\n"
+                )
+                raise typer.Exit(1)
+            if vite_status is not None:
+                err.print(
+                    f"\n[{_RED}]UI server stopped unexpectedly (exit {vite_status}).[/{_RED}]\n"
+                )
+                raise typer.Exit(1)
+            _time.sleep(0.2)
 
     except KeyboardInterrupt:
         pass
     finally:
-        for p in procs:
-            if p.poll() is None:
-                p.terminate()
+        _stop_ui_processes(procs)
         console.print("\n  [dim]Stopped.[/dim]\n")
 
 

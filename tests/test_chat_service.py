@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -8,7 +9,12 @@ from opencobalt.execution.engine import ExecutionEngine
 from opencobalt.execution.models import RuntimeCapabilitySnapshot
 from opencobalt.execution.runner import ProcessRunner
 from opencobalt.execution.store import ExecutionStore
-from opencobalt.personal_ai.providers import ProviderRegistry
+from opencobalt.personal_ai.models import AISettings, ProviderPreference
+from opencobalt.personal_ai.providers import (
+    ProviderModel,
+    ProviderModelCatalog,
+    ProviderRegistry,
+)
 from opencobalt.personal_ai.router import PersonalAIRouter
 from opencobalt.personal_ai.service import ChatRequest, ChatService
 from opencobalt.personal_ai.store import PersonalAIStore
@@ -21,12 +27,14 @@ class FakeAdapter:
         *,
         available: bool = False,
         requires_network: bool = True,
+        isolates_answer_only_inference: bool = True,
     ) -> None:
         self.runtime_id = runtime_id
         self.display_name = runtime_id
         self.executable = runtime_id
         self.available = available
         self.requires_network = requires_network
+        self.isolates_answer_only_inference = isolates_answer_only_inference
 
     def discover_capabilities(self) -> RuntimeCapabilitySnapshot:
         return RuntimeCapabilitySnapshot(
@@ -291,6 +299,287 @@ def test_development_mock_is_used_only_when_no_real_provider_is_routable(tmp_pat
     assert engine.calls[0][1]["runtime"] == "codex-cli"
 
 
+def test_disabled_isolated_provider_does_not_suppress_development_mock(tmp_path):
+    adapters = _adapters()
+    adapters["ollama"].available = True
+    engine = FakeEngine(_outcome(stdout="mock output", receipt_id="receipt-mock"))
+    store = PersonalAIStore(tmp_path / "ledger.db")
+    store.save_provider_preference(ProviderPreference(provider_id="ollama", enabled=False))
+    service = ChatService(
+        store=store,
+        providers=ProviderRegistry(
+            engine,
+            adapters=adapters,
+            executable_finder=lambda _name: None,
+        ),
+        enable_mock=True,
+    )
+    conversation = service.create_conversation(title="Disabled real provider")
+
+    events = list(
+        service.stream_request(
+            ChatRequest(conversation_id=conversation.conversation_id, message="Explain this")
+        )
+    )
+
+    route = store.get_route(events[-1].route_id)
+    assert events[-1].event_type == "completed"
+    assert route is not None and route.selected_provider == "mock"
+
+
+def test_zero_model_ollama_does_not_suppress_development_mock(tmp_path):
+    adapters = _adapters()
+    adapters["ollama"].available = True
+    engine = FakeEngine(_outcome(stdout="mock output", receipt_id="receipt-mock"))
+    store = PersonalAIStore(tmp_path / "ledger.db")
+    providers = ProviderRegistry(
+        engine,
+        adapters=adapters,
+        executable_finder=lambda _name: None,
+    )
+    providers.get("ollama").discover_models = lambda **_kwargs: ProviderModelCatalog(
+        provider_id="ollama",
+        limitations=[
+            "excluded 2 remote/cloud Ollama models from Personal AI execution"
+        ],
+    )
+    service = ChatService(
+        store=store,
+        providers=providers,
+        enable_mock=True,
+    )
+    conversation = service.create_conversation(title="Empty Ollama")
+
+    events = list(
+        service.stream_request(
+            ChatRequest(conversation_id=conversation.conversation_id, message="Explain this")
+        )
+    )
+
+    route = store.get_route(events[-1].route_id)
+    assert events[-1].event_type == "completed"
+    assert route is not None and route.selected_provider == "mock"
+    ollama = next(
+        candidate
+        for candidate in store.list_route_candidates(route.route_id)
+        if candidate.provider_id == "ollama"
+    )
+    assert ollama.eligible is False
+    assert "no models passed local-provenance admission" in (
+        ollama.rejection_reason or ""
+    )
+    assert "excluded 2 remote/cloud" in (ollama.rejection_reason or "")
+
+
+def test_local_only_unknown_ollama_model_is_denied_before_runtime_execution(tmp_path):
+    adapters = _adapters()
+    adapters["ollama"].available = True
+    engine = FakeEngine()
+    store = PersonalAIStore(tmp_path / "ledger.db")
+    providers = ProviderRegistry(
+        engine,
+        adapters=adapters,
+        executable_finder=lambda _name: None,
+    )
+    providers.get("ollama").discover_models = lambda **_kwargs: ProviderModelCatalog(
+        provider_id="ollama",
+        models=[
+            ProviderModel(
+                provider_id="ollama",
+                model_id="installed:latest",
+                display_name="installed:latest",
+                source="runtime_discovered",
+            )
+        ],
+    )
+    service = ChatService(store=store, providers=providers, enable_mock=True)
+    conversation = service.create_conversation(title="Unknown local model")
+
+    events = list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Explain this locally",
+                provider_override="ollama",
+                model_override="unseen:latest",
+                local_only=True,
+            )
+        )
+    )
+
+    assert events[-1].event_type == "route_failed"
+    route = store.get_route(events[-1].route_id)
+    assert route is not None and route.outcome_status == "policy_denied"
+    candidate = next(
+        candidate
+        for candidate in store.list_route_candidates(route.route_id)
+        if candidate.provider_id == "ollama"
+    )
+    assert candidate.model_id == "unseen:latest"
+    assert "not reported by local model discovery" in (candidate.rejection_reason or "")
+    assert store.list_executions(request_id=route.request_id) == []
+    assert engine.calls == []
+
+
+def test_settings_default_local_only_reaches_discovery_and_execution_boundary(tmp_path):
+    adapters = _adapters()
+    adapters["ollama"].available = True
+    engine = FakeEngine(_outcome(stdout="local answer", receipt_id="receipt-local"))
+    store = PersonalAIStore(tmp_path / "ledger.db")
+    store.save_settings(AISettings(local_only_default=True))
+    providers = ProviderRegistry(
+        engine,
+        adapters=adapters,
+        executable_finder=lambda _name: None,
+    )
+    discovery_calls: list[bool] = []
+
+    def discovered_models(*, local_only=False):
+        discovery_calls.append(local_only)
+        return ProviderModelCatalog(
+            provider_id="ollama",
+            models=[
+                ProviderModel(
+                    provider_id="ollama",
+                    model_id="installed:latest",
+                    display_name="installed:latest",
+                    source="runtime_discovered",
+                    execution_location="local",
+                    locality_evidence=[
+                        "loopback_api_tags",
+                        "catalog_reported_sha256_digest",
+                    ],
+                )
+            ],
+            receipt_id="receipt-discovery",
+        )
+
+    providers.get("ollama").discover_models = discovered_models
+    service = ChatService(store=store, providers=providers, enable_mock=False)
+    conversation = service.create_conversation(title="Default local boundary")
+
+    events = list(
+        service.stream_request(
+            ChatRequest(conversation_id=conversation.conversation_id, message="Explain this")
+        )
+    )
+
+    assert events[-1].event_type == "completed"
+    route = store.get_route(events[-1].route_id)
+    assert route is not None and route.metadata["local_only"] is True
+    assert route.selected_provider == "ollama"
+    assert route.metadata["provider_discovery_receipt_id"] == "receipt-discovery"
+    assert route.metadata["model_execution_location"] == "local"
+    assert route.metadata["model_locality_evidence"] == [
+        "loopback_api_tags",
+        "catalog_reported_sha256_digest",
+    ]
+    assert any("model discovery receipt: receipt-discovery" in reason for reason in route.reasons)
+    assert discovery_calls == [True, True]
+    assert engine.calls[0][1]["runtime"] == "ollama-generate"
+
+
+def test_automatic_chat_uses_isolated_mock_instead_of_nonisolated_agent(tmp_path):
+    adapters = _adapters(codex=True)
+    adapters["codex-cli"].isolates_answer_only_inference = False
+    engine = FakeEngine(_outcome(stdout="mock engine output", receipt_id="receipt-mock"))
+    store = PersonalAIStore(tmp_path / "ledger.db")
+    service = ChatService(
+        store=store,
+        providers=ProviderRegistry(
+            engine,
+            adapters=adapters,
+            executable_finder=lambda _name: None,
+        ),
+        enable_mock=True,
+    )
+    conversation = service.create_conversation(title="Isolated automatic route")
+
+    events = list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Explain this concept",
+            )
+        )
+    )
+
+    assert events[-1].event_type == "completed"
+    route = store.get_route(events[-1].route_id)
+    assert route is not None and route.selected_provider == "mock"
+    codex = next(
+        candidate
+        for candidate in store.list_route_candidates(route.route_id)
+        if candidate.provider_id == "codex"
+    )
+    assert codex.eligible is False
+    assert "answer-only isolation" in (codex.rejection_reason or "")
+
+
+def test_manual_nonisolated_agent_is_denied_before_execution(tmp_path):
+    adapters = _adapters(codex=True)
+    adapters["codex-cli"].isolates_answer_only_inference = False
+    engine = FakeEngine()
+    store = PersonalAIStore(tmp_path / "ledger.db")
+    service = ChatService(
+        store=store,
+        providers=ProviderRegistry(
+            engine,
+            adapters=adapters,
+            executable_finder=lambda _name: None,
+        ),
+        enable_mock=False,
+    )
+    conversation = service.create_conversation(title="Non-isolated manual denial")
+
+    events = list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Explain this concept",
+                provider_override="codex",
+            )
+        )
+    )
+
+    assert events[-1].event_type == "route_failed"
+    route = store.get_route(events[-1].route_id)
+    assert route is not None and route.receipt_id is None
+    assert "answer-only isolation" in " ".join(route.reasons)
+    assert store.list_executions(request_id=route.request_id) == []
+    assert engine.calls == []
+
+
+def test_no_isolated_provider_records_honest_preexecution_denial(tmp_path):
+    adapters = _adapters(codex=True)
+    adapters["codex-cli"].isolates_answer_only_inference = False
+    store = PersonalAIStore(tmp_path / "ledger.db")
+    service = ChatService(
+        store=store,
+        providers=ProviderRegistry(
+            FakeEngine(),
+            adapters=adapters,
+            executable_finder=lambda _name: None,
+        ),
+        enable_mock=False,
+    )
+    conversation = service.create_conversation(title="No isolated provider")
+
+    events = list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Explain this concept",
+            )
+        )
+    )
+
+    assert events[-1].event_type == "route_failed"
+    route = store.get_route(events[-1].route_id)
+    assert route is not None and route.outcome_status == "policy_denied"
+    assert "answer-only isolation" in " ".join(route.reasons)
+
+
 def test_durable_cancellation_stops_mock_stream_and_marks_execution(tmp_path):
     service, store, _ = _real_mock_service(tmp_path)
     conversation = service.create_conversation(title="Cancellation")
@@ -315,6 +604,80 @@ def test_durable_cancellation_stops_mock_stream_and_marks_execution(tmp_path):
     assert remaining[-1].event_type == "cancelled"
     assert store.get_execution(started.execution_id).status == "cancelled"
     assert service.cancel("missing-execution") is False
+
+
+@pytest.mark.parametrize("yield_count", [1, 2])
+def test_abandon_before_execution_started_creates_durable_terminal_state(
+    tmp_path, yield_count
+):
+    service, store, _ = _real_mock_service(tmp_path)
+    conversation = service.create_conversation(title="Disconnected stream")
+    stream = iter(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Explain enough to disconnect",
+                provider_override="mock",
+            )
+        )
+    )
+    last = None
+    for _ in range(yield_count):
+        last = next(stream)
+    assert last is not None and last.execution_id is not None
+
+    assert service.abandon(last.execution_id) is True
+    stream.close()
+
+    execution = store.get_execution(last.execution_id)
+    route = store.get_route(last.route_id)
+    messages = store.list_messages(conversation.conversation_id)
+    assert execution is not None and execution.status == "cancelled"
+    assert route is not None and route.outcome_status == "cancelled"
+    assert messages[-1].status == "cancelled"
+    assert messages[-1].route_id == route.route_id
+    assert service.abandon(last.execution_id) is False
+
+
+def test_abandon_at_fallback_start_finalizes_the_current_attempt(tmp_path):
+    engine = FakeEngine(
+        _outcome(status="failed", error="authentication failed", receipt_id="receipt-first"),
+        _outcome(stdout="must not be consumed", receipt_id="receipt-second"),
+    )
+    store = PersonalAIStore(tmp_path / "ledger.db")
+    service = ChatService(
+        store=store,
+        providers=ProviderRegistry(
+            engine,
+            adapters=_adapters(codex=True, antigravity=True),
+            executable_finder=lambda _name: None,
+        ),
+    )
+    conversation = service.create_conversation(title="Fallback disconnect")
+    stream = iter(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Explain the decision",
+                persona_id="chatgpt-native",
+                allow_fallback=True,
+            )
+        )
+    )
+    fallback = next(event for event in stream if event.event_type == "fallback_started")
+
+    assert service.abandon(fallback.execution_id) is True
+    stream.close()
+
+    route = store.get_route(fallback.route_id)
+    attempts = store.list_executions(request_id=route.request_id)
+    assert route is not None and route.outcome_status == "cancelled"
+    assert [attempt.status for attempt in attempts] == ["cancelled", "failed"]
+    assert len(engine.calls) == 1
+    assert route.metadata["actual_provider_id"] == "antigravity"
+    assert route.actual_persona_id == "provider-native"
+    assert route.actual_persona_version_id is None
+    assert "google" in (route.persona_provider_mismatch or "")
 
 
 def test_local_only_manual_cloud_route_is_denied_without_provider_execution(tmp_path):
@@ -468,6 +831,51 @@ def test_provider_failure_never_falls_back_without_request_permission(tmp_path):
     assert "authentication failed" in messages[-1].content
     execution = store.list_executions(conversation_id=conversation.conversation_id)[0]
     assert execution.assistant_message_id == messages[-1].message_id
+
+
+def test_provider_terminal_error_is_finalized_before_it_is_streamed(tmp_path):
+    private_error = f"cwd {Path.home()}/private/repo API_KEY=secret-value-123"
+    engine = FakeEngine(_outcome(status="failed", error=private_error, receipt_id="receipt-fail"))
+    store = PersonalAIStore(tmp_path / "ledger.db")
+    service = ChatService(
+        store=store,
+        providers=ProviderRegistry(
+            engine,
+            adapters=_adapters(codex=True),
+            executable_finder=lambda _name: None,
+        ),
+    )
+    conversation = service.create_conversation(title="Durable terminal failure")
+
+    events = []
+    for event in service.stream_request(
+        ChatRequest(
+            conversation_id=conversation.conversation_id,
+            message="Explain the decision",
+            provider_override="codex",
+        )
+    ):
+        events.append(event)
+        if event.event_type == "error":
+            execution = store.list_executions(
+                conversation_id=conversation.conversation_id
+            )[0]
+            route = store.get_route(event.route_id)
+            messages = store.list_messages(conversation.conversation_id)
+            assert execution.status == "failed"
+            assert route is not None and route.outcome_status == "failed"
+            assert messages[-1].status == "failed"
+
+    assert [event.event_type for event in events].count("error") == 1
+    execution = store.list_executions(conversation_id=conversation.conversation_id)[0]
+    persisted_types = [
+        event.event_type for event in store.list_stream_events(execution.execution_id)
+    ]
+    assert "provider_error" in persisted_types
+    terminal_message = store.list_messages(conversation.conversation_id)[-1]
+    assert str(Path.home()) not in terminal_message.content
+    assert "secret-value-123" not in terminal_message.content
+    assert "<home>" in terminal_message.content
 
 
 def test_local_outcome_history_is_a_bounded_routing_signal(tmp_path):

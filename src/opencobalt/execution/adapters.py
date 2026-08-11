@@ -45,6 +45,7 @@ class RuntimeAdapter(ABC):
     requires_credentials: bool = True
     max_safe_risk: RiskLevel = "yellow"
     verifiability_level: str = "partial"
+    isolates_answer_only_inference: bool = False
 
     def detect(self) -> bool:
         """Return True if the runtime executable is on PATH."""
@@ -996,6 +997,7 @@ class OllamaAdapter(RuntimeAdapter):
     requires_credentials = False
     max_safe_risk = "yellow"
     verifiability_level = "full"
+    isolates_answer_only_inference = True
 
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -1025,6 +1027,7 @@ class NoopAdapter(RuntimeAdapter):
     requires_credentials = False
     max_safe_risk = "yellow"
     verifiability_level = "full"
+    isolates_answer_only_inference = True
 
     def capabilities(self) -> dict[str, Any]:
         return {"echo_only": {"supported": True, "source": "static"}}

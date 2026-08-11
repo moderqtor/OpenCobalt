@@ -61,6 +61,10 @@ class ProviderSnapshot:
     provider_priority: int = 0
     readiness_state: Literal["ready", "unknown", "unavailable"] = "unknown"
     authentication_state: Literal["unknown", "not_required", "verified"] = "unknown"
+    unavailable_reason: str | None = None
+    discovery_receipt_id: str | None = None
+    execution_location: Literal["local", "remote", "unknown"] = "unknown"
+    model_locality_evidence: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Reject unbounded evidence while normalizing capability collections."""
@@ -220,6 +224,9 @@ class PersonalAIRouter:
                 "privacy_policy": request.settings.privacy_policy,
                 "cognitive_policy": request.cognitive_policy,
                 "reasoning_effort": request.reasoning_effort,
+                "provider_discovery_receipt_id": snapshot.discovery_receipt_id,
+                "model_execution_location": snapshot.execution_location,
+                "model_locality_evidence": list(snapshot.model_locality_evidence),
             },
         )
         return RoutingPlan(
@@ -282,6 +289,12 @@ class PersonalAIRouter:
             f"quota pressure: {-snapshot.quota_pressure}",
             f"provider priority: {snapshot.provider_priority}",
         ]
+        if snapshot.discovery_receipt_id:
+            reasons.append(f"model discovery receipt: {snapshot.discovery_receipt_id}")
+        if snapshot.model_locality_evidence:
+            reasons.append(
+                "model locality evidence: " + ", ".join(snapshot.model_locality_evidence)
+            )
         if rejection:
             reasons.append(f"rejected: {rejection}")
         return RouteCandidate(
@@ -423,7 +436,7 @@ def _rejection_reason(
     local_only: bool,
 ) -> str | None:
     if not snapshot.available:
-        return "provider is unavailable"
+        return snapshot.unavailable_reason or "provider is unavailable"
     if local_only and (not snapshot.local or snapshot.requires_network):
         return "strict local-only policy excludes network/cloud provider"
     if request.provider_override and snapshot.provider_id != request.provider_override:

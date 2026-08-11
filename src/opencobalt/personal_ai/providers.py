@@ -58,6 +58,7 @@ class ProviderCapabilities(BaseModel):
     receipt_linkage: bool = False
     local_only_eligible: bool = False
     requires_network: bool = True
+    answer_only_isolation: bool = False
 
 
 class ProviderRoutingProfile(BaseModel):
@@ -110,6 +111,8 @@ class ProviderModel(BaseModel):
     model_id: str
     display_name: str
     source: Literal["builtin", "runtime_discovered"]
+    execution_location: Literal["local", "remote", "unknown"] = "unknown"
+    locality_evidence: list[str] = Field(default_factory=list)
 
 
 class ProviderError(BaseModel):
@@ -227,6 +230,7 @@ class ProviderModelCatalog(BaseModel):
     models: list[ProviderModel] = Field(default_factory=list)
     receipt_id: str | None = None
     error: ProviderError | None = None
+    limitations: list[str] = Field(default_factory=list)
 
 
 _BROAD_READ_ONLY_CAPABILITIES = [
@@ -416,6 +420,13 @@ class EngineBackedChatProvider(ChatProvider):
             limitations.append(
                 "executable discovery does not prove authentication or successful invocation"
             )
+        if execution_supported and not getattr(
+            self.adapter, "isolates_answer_only_inference", False
+        ):
+            limitations.append(
+                "Personal AI chat requires explicit approval for this non-isolated agent "
+                "runtime; approval-and-resume is not implemented"
+            )
         return ProviderStatus(
             provider_id=self.provider_id,
             display_name=self.display_name,
@@ -433,6 +444,9 @@ class EngineBackedChatProvider(ChatProvider):
                 receipt_linkage=execution_supported,
                 local_only_eligible=execution_supported and not snapshot.requires_network,
                 requires_network=snapshot.requires_network,
+                answer_only_isolation=bool(
+                    getattr(self.adapter, "isolates_answer_only_inference", False)
+                ),
             ),
             routing_profile=self.routing_profile.model_copy(deep=True),
             limitations=list(dict.fromkeys(limitations)),
@@ -501,6 +515,7 @@ class EngineBackedChatProvider(ChatProvider):
                 cwd=request.cwd,
                 unsafe_skip_permissions=False,
                 execution_context="answer_only_inference",
+                risk_subject=request.message,
                 adapter=selected_adapter,
             )
         except (KeyError, ValueError) as exc:
@@ -552,6 +567,7 @@ class MockChatProvider(EngineBackedChatProvider):
                 receipt_linkage=True,
                 local_only_eligible=True,
                 requires_network=False,
+                answer_only_isolation=True,
             ),
             routing_profile=self.routing_profile.model_copy(deep=True),
             limitations=[
@@ -580,6 +596,8 @@ class MockChatProvider(EngineBackedChatProvider):
                     model_id="mock-v1",
                     display_name="Mock v1",
                     source="builtin",
+                    execution_location="local",
+                    locality_evidence=["deterministic_builtin"],
                 )
             ],
         )
@@ -617,44 +635,156 @@ class MockChatProvider(EngineBackedChatProvider):
         yield from _events_from_result(result, cancellation, chunk_size=self.chunk_size)
 
 
-class _OllamaEndpointAdapter:
-    """Internal adapter wrapper that forces the configured loopback endpoint."""
+class _OllamaModelCatalogAdapter:
+    """Read Ollama's loopback JSON catalog through an engine-owned curl command."""
 
-    runtime_id = "ollama"
-    display_name = "Ollama (loopback constrained)"
-    executable = "ollama"
+    runtime_id = "ollama-model-catalog"
+    display_name = "Ollama local model catalog"
+    isolates_answer_only_inference = True
 
-    def __init__(self, base: _AdapterLike, endpoint: str) -> None:
-        self.base = base
+    def __init__(self, endpoint: str) -> None:
         self.endpoint = endpoint
+        self.executable = shutil.which("curl") or "curl"
+        self._available = shutil.which("curl") is not None and _is_loopback_url(endpoint)
 
     def discover_capabilities(self) -> RuntimeCapabilitySnapshot:
-        snapshot = self.base.discover_capabilities()
-        return snapshot.model_copy(update={"requires_network": False}).with_hash()
+        return RuntimeCapabilitySnapshot(
+            adapter_id=self.runtime_id,
+            adapter_name=self.display_name,
+            executable_path=self.executable if self._available else None,
+            available=self._available,
+            capabilities=["loopback_model_catalog"] if self._available else [],
+            supported_artifact_types=["stdout", "stderr"],
+            supports_dry_run=True,
+            supports_noninteractive=self._available,
+            supports_json_output=True,
+            requires_network=False,
+            requires_credentials=False,
+            max_safe_risk="green",
+            limitations=(
+                []
+                if self._available
+                else ["curl and an explicit loopback Ollama endpoint are required"]
+            ),
+            verifiability_level="full" if self._available else "unavailable",
+            capability_details={
+                "endpoint_scope": "loopback_only",
+                "catalog_path": "/api/tags",
+            },
+        ).with_hash()
 
     def build_command(self, task: str, options: Any = None) -> list[str]:
-        return _loopback_env_prefix(self.endpoint) + self.base.build_command(task, options)
+        if not self._available:
+            raise ValueError("Ollama model catalog adapter is unavailable")
+        return _hermetic_loopback_curl_command(
+            executable=self.executable,
+            endpoint=self.endpoint,
+            path="/api/tags",
+            max_time_seconds=30,
+        )
 
     def supports_non_interactive(self) -> bool:
-        return self.base.supports_non_interactive()
+        return self._available
 
     def default_timeout_seconds(self) -> int:
-        return self.base.default_timeout_seconds()
+        return 30
 
     def risk_for_task(self, task: str) -> str:
-        return self.base.risk_for_task(task)
+        return "green"
 
 
-class _OllamaModelListAdapter(_OllamaEndpointAdapter):
+class _OllamaGenerateAdapter:
+    """Run one non-pulling completion through Ollama's loopback HTTP API."""
+
+    runtime_id = "ollama-generate"
+    display_name = "Ollama loopback generation API"
+    isolates_answer_only_inference = True
+
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        model_id: str,
+        timeout_seconds: int,
+    ) -> None:
+        self.endpoint = endpoint
+        self.model_id = model_id
+        self.timeout_seconds = timeout_seconds
+        self.executable = shutil.which("curl") or "curl"
+        self._available = shutil.which("curl") is not None and _is_loopback_url(endpoint)
+
+    def discover_capabilities(self) -> RuntimeCapabilitySnapshot:
+        return RuntimeCapabilitySnapshot(
+            adapter_id=self.runtime_id,
+            adapter_name=self.display_name,
+            executable_path=self.executable if self._available else None,
+            available=self._available,
+            capabilities=["loopback_generate_api"] if self._available else [],
+            supported_artifact_types=["stdout", "stderr"],
+            supports_dry_run=True,
+            supports_noninteractive=self._available,
+            supports_json_output=True,
+            requires_network=False,
+            requires_credentials=False,
+            max_safe_risk="green",
+            limitations=(
+                []
+                if self._available
+                else ["curl and an explicit loopback Ollama endpoint are required"]
+            ),
+            verifiability_level="full" if self._available else "unavailable",
+            capability_details={
+                "endpoint_scope": "loopback_only",
+                "generation_path": "/api/generate",
+                "automatic_pull_requested": False,
+            },
+        ).with_hash()
+
     def build_command(self, task: str, options: Any = None) -> list[str]:
-        return _loopback_env_prefix(self.endpoint) + [self.base.executable, "list"]
+        if not self._available:
+            raise ValueError("Ollama generation adapter is unavailable")
+        payload = json.dumps(
+            {
+                # Ollama 0.20.x treats :local as a server-enforced source
+                # constraint and rejects remote manifests for this request.
+                "model": f"{self.model_id}:local",
+                "prompt": task,
+                "stream": False,
+            },
+            separators=(",", ":"),
+        )
+        return _hermetic_loopback_curl_command(
+            executable=self.executable,
+            endpoint=self.endpoint,
+            path="/api/generate",
+            max_time_seconds=self.timeout_seconds,
+            method="POST",
+            payload=payload,
+        )
+
+    def supports_non_interactive(self) -> bool:
+        return self._available
+
+    def default_timeout_seconds(self) -> int:
+        return self.timeout_seconds
+
+    def risk_for_task(self, task: str) -> str:
+        return "green"
 
 
 class OllamaChatProvider(EngineBackedChatProvider):
     """Ollama provider with engine-backed, loopback-only model discovery."""
 
-    def __init__(self, engine: _EngineLike, adapter: _AdapterLike, endpoint: str) -> None:
+    def __init__(
+        self,
+        engine: _EngineLike,
+        adapter: _AdapterLike,
+        endpoint: str,
+    ) -> None:
         self.endpoint = _normalized_ollama_endpoint(endpoint)
+        self._catalog_adapter = (
+            _OllamaModelCatalogAdapter(self.endpoint) if self.endpoint is not None else None
+        )
         super().__init__(
             provider_id="ollama",
             display_name="Ollama",
@@ -670,8 +800,16 @@ class OllamaChatProvider(EngineBackedChatProvider):
 
     def status(self) -> ProviderStatus:
         status = super().status()
-        status.capabilities.model_discovery = status.installed and self._loopback
-        status.capabilities.local_only_eligible = status.installed and self._loopback
+        catalog_available = bool(
+            self._catalog_adapter
+            and self._catalog_adapter.discover_capabilities().available
+        )
+        status.capabilities.model_discovery = (
+            status.installed and self._loopback and catalog_available
+        )
+        status.capabilities.local_only_eligible = (
+            status.installed and self._loopback and catalog_available
+        )
         status.capabilities.requires_network = not self._loopback
         if not self._loopback:
             status.execution_supported = False
@@ -679,6 +817,19 @@ class OllamaChatProvider(EngineBackedChatProvider):
             status.capabilities.receipt_linkage = False
             status.limitations.append(
                 "Ollama execution is disabled until an explicit loopback endpoint is configured"
+            )
+        elif not catalog_available:
+            status.execution_supported = False
+            status.capabilities.completion = False
+            status.capabilities.receipt_linkage = False
+            status.limitations.append(
+                "Ollama execution is disabled because local model provenance cannot be read"
+            )
+        else:
+            status.limitations.append(
+                "only models admitted by bounded loopback catalog evidence are used; "
+                "generation uses Ollama's server-enforced :local source constraint and "
+                "does not request automatic model retrieval"
             )
         return status
 
@@ -704,10 +855,36 @@ class OllamaChatProvider(EngineBackedChatProvider):
                 message="Ollama execution requires an explicitly discovered model id",
                 status="blocked",
             )
+        catalog = self.discover_models(local_only=request.local_only)
+        admitted = {model.model_id for model in catalog.models}
+        if catalog.error is not None:
+            return _pre_execution_error(
+                request,
+                self.provider_id,
+                category="local_only_violation" if request.local_only else "unavailable",
+                message="Ollama local model provenance could not be verified",
+                status="blocked",
+            )
+        if request.model_id not in admitted:
+            return _pre_execution_error(
+                request,
+                self.provider_id,
+                category="local_only_violation" if request.local_only else "invalid_request",
+                message=(
+                    "requested Ollama model was not admitted by local model discovery; "
+                    "remote retrieval is disabled"
+                ),
+                status="blocked",
+            )
+        generate_adapter = _OllamaGenerateAdapter(
+            endpoint=self.endpoint,
+            model_id=request.model_id,
+            timeout_seconds=request.timeout_seconds,
+        )
         return self._execute_through_engine(
             request,
             cancellation=cancellation,
-            adapter=_OllamaEndpointAdapter(self.adapter, self.endpoint),
+            adapter=generate_adapter,
         )
 
     def discover_models(self, *, local_only: bool = False) -> ProviderModelCatalog:
@@ -725,7 +902,12 @@ class OllamaChatProvider(EngineBackedChatProvider):
                 ),
             )
         status = self.status()
-        if not status.installed or not self.adapter.supports_non_interactive():
+        if (
+            not status.installed
+            or not self.adapter.supports_non_interactive()
+            or self._catalog_adapter is None
+            or not self._catalog_adapter.supports_non_interactive()
+        ):
             return ProviderModelCatalog(
                 provider_id=self.provider_id,
                 error=ProviderError(
@@ -734,15 +916,15 @@ class OllamaChatProvider(EngineBackedChatProvider):
                 ),
             )
         outcome = self.engine.run_task(
-            request.message,
-            runtime="ollama",
+            "inspect loopback Ollama model provenance",
+            runtime="ollama-model-catalog",
             model=None,
             execute=True,
             approved=False,
             timeout_seconds=request.timeout_seconds,
             cwd=None,
             unsafe_skip_permissions=False,
-            adapter=_OllamaModelListAdapter(self.adapter, self.endpoint),
+            adapter=self._catalog_adapter,
         )
         normalized = _normalize_outcome(
             request=request,
@@ -756,18 +938,22 @@ class OllamaChatProvider(EngineBackedChatProvider):
                 receipt_id=normalized.receipt_id,
                 error=normalized.error,
             )
+        try:
+            models, limitations = _parse_ollama_models(normalized.content)
+        except ValueError:
+            return ProviderModelCatalog(
+                provider_id=self.provider_id,
+                receipt_id=normalized.receipt_id,
+                error=ProviderError(
+                    category="provider_error",
+                    message="Ollama returned an invalid local model catalog",
+                ),
+            )
         return ProviderModelCatalog(
             provider_id=self.provider_id,
-            models=[
-                ProviderModel(
-                    provider_id=self.provider_id,
-                    model_id=model_id,
-                    display_name=model_id,
-                    source="runtime_discovered",
-                )
-                for model_id in _parse_ollama_models(normalized.content)
-            ],
+            models=models,
             receipt_id=normalized.receipt_id,
+            limitations=limitations,
         )
 
 
@@ -1051,6 +1237,23 @@ def _normalize_outcome(
 
     result_status = str(getattr(result, "status", "failed"))
     raw_content = _engine_result_output(result)
+    if provider_id == "ollama" and _ollama_remote_execution_disclosed(raw_content):
+        return ProviderResult(
+            request_id=request.request_id,
+            provider_id=provider_id,
+            model_id=model_id,
+            status="failed",
+            receipt_id=receipt_id,
+            error=ProviderError(
+                category=(
+                    "local_only_violation" if request.local_only else "provider_error"
+                ),
+                message=(
+                    "Ollama response disclosed remote execution metadata; content was rejected"
+                ),
+            ),
+            limitations=limitations,
+        )
     parsed_content, parsed_usage, tool_events = _normalize_provider_payload(
         provider_id, raw_content
     )
@@ -1114,9 +1317,43 @@ def _normalize_provider_payload(
     provider_id: str,
     raw_content: str,
 ) -> tuple[str, dict[str, Any] | None, list[ProviderToolEvent]]:
+    if provider_id == "ollama":
+        return _parse_ollama_generate_payload(raw_content)
     if provider_id != "codex":
         return raw_content, None, []
     return _parse_codex_jsonl(raw_content)
+
+
+def _parse_ollama_generate_payload(
+    raw_content: str,
+) -> tuple[str, dict[str, Any] | None, list[ProviderToolEvent]]:
+    """Extract text and usage from one non-streaming Ollama generation response."""
+    try:
+        payload = json.loads(raw_content)
+    except json.JSONDecodeError:
+        return raw_content, None, []
+    if not isinstance(payload, dict) or not isinstance(payload.get("response"), str):
+        # Model catalog discovery also normalizes through this provider id.
+        return raw_content, None, []
+    prompt_tokens = _nonnegative_int(payload.get("prompt_eval_count"))
+    output_tokens = _nonnegative_int(payload.get("eval_count"))
+    usage: dict[str, Any] = {
+        "input_tokens": prompt_tokens,
+        "output_tokens": output_tokens,
+    }
+    if prompt_tokens is not None and output_tokens is not None:
+        usage["total_tokens"] = prompt_tokens + output_tokens
+    return str(payload["response"]), usage, []
+
+
+def _ollama_remote_execution_disclosed(raw_content: str) -> bool:
+    try:
+        payload = json.loads(raw_content)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return any(payload.get(field) not in (None, "") for field in ("remote_host", "remote_model"))
 
 
 def _parse_codex_jsonl(
@@ -1403,20 +1640,169 @@ def _loopback_env_prefix(endpoint: str) -> list[str]:
     ]
 
 
-def _parse_ollama_models(output: str) -> list[str]:
-    models: list[str] = []
-    for line in output.splitlines()[:257]:
-        fields = line.split()
-        if not fields or fields[0].upper() == "NAME":
+def _hermetic_loopback_curl_command(
+    *,
+    executable: str,
+    endpoint: str,
+    path: str,
+    max_time_seconds: int,
+    method: Literal["GET", "POST"] = "GET",
+    payload: str | None = None,
+) -> list[str]:
+    """Build a config-free, proxy-free curl request confined to loopback HTTP."""
+    if not _is_loopback_url(endpoint):
+        raise ValueError("Ollama endpoint must be loopback")
+    if not path.startswith("/") or ".." in path:
+        raise ValueError("Ollama API path must be absolute and bounded")
+    command = _loopback_env_prefix(endpoint) + [
+        executable,
+        # curl requires --disable to be its first option to ignore ~/.curlrc.
+        "--disable",
+        "--silent",
+        "--show-error",
+        "--fail-with-body",
+        "--noproxy",
+        "*",
+        "--proto",
+        "=http",
+        "--proto-redir",
+        "=http",
+        "--max-redirs",
+        "0",
+        "--connect-timeout",
+        "5",
+        "--max-time",
+        str(max_time_seconds),
+        "--request",
+        method,
+        "--header",
+        "Accept: application/json",
+    ]
+    if method == "POST":
+        if payload is None:
+            raise ValueError("Ollama POST payload is required")
+        command.extend(
+            [
+                "--header",
+                "Content-Type: application/json",
+                "--data-binary",
+                payload,
+            ]
+        )
+    elif payload is not None:
+        raise ValueError("Ollama GET request cannot include a payload")
+    command.append(f"{endpoint}{path}")
+    return command
+
+
+def _parse_ollama_models(output: str) -> tuple[list[ProviderModel], list[str]]:
+    """Admit only catalog entries with positive local-disk provenance.
+
+    Modern Ollama exposes remote/cloud models through the same loopback API as
+    local models. The catalog's ``remote_host``/``remote_model`` fields mark a
+    remote entry; catalog-reported size, digest, and format are required for the
+    remaining entries. This is runtime evidence, not an independent blob audit.
+    """
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise ValueError("invalid Ollama model catalog JSON") from exc
+    raw_models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(raw_models, list):
+        raise ValueError("invalid Ollama model catalog shape")
+
+    models: list[ProviderModel] = []
+    seen: set[str] = set()
+    remote_count = 0
+    unverifiable_count = 0
+    for raw in raw_models[:500]:
+        if not isinstance(raw, dict):
+            unverifiable_count += 1
             continue
-        model_id = fields[0]
-        if len(model_id) > 200 or not all(
-            character.isalnum() or character in "._:/-" for character in model_id
-        ):
+        model_id = raw.get("model") or raw.get("name")
+        details = raw.get("details")
+        size = raw.get("size")
+        digest = raw.get("digest")
+        remote_host = raw.get("remote_host")
+        remote_model = raw.get("remote_model")
+        if not isinstance(model_id, str) or not _safe_model_identifier(model_id):
+            unverifiable_count += 1
             continue
-        if model_id not in models:
-            models.append(model_id)
-    return models
+        malformed_remote_metadata = (
+            remote_host is not None
+            and not isinstance(remote_host, str)
+            or remote_model is not None
+            and not isinstance(remote_model, str)
+        )
+        if malformed_remote_metadata:
+            unverifiable_count += 1
+            continue
+        if remote_host or remote_model or _looks_like_ollama_cloud_model(model_id):
+            remote_count += 1
+            continue
+        model_format = details.get("format") if isinstance(details, dict) else None
+        local_proven = (
+            isinstance(size, int)
+            and not isinstance(size, bool)
+            and size > 0
+            and isinstance(digest, str)
+            and bool(re.fullmatch(r"[0-9a-fA-F]{64}", digest))
+            and isinstance(model_format, str)
+            and bool(model_format.strip())
+            and model_format.casefold() not in {"cloud", "remote"}
+        )
+        if not local_proven:
+            unverifiable_count += 1
+            continue
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        models.append(
+            ProviderModel(
+                provider_id="ollama",
+                model_id=model_id,
+                display_name=model_id,
+                source="runtime_discovered",
+                execution_location="local",
+                locality_evidence=[
+                    "loopback_api_tags",
+                    "catalog_reported_positive_size",
+                    "catalog_reported_sha256_digest",
+                    "catalog_reported_local_format",
+                    "catalog_no_remote_metadata",
+                ],
+            )
+        )
+
+    limitations: list[str] = []
+    if remote_count:
+        limitations.append(
+            f"excluded {remote_count} remote/cloud Ollama model(s) from Personal AI execution"
+        )
+    if unverifiable_count:
+        limitations.append(
+            f"excluded {unverifiable_count} Ollama model(s) without complete local catalog evidence"
+        )
+    if models:
+        limitations.append(
+            "model locality is based on bounded Ollama catalog metadata, not an independent blob audit"
+        )
+    return models, limitations
+
+
+def _safe_model_identifier(value: str) -> bool:
+    return (
+        bool(value)
+        and not value.startswith("-")
+        and len(value) <= 200
+        and all(character.isalnum() or character in "._:/-" for character in value)
+    )
+
+
+def _looks_like_ollama_cloud_model(model_id: str) -> bool:
+    lowered = model_id.casefold()
+    tag = lowered.rsplit(":", 1)[-1]
+    return tag == "cloud" or tag.endswith("-cloud") or lowered.endswith("-cloud")
 
 
 __all__ = [

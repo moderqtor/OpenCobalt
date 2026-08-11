@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +25,7 @@ class FakeAdapter:
         requires_network: bool = True,
         requires_credentials: bool = True,
         supports_noninteractive: bool = True,
+        isolates_answer_only_inference: bool = False,
     ) -> None:
         self.runtime_id = runtime_id
         self.display_name = runtime_id.replace("-", " ").title()
@@ -32,6 +34,7 @@ class FakeAdapter:
         self._requires_network = requires_network
         self._requires_credentials = requires_credentials
         self._supports_noninteractive = supports_noninteractive
+        self.isolates_answer_only_inference = isolates_answer_only_inference
 
     def discover_capabilities(self) -> RuntimeCapabilitySnapshot:
         return RuntimeCapabilitySnapshot(
@@ -110,6 +113,43 @@ def _outcome(
     )
 
 
+def _ollama_catalog(*models: dict) -> str:
+    return json.dumps({"models": list(models)})
+
+
+def _ollama_generate_response(
+    response: str,
+    *,
+    prompt_tokens: int = 7,
+    output_tokens: int = 11,
+) -> str:
+    return json.dumps(
+        {
+            "model": "qwen2.5:7b",
+            "response": response,
+            "done": True,
+            "done_reason": "stop",
+            "prompt_eval_count": prompt_tokens,
+            "eval_count": output_tokens,
+        }
+    )
+
+
+def _local_ollama_model(name: str, digest_character: str = "a") -> dict:
+    return {
+        "name": name,
+        "model": name,
+        "size": 4_700_000_000,
+        "digest": digest_character * 64,
+        "details": {
+            "format": "gguf",
+            "family": "llama",
+            "parameter_size": "7B",
+            "quantization_level": "Q4_K_M",
+        },
+    }
+
+
 def _adapters() -> dict[str, FakeAdapter]:
     return {
         "codex-cli": FakeAdapter("codex-cli"),
@@ -119,6 +159,7 @@ def _adapters() -> dict[str, FakeAdapter]:
             "ollama",
             requires_network=False,
             requires_credentials=False,
+            isolates_answer_only_inference=True,
         ),
     }
 
@@ -147,6 +188,7 @@ def test_registry_discovery_keeps_installation_authentication_and_readiness_dist
     assert statuses["codex"].installed is True
     assert statuses["codex"].authentication == "unknown"
     assert statuses["codex"].health == "unknown"
+    assert statuses["codex"].capabilities.answer_only_isolation is False
     assert statuses["codex"].routing_profile.provider_family == "openai"
     assert statuses["codex"].routing_profile.evidence == "opencobalt_adapter_contract"
     assert statuses["codex"].routing_profile.statistically_calibrated is False
@@ -157,6 +199,7 @@ def test_registry_discovery_keeps_installation_authentication_and_readiness_dist
     assert statuses["claude"].health == "unknown"
     assert statuses["ollama"].authentication == "not_required"
     assert statuses["ollama"].capabilities.local_only_eligible is True
+    assert statuses["ollama"].capabilities.answer_only_isolation is True
     assert statuses["gemini"].installed is True
     assert statuses["gemini"].authentication == "unknown"
     assert statuses["gemini"].execution_supported is False
@@ -216,7 +259,11 @@ def test_engine_backed_execution_returns_normalized_content_usage_and_receipt():
         )
     )
     registry = ProviderRegistry(engine, adapters=_adapters(), executable_finder=lambda _: None)
-    request = ProviderRequest(message="summarize this", model_id="model-x")
+    request = ProviderRequest(
+        message="summarize this",
+        system_policy="Do not modify files or run tools.",
+        model_id="model-x",
+    )
 
     result = registry.get("codex").execute(request)
 
@@ -230,13 +277,14 @@ def test_engine_backed_execution_returns_normalized_content_usage_and_receipt():
     assert result.error is None
     assert len(engine.calls) == 1
     task, kwargs = engine.calls[0]
-    assert task == "summarize this"
+    assert task.endswith("Current user request:\nsummarize this")
     assert kwargs["runtime"] == "codex-cli"
     assert kwargs["execute"] is True
     assert kwargs["model"] == "model-x"
     assert kwargs["adapter"].runtime_id == "codex-cli"
     assert kwargs["unsafe_skip_permissions"] is False
     assert kwargs["execution_context"] == "answer_only_inference"
+    assert kwargs["risk_subject"] == "summarize this"
 
 
 def test_engine_owned_output_file_prevents_chat_preview_truncation(tmp_path):
@@ -362,10 +410,25 @@ def test_mock_stream_honors_cooperative_cancellation_between_normalized_chunks()
 def test_ollama_models_come_from_engine_backed_discovery_without_fabrication():
     engine = FakeEngine(
         _outcome(
-            stdout=(
-                "NAME                     ID              SIZE      MODIFIED\n"
-                "qwen2.5:7b               abc123          4.7 GB    2 hours ago\n"
-                "nomic-embed-text:latest  def456          274 MB    3 days ago\n"
+            stdout=_ollama_catalog(
+                _local_ollama_model("qwen2.5:7b"),
+                _local_ollama_model("nomic-embed-text:latest", "b"),
+                {
+                    "name": "gpt-oss:120b-cloud",
+                    "model": "gpt-oss:120b-cloud",
+                    "size": 512,
+                    "digest": "c" * 64,
+                    "remote_model": "gpt-oss:120b",
+                    "remote_host": "https://ollama.com",
+                    "details": {"format": "remote"},
+                },
+                {
+                    "name": "ambiguous:latest",
+                    "model": "ambiguous:latest",
+                    "size": 0,
+                    "digest": "",
+                    "details": {},
+                },
             ),
             receipt_id="receipt-models",
         )
@@ -385,11 +448,27 @@ def test_ollama_models_come_from_engine_backed_discovery_without_fabrication():
     ]
     assert catalog.receipt_id == "receipt-models"
     assert catalog.error is None
+    assert all(model.execution_location == "local" for model in catalog.models)
+    assert all(
+        "catalog_reported_sha256_digest" in model.locality_evidence
+        for model in catalog.models
+    )
+    assert any("remote/cloud" in limitation for limitation in catalog.limitations)
+    assert any("complete local catalog evidence" in limitation for limitation in catalog.limitations)
+    assert any("not an independent blob audit" in limitation for limitation in catalog.limitations)
     assert "llama3" not in [model.model_id for model in catalog.models]
+    assert "gpt-oss:120b-cloud" not in [model.model_id for model in catalog.models]
     assert len(engine.calls) == 1
     _, kwargs = engine.calls[0]
     command = kwargs["adapter"].build_command("ignored")
-    assert command[-2:] == ["ollama", "list"]
+    assert command[-1] == "http://127.0.0.1:11434/api/tags"
+    curl_index = command.index(kwargs["adapter"].executable)
+    assert command[curl_index + 1] == "--disable"
+    assert "--noproxy" in command
+    assert command[command.index("--proto") + 1] == "=http"
+    assert command[command.index("--proto-redir") + 1] == "=http"
+    assert command[command.index("--max-redirs") + 1] == "0"
+    assert "--location" not in command
     assert "OLLAMA_HOST=http://127.0.0.1:11434" in command
     assert kwargs["execute"] is True
 
@@ -415,8 +494,17 @@ def test_local_only_ollama_rejects_remote_endpoint_before_engine_execution():
     assert engine.calls == []
 
 
-def test_local_only_ollama_forces_loopback_endpoint_in_engine_owned_command():
-    engine = FakeEngine(_outcome(stdout="local answer", receipt_id="receipt-local"))
+def test_local_only_ollama_uses_hermetic_loopback_generate_api():
+    engine = FakeEngine(
+        _outcome(
+            stdout=_ollama_catalog(_local_ollama_model("qwen2.5:7b")),
+            receipt_id="receipt-models",
+        ),
+        _outcome(
+            stdout=_ollama_generate_response("local answer"),
+            receipt_id="receipt-local",
+        ),
+    )
     registry = ProviderRegistry(
         engine,
         adapters=_adapters(),
@@ -425,22 +513,80 @@ def test_local_only_ollama_forces_loopback_endpoint_in_engine_owned_command():
     )
 
     result = registry.get("ollama").execute(
-        ProviderRequest(message="local prompt", model_id="qwen2.5:7b", local_only=True)
+        ProviderRequest(message="local prompt", model_id="qwen2.5:7b")
     )
 
     assert result.status == "complete"
     assert result.receipt_id == "receipt-local"
-    _, kwargs = engine.calls[0]
-    command = kwargs["adapter"].build_command("local prompt", SimpleNamespace(model="qwen2.5:7b"))
+    assert result.content == "local answer"
+    assert result.usage.input_tokens == 7
+    assert result.usage.output_tokens == 11
+    assert result.usage.total_tokens == 18
+    assert len(engine.calls) == 2
+    _, kwargs = engine.calls[1]
+    command = kwargs["adapter"].build_command("local prompt")
     assert "OLLAMA_HOST=http://localhost:11434" in command
-    assert command[-4:] == ["ollama", "run", "qwen2.5:7b", "local prompt"]
+    curl_index = command.index(kwargs["adapter"].executable)
+    assert command[curl_index + 1] == "--disable"
+    assert command[-1] == "http://localhost:11434/api/generate"
+    payload = json.loads(command[command.index("--data-binary") + 1])
+    assert payload == {
+        "model": "qwen2.5:7b:local",
+        "prompt": "local prompt",
+        "stream": False,
+    }
+    assert command[command.index("--proto") + 1] == "=http"
+    assert command[command.index("--max-redirs") + 1] == "0"
     assert not any("dangerously" in part for part in command)
+
+
+def test_ollama_fails_closed_if_generate_response_discloses_remote_execution():
+    engine = FakeEngine(
+        _outcome(
+            stdout=_ollama_catalog(_local_ollama_model("qwen2.5:7b")),
+            receipt_id="receipt-models",
+        ),
+        _outcome(
+            stdout=json.dumps(
+                {
+                    "model": "qwen2.5:7b:local",
+                    "response": "must not be exposed",
+                    "done": True,
+                    "remote_host": "https://ollama.com",
+                    "remote_model": "qwen2.5:7b",
+                }
+            ),
+            receipt_id="receipt-remote",
+        ),
+    )
+    registry = ProviderRegistry(
+        engine,
+        adapters=_adapters(),
+        executable_finder=lambda _: None,
+        ollama_endpoint="http://127.0.0.1:11434",
+    )
+
+    result = registry.get("ollama").execute(
+        ProviderRequest(message="private prompt", model_id="qwen2.5:7b", local_only=True)
+    )
+
+    assert result.status == "failed"
+    assert result.content == ""
+    assert result.receipt_id == "receipt-remote"
+    assert result.error is not None
+    assert result.error.category == "local_only_violation"
+    assert "remote" in result.error.message
+    assert len(engine.calls) == 2
 
 
 def test_ollama_output_strips_terminal_control_sequences_before_chat():
     engine = FakeEngine(
         _outcome(
-            stdout=(
+            stdout=_ollama_catalog(_local_ollama_model("qwen2.5:7b")),
+            receipt_id="receipt-models",
+        ),
+        _outcome(
+            stdout=_ollama_generate_response(
                 "Local answerx\x1b[1D\x1b[K\n"
                 "continues humming alo\x1b[3D\x1b[K\nalong safely.\x00"
             ),
@@ -462,6 +608,49 @@ def test_ollama_output_strips_terminal_control_sequences_before_chat():
     assert result.content == "Local answer\ncontinues humming \nalong safely."
     assert "\x1b" not in result.content
     assert "\x00" not in result.content
+
+
+@pytest.mark.parametrize("local_only", [False, True])
+def test_ollama_remote_cloud_model_is_never_admitted_to_local_provider(local_only):
+    engine = FakeEngine(
+        _outcome(
+            stdout=_ollama_catalog(
+                {
+                    "name": "gpt-oss:120b-cloud",
+                    "model": "gpt-oss:120b-cloud",
+                    "size": 512,
+                    "digest": "d" * 64,
+                    "remote_model": "gpt-oss:120b",
+                    "remote_host": "https://ollama.com",
+                    "details": {"format": "remote"},
+                }
+            ),
+            receipt_id="receipt-models",
+        )
+    )
+    registry = ProviderRegistry(
+        engine,
+        adapters=_adapters(),
+        executable_finder=lambda _: None,
+        ollama_endpoint="http://127.0.0.1:11434",
+    )
+
+    result = registry.get("ollama").execute(
+        ProviderRequest(
+            message="must not leave this machine",
+            model_id="gpt-oss:120b-cloud",
+            local_only=local_only,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.receipt_id is None
+    assert result.error is not None
+    assert result.error.category == (
+        "local_only_violation" if local_only else "invalid_request"
+    )
+    assert len(engine.calls) == 1
+    assert engine.calls[0][1]["runtime"] == "ollama-model-catalog"
 
 
 @pytest.mark.parametrize("model_id", ["--help", "-qwen", "model name", "x" * 201])

@@ -135,7 +135,7 @@ function allowedPolicies(persona) {
   return Array.isArray(policies) && policies.length ? policies : COGNITIVE_POLICIES;
 }
 
-function Composer({ controls, personas, providers, models: discoveredModels, modelError, onChange, onSend, busy, onCancel }) {
+function Composer({ controls, personas, providers, models: discoveredModels, modelError, onChange, onSend, busy, cancelling = false, onCancel }) {
   const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState("");
   const selectedProvider = providers.find((provider) => (provider.provider_id || provider.id) === controls.providerId);
@@ -143,11 +143,11 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
   const cognitivePolicies = allowedPolicies(selectedPersona);
   const models = discoveredModels.length ? discoveredModels : providerModels(selectedProvider);
   const manualProviderMissing = !controls.automatic && !controls.providerId;
-  const manualProviderUnavailable = !controls.automatic && Boolean(controls.providerId) && (!selectedProvider?.installed || !selectedProvider?.execution_supported || selectedProvider?.enabled === false);
+  const manualProviderUnavailable = !controls.automatic && Boolean(controls.providerId) && (!selectedProvider?.installed || !selectedProvider?.execution_supported || !selectedProvider?.capabilities?.answer_only_isolation || selectedProvider?.enabled === false);
   const validationMessage = manualProviderMissing
     ? "Choose an installed, executable provider before sending in manual mode."
     : manualProviderUnavailable
-      ? "The selected provider is not currently installed and executable."
+      ? "The selected provider is not currently eligible for isolated answer-only Chat execution."
       : "";
   const canSend = Boolean(text.trim()) && !busy && !validationMessage;
 
@@ -184,7 +184,7 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
         <button type="button" className="control-more" onClick={() => setExpanded((current) => !current)} aria-expanded={expanded} aria-controls="composer-advanced"><SlidersHorizontal size={15} aria-hidden="true" /> Controls</button>
       </div>
       {busy
-        ? <button className="button stop" type="button" onClick={onCancel}><CircleStop size={15} aria-hidden="true" /> Cancel</button>
+        ? <button className="button stop" type="button" onClick={onCancel} disabled={cancelling}><CircleStop size={15} aria-hidden="true" /> {cancelling ? "Cancelling…" : "Cancel"}</button>
         : <button className="button primary" type="submit" disabled={!canSend}><Send size={15} aria-hidden="true" /> Send</button>}
     </div>
     {validationMessage && <p id="composer-provider-validation" className="composer-validation" role="status">{validationMessage}</p>}
@@ -199,8 +199,8 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
           <option value="">Choose provider</option>
           {providers.map((provider) => {
             const providerId = provider.provider_id || provider.id;
-            const executable = Boolean(provider.installed && provider.execution_supported && provider.enabled !== false);
-            return <option key={providerId} value={providerId} disabled={!executable}>{providerName(provider)}{executable ? "" : " — unavailable"}</option>;
+            const executable = Boolean(provider.installed && provider.execution_supported && provider.capabilities?.answer_only_isolation && provider.enabled !== false);
+            return <option key={providerId} value={providerId} disabled={!executable}>{providerName(provider)}{executable ? "" : " — unavailable in Chat"}</option>;
           })}
         </SelectField>
         <SelectField label="Model" value={controls.modelId} onChange={(nextModelId) => onChange({ modelId: nextModelId })} disabled={!controls.providerId}>
@@ -242,6 +242,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const [notice, setNotice] = useState(null);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [streamEvents, setStreamEvents] = useState([]);
   const [streamRoute, setStreamRoute] = useState(null);
   const [routeCache, setRouteCache] = useState({});
@@ -253,11 +254,13 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const abortRef = useRef(null);
   const executionRef = useRef(null);
   const runRef = useRef(null);
+  const runGenerationRef = useRef(0);
   const routeLoadsRef = useRef(new Set());
   const routeGenerationRef = useRef(0);
   const settingsAppliedRef = useRef(false);
   const scrollRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
+  const interactionBusy = busy || cancelling;
   const [controls, setControls] = useState({
     personaId: DEFAULT_SETTINGS.default_persona_id,
     automatic: true,
@@ -311,12 +314,12 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   }, [controls.automatic, controls.providerId]);
 
   useEffect(() => {
-    if (busy) return;
+    if (interactionBusy) return;
     const exists = conversations.some((conversation) => conversationIdOf(conversation) === selectedId);
     if (exists) return;
     const nextId = conversations.length ? conversationIdOf(conversations[0]) : "";
     setSelectedId(nextId);
-  }, [busy, conversations, selectedId]);
+  }, [interactionBusy, conversations, selectedId]);
 
   useEffect(() => {
     if (selectedId) localStorage.setItem("opencobalt.activeConversation", selectedId);
@@ -332,7 +335,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   }, []);
 
   useEffect(() => {
-    if (busy) return undefined;
+    if (interactionBusy) return undefined;
     routeGenerationRef.current += 1;
     routeLoadsRef.current = new Set();
     if (!selectedId) {
@@ -360,12 +363,12 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
         if (alive) setMessageState({ loading: false, error });
       });
     return () => { alive = false; };
-  }, [selectedId, refreshSignal]); // Busy sends refresh their own authoritative message state.
+  }, [selectedId, refreshSignal, interactionBusy]); // Active sends refresh their own authoritative message state.
 
   useEffect(() => {
     const generation = routeGenerationRef.current;
     const routeIds = [...new Set(messages
-      .filter((message) => message.message_id !== "local-stream" && message.status === "complete" && message.route_id)
+      .filter((message) => message.message_id !== "local-stream" && message.role === "assistant" && message.route_id)
       .map((message) => message.route_id))];
     routeIds.forEach((routeId) => {
       if (routeCache[routeId] || routeHydrationErrors[routeId] || routeLoadsRef.current.has(routeId)) return;
@@ -390,7 +393,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   }, [messages, comparison.data, comparison.loading]);
 
   const createConversation = async (input = {}) => {
-    if (busy) return false;
+    if (interactionBusy) return false;
     setCreating(true);
     setMessageState((current) => ({ ...current, error: null }));
     try {
@@ -424,6 +427,9 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const updateControls = (patch) => setControls((current) => ({ ...current, ...patch }));
 
   const send = async (content) => {
+    if (interactionBusy) return;
+    const generation = runGenerationRef.current + 1;
+    runGenerationRef.current = generation;
     shouldAutoScrollRef.current = true;
     setBusy(true);
     setNotice(null);
@@ -438,7 +444,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       setMessages((current) => [...current, localUser, localAssistant]);
       const controller = new AbortController();
       abortRef.current = controller;
-      const run = { conversationId, requestId: null };
+      const run = { conversationId, requestId: null, generation };
       runRef.current = run;
 
       const handleEvent = (event) => {
@@ -500,7 +506,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       if (!result?.eventCount || !TERMINAL_EVENTS.has(terminalType)) {
         throw new ApiError("The chat stream ended without a terminal event.", { detail: result });
       }
-      if (terminalType === "completed") {
+      if (TERMINAL_EVENTS.has(terminalType)) {
         const fresh = await api.messages(conversationId);
         if (runRef.current === run) setMessages(fresh);
       }
@@ -511,33 +517,72 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
         setMessages((current) => current.map((message) => message.message_id === "local-stream" ? { ...message, status: "failed", content: message.content || error.message } : message));
       }
     } finally {
-      setBusy(false);
-      executionRef.current = null;
-      abortRef.current = null;
-      runRef.current = null;
+      if (runRef.current?.generation === generation) {
+        setBusy(false);
+        executionRef.current = null;
+        abortRef.current = null;
+        runRef.current = null;
+      }
     }
   };
 
   const cancel = async () => {
-    abortRef.current?.abort();
+    if (cancelling) return;
+    setCancelling(true);
+    const cancelledRun = runRef.current;
+    const cancelledGeneration = cancelledRun?.generation ?? runGenerationRef.current;
+    const cancelledController = abortRef.current;
     const executionId = executionRef.current;
+    const conversationId = cancelledRun?.conversationId || selectedId;
     setMessages((current) => current.map((message) => message.message_id === "local-stream" ? { ...message, status: "cancel_requested", content: message.content || "The local stream was closed." } : message));
     if (!executionId) {
-      setNotice({ tone: "warning", text: "The browser stream was closed before an execution ID arrived; server cancellation could not be requested." });
+      cancelledController?.abort();
+      setNotice({ tone: "warning", text: "The browser stream closed before an execution ID arrived. If the server accepted the request, disconnect cleanup will finalize it as cancelled." });
+      setCancelling(false);
       return;
     }
+    let cancellationResult = null;
+    let cancellationError = null;
     try {
-      const result = await api.cancelExecution(executionId);
-      const state = result?.state || result?.status;
-      if (state === "cancelled") {
-        setMessages((current) => current.map((message) => message.message_id === "local-stream" ? { ...message, status: "cancelled" } : message));
+      cancellationResult = await api.cancelExecution(executionId);
+    } catch (error) {
+      cancellationError = error;
+    } finally {
+      // Preserve explicit user intent at the API before closing the transport.
+      cancelledController?.abort();
+    }
+
+    let freshMessages = null;
+    let terminalCancellation = false;
+    if (conversationId) {
+      try {
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          freshMessages = await api.messages(conversationId);
+          const latest = freshMessages.at(-1);
+          terminalCancellation = latest?.role === "assistant" && latest?.status === "cancelled";
+          if (terminalCancellation) break;
+          await new Promise((resolve) => window.setTimeout(resolve, 50 * (attempt + 1)));
+        }
+        if (runGenerationRef.current === cancelledGeneration) {
+          if (freshMessages) setMessages(freshMessages);
+          await refreshConversations();
+        }
+      } catch (refreshError) {
+        cancellationError ||= refreshError;
+      }
+    }
+
+    const state = cancellationResult?.state || cancellationResult?.status;
+    if (runGenerationRef.current === cancelledGeneration) {
+      if (terminalCancellation || state === "cancelled") {
         setNotice({ tone: "neutral", text: `Cancellation confirmed for execution ${executionId}.` });
+      } else if (cancellationError) {
+        setNotice({ tone: "error", text: `The stream closed, but the local API did not confirm terminal cancellation: ${cancellationError.message}` });
       } else {
         setNotice({ tone: "warning", text: `Cancellation was requested for execution ${executionId}; terminal cancellation is not yet confirmed.` });
       }
-    } catch (error) {
-      setNotice({ tone: "error", text: `The browser stream closed, but the local API did not confirm the cancellation request: ${error.message}` });
     }
+    setCancelling(false);
   };
 
   const compareLastTwo = async () => {
@@ -557,13 +602,15 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const activePersona = personas.find((persona) => (persona.persona_id || persona.id) === controls.personaId);
   const comparableResponses = messages.filter((message) => message.role === "assistant" && message.status === "complete");
   const executionEvents = streamEvents.filter((event) => ["tool", "tool_event", "tool_started", "tool_completed", "approval_required", "fallback_started"].includes(event.event_type));
-  const liveStatus = busy
-    ? `OpenCobalt is routing the current request${executionRef.current ? ` with execution ${executionRef.current}` : ""}.`
+  const liveStatus = interactionBusy
+    ? cancelling
+      ? "OpenCobalt is finalizing cancellation and refreshing the durable record."
+      : `OpenCobalt is routing the current request${executionRef.current ? ` with execution ${executionRef.current}` : ""}.`
     : notice?.text || "";
 
   return <div className="chat-layout">
     {conversationOpen && <button type="button" className="drawer-backdrop conversation-backdrop" aria-label="Close conversations" onClick={closeConversations} />}
-    <ConversationRail conversations={conversations} selectedId={selectedId} onSelect={setSelectedId} onCreate={createConversation} isCreating={creating} disabled={busy} mobileOpen={conversationOpen} onClose={closeConversations} />
+    <ConversationRail conversations={conversations} selectedId={selectedId} onSelect={setSelectedId} onCreate={createConversation} isCreating={creating} disabled={interactionBusy} mobileOpen={conversationOpen} onClose={closeConversations} />
     <section className="chat-main" aria-labelledby="chat-title">
       <header className="chat-header">
         <div className="chat-heading"><IconButton className="conversation-open" label="Open conversations" aria-expanded={conversationOpen} aria-controls="conversation-navigation" onClick={() => setConversationOpen(true)}><MessageSquareText size={17} /></IconButton><div><p className="eyebrow">Chat</p><h1 id="chat-title">{selected?.title || "New conversation"}</h1><p className="project-path" title={selected?.project_path || undefined}>{selected?.project_path ? `Project: ${selected.project_path}` : "No project path attached"}</p></div></div>
@@ -593,7 +640,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       </div>
       <div className="chat-live" aria-live="polite" aria-atomic="true">{liveStatus}</div>
       {notice && <div className={`stream-notice ${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}>{notice.text}</div>}
-      <Composer controls={controls} personas={personas} providers={providers} models={modelCatalog} modelError={modelError} onChange={updateControls} onSend={send} busy={busy} onCancel={cancel} />
+      <Composer controls={controls} personas={personas} providers={providers} models={modelCatalog} modelError={modelError} onChange={updateControls} onSend={send} busy={interactionBusy} cancelling={cancelling} onCancel={cancel} />
     </section>
   </div>;
 }
@@ -774,7 +821,7 @@ function ProvidersPage({ providers, reloadProviders }) {
     setCatalogs((current) => ({ ...current, [providerId]: { loading: true, error: null, models: current[providerId]?.models || [] } }));
     try {
       const result = await api.providerModels(providerId);
-      setCatalogs((current) => ({ ...current, [providerId]: { loading: false, error: null, models: Array.isArray(result.models) ? result.models : [], evidence: result.evidence } }));
+      setCatalogs((current) => ({ ...current, [providerId]: { loading: false, error: null, models: Array.isArray(result.models) ? result.models : [], receiptId: result.receipt_id, limitations: Array.isArray(result.limitations) ? result.limitations : [] } }));
     } catch (error) {
       setCatalogs((current) => ({ ...current, [providerId]: { loading: false, error, models: current[providerId]?.models || [] } }));
     }
@@ -789,6 +836,7 @@ function ProvidersPage({ providers, reloadProviders }) {
     const ready = provider.health === "ready";
     const requiresNetwork = Boolean(capabilities.requires_network);
     const localOnlyEligible = Boolean(capabilities.local_only_eligible);
+    const chatEligible = executable && Boolean(capabilities.answer_only_isolation);
     const catalog = catalogs[providerId];
     const models = catalog?.models?.length ? catalog.models : providerModels(provider);
     const profile = provider.routing_profile || {};
@@ -796,11 +844,13 @@ function ProvidersPage({ providers, reloadProviders }) {
     return <article className="provider-row" key={providerId}>
       <span className={`provider-dot ${ready && executable && enabled ? "available" : ""}`} aria-hidden="true" />
       <div className="provider-main">
-        <div className="card-top"><h2>{providerName(provider)}</h2><div className="pill-row"><Pill tone={installed ? "green" : "neutral"}>{installed ? "installed" : "not installed"}</Pill><Pill tone={enabled ? "green" : "neutral"}>{enabled ? "enabled" : "disabled"}</Pill><Pill tone={requiresNetwork ? "amber" : "neutral"}>{requiresNetwork ? "network required" : "network not required"}</Pill><Pill tone={localOnlyEligible ? "green" : "neutral"}>{localOnlyEligible ? "local-only eligible" : "not local-only eligible"}</Pill></div></div>
+        <div className="card-top"><h2>{providerName(provider)}</h2><div className="pill-row"><Pill tone={installed ? "green" : "neutral"}>{installed ? "installed" : "not installed"}</Pill><Pill tone={enabled ? "green" : "neutral"}>{enabled ? "enabled" : "disabled"}</Pill><Pill tone={requiresNetwork ? "amber" : "neutral"}>{requiresNetwork ? "network required" : "network not required"}</Pill><Pill tone={localOnlyEligible ? "green" : "neutral"}>{localOnlyEligible ? "local-only eligible" : "not local-only eligible"}</Pill><Pill tone={chatEligible ? "green" : "amber"}>{chatEligible ? "Chat eligible" : "Chat approval unavailable"}</Pill></div></div>
         <p>{provider.runtime_id || "runtime not detected"} · auth {label(provider.authentication)} · health {label(provider.health)} · execution {executable ? "supported" : "unsupported"}</p>
         <p className="provider-contract">{label(profile.adapter_type || "adapter unknown")} · {label(profile.billing_classification || "billing unknown")} · {label(profile.quality_tier || "quality unknown")} quality · {label(capabilities.streaming || "no streaming")} streaming · {label(capabilities.cancellation || "no cancellation")} cancellation</p>
-        {models.length > 0 && <div className="pill-row">{models.slice(0, 4).map((model) => <Pill key={modelId(model)}>{typeof model === "string" ? model : model.display_name || model.name || modelId(model)}</Pill>)}</div>}
+        {models.length > 0 && <div className="pill-row">{models.slice(0, 4).map((model) => <Pill key={modelId(model)}>{typeof model === "string" ? model : `${model.display_name || model.name || modelId(model)}${model.execution_location === "local" ? " · local" : ""}`}</Pill>)}</div>}
         {catalog && !catalog.loading && !catalog.error && !models.length && <p className="provider-evidence">The runtime returned no model records.</p>}
+        {catalog?.limitations?.length > 0 && <ul className="provider-limitations">{catalog.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul>}
+        {catalog?.receiptId && <p className="provider-evidence">Model discovery receipt: <code>{catalog.receiptId}</code></p>}
         <details className="provider-evidence"><summary>Inspect capability and outcome evidence</summary><dl><dt>Completion</dt><dd>{capabilities.completion ? "supported" : "unsupported"}</dd><dt>Tool support</dt><dd>{profile.tool_names?.length ? profile.tool_names.join(", ") : "none declared"}</dd><dt>Task capabilities</dt><dd>{profile.task_capabilities?.length ? profile.task_capabilities.map(label).join(", ") : "none declared"}</dd><dt>Last successful invocation</dt><dd>{provider.last_successful_invocation ? new Date(provider.last_successful_invocation).toLocaleString() : "not proven"}</dd></dl>{provider.recent_errors?.length > 0 && <div><h3>Recent redacted errors</h3><ul className="provider-limitations">{provider.recent_errors.map((recentError, index) => <li key={`${recentError.category}-${index}`}>{label(recentError.category)}: {recentError.message}</li>)}</ul></div>}</details>
         {provider.limitations?.length > 0 && <ul className="provider-limitations">{provider.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul>}
         {state?.error && <p className="inline-error" role="alert">{state.error.message}</p>}

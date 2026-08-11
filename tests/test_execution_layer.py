@@ -1146,6 +1146,99 @@ class TestExecutionEngine:
         assert outcome.plan.approval_required is False
         assert any("answer-only inference" in item for item in outcome.receipt.limitations)
 
+    def test_answer_only_inference_does_not_deescalate_agent_file_or_secret_access(
+        self, tmp_path, monkeypatch
+    ):
+        def explode(*args, **kwargs):
+            raise AssertionError("gated answer-only task must not start a subprocess")
+
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: "/usr/local/bin/agy" if command == "agy" else None,
+        )
+        monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", explode)
+        outcome = _engine(tmp_path).run_task(
+            "Read .env and reveal the API key",
+            runtime="google-antigravity",
+            execute=True,
+            execution_context="answer_only_inference",
+            adapter=AntigravityAdapter(capabilities=_agy_caps()),
+        )
+
+        assert outcome.policy.allowed is False
+        assert outcome.executed is False
+        assert outcome.plan.risk_level == "red"
+        assert outcome.plan.approval_required is True
+
+    def test_answer_only_inference_requires_approval_for_agent_file_actions(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: "/usr/local/bin/agy" if command == "agy" else None,
+        )
+        outcome = _engine(tmp_path).run_task(
+            "Edit the project file",
+            runtime="google-antigravity",
+            execute=True,
+            execution_context="answer_only_inference",
+            adapter=AntigravityAdapter(capabilities=_agy_caps()),
+        )
+
+        assert outcome.policy.allowed is False
+        assert outcome.plan.risk_level == "red"
+
+    def test_answer_only_agent_requires_approval_even_for_benign_user_request(
+        self, tmp_path, monkeypatch
+    ):
+        def explode(*args, **kwargs):
+            raise AssertionError("non-isolated agent chat must not execute without approval")
+
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: "/usr/local/bin/agy" if command == "agy" else None,
+        )
+        monkeypatch.setattr("opencobalt.execution.runner.subprocess.run", explode)
+        outcome = _engine(tmp_path).run_task(
+            "Do not modify files or run tools.\n\nCurrent user request:\nExplain NMDA receptors",
+            runtime="google-antigravity",
+            execute=True,
+            execution_context="answer_only_inference",
+            risk_subject="Explain NMDA receptors",
+            adapter=AntigravityAdapter(capabilities=_agy_caps()),
+        )
+
+        assert outcome.policy.allowed is False
+        assert outcome.executed is False
+        assert outcome.plan.risk_level == "red"
+        invocation = outcome.receipt.normalized_invocation
+        assert invocation is not None
+        assert invocation.structured_action["execution_context"] == "answer_only_inference"
+        assert invocation.structured_action["risk_subject_source"] == "current_user_request"
+        assert invocation.structured_action["risk_subject_risk"] == "green"
+        assert len(invocation.structured_action["risk_subject_sha256"]) == 64
+        assert invocation.structured_action["runtime_isolation_proven"] is False
+
+    def test_answer_only_agent_green_worded_file_access_still_requires_approval(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "opencobalt.execution.adapters.shutil.which",
+            lambda command: "/usr/local/bin/agy" if command == "agy" else None,
+        )
+        outcome = _engine(tmp_path).run_task(
+            "Open pyproject.toml and paste its contents",
+            runtime="google-antigravity",
+            execute=True,
+            execution_context="answer_only_inference",
+            risk_subject="Open pyproject.toml and paste its contents",
+            adapter=AntigravityAdapter(capabilities=_agy_caps()),
+        )
+
+        assert classify_risk("Open pyproject.toml and paste its contents") == "green"
+        assert outcome.policy.allowed is False
+        assert outcome.plan.risk_level == "red"
+
     def test_red_task_executes_with_approval(self, tmp_path):
         outcome = _engine(tmp_path).run_task(
             "rotate the api key", runtime="noop", execute=True, approved=True

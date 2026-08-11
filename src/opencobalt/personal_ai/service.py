@@ -12,6 +12,7 @@ import threading
 import uuid
 from collections.abc import Iterator, Sequence
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -66,6 +67,12 @@ _FALLBACK_ERROR_CATEGORIES = {
     "timeout",
     "unavailable",
 }
+
+
+def _safe_diagnostic(value: str) -> str:
+    """Bound and redact provider diagnostics before persistence or streaming."""
+    return redact_text(value).replace(str(Path.home()), "<home>")[:500]
+
 
 class ChatRequest(BaseModel):
     """User and policy inputs for one routed chat request."""
@@ -200,7 +207,7 @@ class ChatService:
             requested_tools=tuple(request.requested_tools),
             requested_skills=tuple(request.requested_skills),
         )
-        snapshots = self._provider_snapshots(routing_request)
+        snapshots = self._provider_snapshots(routing_request, persona_version)
 
         try:
             plan = self.router.route(
@@ -297,6 +304,108 @@ class ChatService:
                     update={"status": "cancel_requested", "updated_at": now}
                 )
             )
+        return True
+
+    def abandon(self, execution_id: str) -> bool:
+        """Finalize a disconnected stream without waiting for cooperative resumption.
+
+        ``cancel`` is the user-facing cooperative path: the live generator resumes,
+        observes its token, and writes its own terminal event. A disconnected HTTP
+        stream cannot resume reliably, so abandonment owns the durable transition
+        immediately and is deliberately idempotent.
+        """
+        with self._cancellation_lock:
+            cancellation = self._cancellations.pop(execution_id, None)
+        if cancellation is not None:
+            cancellation.cancel()
+
+        execution = self.store.get_execution(execution_id)
+        if execution is None or execution.status in {"complete", "failed", "cancelled"}:
+            return False
+
+        cancellation_reason = (
+            "user_requested" if execution.status == "cancel_requested" else "client_disconnect"
+        )
+
+        events = self.store.list_stream_events(execution.execution_id)
+        receipt_id = execution.work_receipt_id
+        try:
+            usage = ProviderUsage.model_validate(execution.usage or {})
+        except ValueError:
+            usage = ProviderUsage()
+        for event in reversed(events):
+            event_receipt = event.payload.get("receipt_id")
+            if receipt_id is None and isinstance(event_receipt, str) and event_receipt:
+                receipt_id = event_receipt
+            event_usage = event.payload.get("usage")
+            if event_usage and usage == ProviderUsage():
+                try:
+                    usage = ProviderUsage.model_validate(event_usage)
+                except ValueError:
+                    usage = ProviderUsage()
+            if receipt_id is not None and usage != ProviderUsage():
+                break
+
+        error = ProviderError(
+            category="cancelled",
+            message=(
+                "user cancelled the request before the response completed"
+                if cancellation_reason == "user_requested"
+                else "client disconnected before the response completed"
+            ),
+        )
+        route = self.store.get_route(execution.route_id)
+        execution = self._finish_execution(
+            execution,
+            status="cancelled",
+            receipt_id=receipt_id,
+            usage=usage,
+            error=error,
+        )
+        if route is not None:
+            route = self._finish_route(
+                route,
+                status="cancelled",
+                receipt_id=receipt_id,
+                usage=usage,
+                actual_provider_id=execution.provider_id,
+                actual_model_id=execution.model_id,
+            )
+            source = self.store.get_message(route.request_message_id)
+            if source is not None and execution.assistant_message_id is None:
+                assistant = self._persist_terminal_assistant_message(
+                    route=route,
+                    execution=execution,
+                    user_message=source,
+                    status="cancelled",
+                    content=(
+                        "The request was cancelled before a response completed."
+                        if cancellation_reason == "user_requested"
+                        else "The request ended because the client disconnected before a response completed."
+                    ),
+                    error=error,
+                )
+                execution = self._finish_execution(
+                    execution,
+                    status="cancelled",
+                    receipt_id=receipt_id,
+                    usage=usage,
+                    error=error,
+                    assistant_message_id=assistant.message_id,
+                )
+
+        self.store.append_stream_event(
+            StreamEvent(
+                execution_id=execution.execution_id,
+                sequence=len(events) + 1,
+                event_type="cancelled",
+                payload={
+                    "error": error.model_dump(mode="json"),
+                    "reason": cancellation_reason,
+                    "receipt_id": receipt_id,
+                },
+            )
+        )
         return True
 
     def rerun(
@@ -421,6 +530,25 @@ class ChatService:
 
         while attempt_index < len(ordered):
             candidate = ordered[attempt_index]
+            provider = self.providers.get(candidate.provider_id)
+            actual_persona_id, mismatch = resolve_persona_for_provider(
+                routing_request.requested_persona_id,
+                persona_version,
+                provider.status().routing_profile.provider_family,
+            )
+            route = route.model_copy(
+                update={
+                    "actual_persona_id": actual_persona_id,
+                    "actual_persona_version_id": (
+                        persona_version.persona_version_id
+                        if actual_persona_id == routing_request.requested_persona_id
+                        else None
+                    ),
+                    "persona_provider_mismatch": mismatch,
+                    "updated_at": _now(),
+                }
+            )
+            self.store.save_route(route)
             current = ChatExecution(
                 request_id=routing_request.request_id,
                 route_id=route.route_id,
@@ -475,24 +603,6 @@ class ChatService:
             self._persist_lifecycle_event(current, started)
             yield started
 
-            provider = self.providers.get(candidate.provider_id)
-            actual_persona_id, mismatch = resolve_persona_for_provider(
-                routing_request.requested_persona_id,
-                persona_version,
-                provider.status().routing_profile.provider_family,
-            )
-            route = route.model_copy(
-                update={
-                    "actual_persona_id": actual_persona_id,
-                    "actual_persona_version_id": (
-                        persona_version.persona_version_id
-                        if actual_persona_id == routing_request.requested_persona_id
-                        else None
-                    ),
-                    "persona_provider_mismatch": mismatch,
-                    "updated_at": _now(),
-                }
-            )
             rendered_policy = render_persona_policy(persona_version, cognitive_policy)
             provider_request = ProviderRequest(
                 request_id=routing_request.request_id,
@@ -553,7 +663,7 @@ class ChatService:
                         payload = {"receipt_id": provider_event.receipt_id}
                     else:
                         terminal_type = provider_event.event_type
-                        attempt_error = provider_event.error or ProviderError(
+                        raw_error = provider_event.error or ProviderError(
                             category=(
                                 "cancelled"
                                 if provider_event.event_type == "cancelled"
@@ -565,19 +675,29 @@ class ChatService:
                                 else "provider execution failed"
                             ),
                         )
-                        normalized_type = provider_event.event_type
+                        attempt_error = raw_error.model_copy(
+                            update={"message": _safe_diagnostic(raw_error.message)}
+                        )
+                        normalized_type = f"provider_{provider_event.event_type}"
                         payload = {
                             "error": attempt_error.model_dump(mode="json"),
                             "receipt_id": provider_event.receipt_id,
                         }
-                    event = lifecycle(normalized_type, execution=current, payload=payload)
-                    self._persist_lifecycle_event(current, event)
-                    yield event
+                    if provider_event.event_type in {"completed", "error", "cancelled"}:
+                        self._persist_provider_terminal_event(
+                            current,
+                            event_type=normalized_type,
+                            payload=payload,
+                        )
+                    else:
+                        event = lifecycle(normalized_type, execution=current, payload=payload)
+                        self._persist_lifecycle_event(current, event)
+                        yield event
             except Exception as exc:  # provider boundary must become inspectable
                 terminal_type = "error"
                 attempt_error = ProviderError(
                     category="provider_error",
-                    message=redact_text(str(exc))[:500] or "provider execution failed",
+                    message=_safe_diagnostic(str(exc)) or "provider execution failed",
                 )
 
             if terminal_type == "completed" and attempt_content.strip():
@@ -776,7 +896,7 @@ class ChatService:
         return self.store.add_message(
             route.conversation_id,
             role="assistant",
-            content=content,
+            content=_safe_diagnostic(content),
             status=status,
             persona_version_id=route.actual_persona_version_id,
             route_id=route.route_id,
@@ -792,7 +912,11 @@ class ChatService:
             },
         )
 
-    def _provider_snapshots(self, request: RoutingRequest) -> list[ProviderSnapshot]:
+    def _provider_snapshots(
+        self,
+        request: RoutingRequest,
+        persona_version: PersonaVersion,
+    ) -> list[ProviderSnapshot]:
         preferences = {
             preference.provider_id: preference
             for preference in self.store.list_provider_preferences()
@@ -802,40 +926,94 @@ class ChatService:
             for index, provider_id in enumerate(request.settings.provider_priority[:20])
         }
         historical_signals = self._historical_success_signals()
+        effective_local_only = (
+            request.settings.local_only_default
+            if request.local_only is None
+            else request.local_only
+        )
         snapshots: list[ProviderSnapshot] = []
         statuses = self.providers.discover()
-        real_provider_available = any(
-            status.provider_id != "mock" and status.execution_supported
-            for status in statuses
-        )
-        for status in statuses:
+
+        def append_status(status: Any, *, mock_allowed: bool | None = None) -> None:
             profile = status.routing_profile
             preference = preferences.get(status.provider_id)
-            available = status.execution_supported
-            if status.provider_id == "mock":
-                available = self.enable_mock and (
-                    request.provider_override == "mock" or not real_provider_available
+            chat_isolated = status.capabilities.answer_only_isolation
+            available = status.execution_supported and chat_isolated
+            unavailable_reason = None
+            if not status.execution_supported:
+                unavailable_reason = "provider has no discovered executable completion boundary"
+            elif not chat_isolated:
+                unavailable_reason = (
+                    "provider lacks a proven answer-only isolation boundary and Chat "
+                    "approval-and-resume is unavailable"
                 )
+            if status.provider_id == "mock":
+                available = self.enable_mock and bool(mock_allowed)
+                if not self.enable_mock:
+                    unavailable_reason = "development Mock provider is disabled"
+                elif not mock_allowed:
+                    unavailable_reason = (
+                        "development Mock is suppressed because an eligible real Chat route exists"
+                    )
             if preference is not None:
-                available = available and preference.enabled
+                if not preference.enabled:
+                    available = False
+                    unavailable_reason = "provider is disabled in local preferences"
                 if (
                     preference.cost_policy == "free_only"
                     and profile.cost_category != "free"
                 ):
                     available = False
+                    unavailable_reason = "provider preference permits free routes only"
 
             models: list[str | None] = [None]
+            discovered: list[str] = []
+            model_catalog_checked = False
+            discovery_receipt_id: str | None = None
+            model_locations: dict[str, str] = {}
+            model_evidence: dict[str, tuple[str, ...]] = {}
             if available and status.capabilities.model_discovery:
                 catalog = self.providers.get(status.provider_id).discover_models(
-                    local_only=bool(request.local_only)
+                    local_only=bool(effective_local_only)
                 )
+                discovery_receipt_id = catalog.receipt_id
+                if catalog.error is not None:
+                    available = False
+                    unavailable_reason = (
+                        f"{status.display_name} model discovery failed: "
+                        f"{_safe_diagnostic(catalog.error.message)}"
+                    )
+                else:
+                    model_catalog_checked = True
                 discovered = [model.model_id for model in catalog.models]
+                model_locations = {
+                    model.model_id: model.execution_location for model in catalog.models
+                }
+                model_evidence = {
+                    model.model_id: tuple(model.locality_evidence)
+                    for model in catalog.models
+                }
                 if discovered:
                     models = discovered
-                elif status.provider_id == "ollama":
+                elif status.provider_id == "ollama" and catalog.error is None:
                     available = False
+                    evidence = "; ".join(
+                        _safe_diagnostic(item) for item in catalog.limitations[:3]
+                    )
+                    unavailable_reason = (
+                        "Ollama model catalog: no models passed local-provenance "
+                        "admission"
+                    )
+                    if evidence:
+                        unavailable_reason = f"{unavailable_reason}: {evidence}"
             if request.model_override and status.provider_id == request.provider_override:
                 models = [request.model_override]
+                if model_catalog_checked and request.model_override not in discovered:
+                    available = False
+                    unavailable_reason = (
+                        "requested model was not reported by local model discovery; "
+                        "automatic retrieval is disabled"
+                    )
 
             preference_score = 0
             if preference is not None:
@@ -862,7 +1040,30 @@ class ChatService:
                         provider_priority=priority,
                         readiness_state=status.health,
                         authentication_state=status.authentication,
+                        unavailable_reason=unavailable_reason,
+                        discovery_receipt_id=discovery_receipt_id,
+                        execution_location=model_locations.get(model_id, "unknown"),
+                        model_locality_evidence=model_evidence.get(model_id, ()),
                     )
+                )
+
+        for status in statuses:
+            if status.provider_id != "mock":
+                append_status(status)
+
+        try:
+            self.router.route(request, snapshots, persona_version=persona_version)
+            eligible_real_route = True
+        except NoEligibleRouteError:
+            eligible_real_route = False
+
+        for status in statuses:
+            if status.provider_id == "mock":
+                append_status(
+                    status,
+                    mock_allowed=(
+                        request.provider_override == "mock" or not eligible_real_route
+                    ),
                 )
         return snapshots
 
@@ -1028,6 +1229,24 @@ class ChatService:
                 sequence=sequence,
                 event_type=event.event_type,
                 payload=event.payload,
+            )
+        )
+
+    def _persist_provider_terminal_event(
+        self,
+        execution: ChatExecution,
+        *,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Record provider termination without exposing a premature client terminal."""
+        sequence = len(self.store.list_stream_events(execution.execution_id)) + 1
+        self.store.append_stream_event(
+            StreamEvent(
+                execution_id=execution.execution_id,
+                sequence=sequence,
+                event_type=event_type,
+                payload=payload,
             )
         )
 

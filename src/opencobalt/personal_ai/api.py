@@ -363,7 +363,7 @@ class RouteRerunResponse(BaseModel):
 
 class CancellationResponse(BaseModel):
     execution_id: str
-    status: Literal["cancel_requested"]
+    status: Literal["cancel_requested", "cancelled"]
 
 
 class MessageCompareRequest(BaseModel):
@@ -833,18 +833,18 @@ def _validate_chat_request(context: APIContext, request: ChatRequest) -> ChatReq
 
 
 def _stream_ndjson(service: ChatService, request: ChatRequest):
-    """Serialize lifecycle events and cancel a still-active execution on disconnect."""
+    """Serialize events and durably abandon a still-active disconnected stream."""
     active_execution_id: str | None = None
     try:
         for event in service.stream_request(request):
-            if event.event_type == "execution_started":
+            if event.execution_id is not None:
                 active_execution_id = event.execution_id
-            elif event.event_type in {"completed", "cancelled", "error"}:
+            if event.event_type in {"completed", "cancelled", "error"}:
                 active_execution_id = None
             yield event.model_dump_json() + "\n"
     finally:
         if active_execution_id is not None:
-            service.cancel(active_execution_id)
+            service.abandon(active_execution_id)
 
 
 @router.post("/chat/stream")
@@ -871,7 +871,9 @@ def cancel_execution(execution_id: str) -> CancellationResponse:
         raise _not_found("execution", execution_id)
     if execution.status == "cancel_requested":
         return CancellationResponse(execution_id=execution_id, status="cancel_requested")
-    if execution.status in {"complete", "failed", "cancelled"}:
+    if execution.status == "cancelled":
+        return CancellationResponse(execution_id=execution_id, status="cancelled")
+    if execution.status in {"complete", "failed"}:
         raise _conflict(f"Execution {execution_id} is already {execution.status}")
     raise _conflict(
         "Execution is not cancellable in this process; its in-memory cancellation token "
