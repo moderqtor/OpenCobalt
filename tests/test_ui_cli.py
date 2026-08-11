@@ -8,13 +8,35 @@ import urllib.request
 
 from typer.testing import CliRunner
 
-from opencobalt.cli import app
+from opencobalt.cli import _require_available_ui_port, app
 
 
 def _unused_loopback_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         return probe.getsockname()[1]
+
+
+def test_ui_port_probe_retries_a_released_port_without_hiding_a_listener(
+    monkeypatch,
+) -> None:
+    bind_attempts = iter([False, True])
+    listener_checks = []
+    sleeps = []
+    monkeypatch.setattr(
+        "opencobalt.cli._can_bind_ui_port",
+        lambda _port: next(bind_attempts),
+    )
+    monkeypatch.setattr(
+        "opencobalt.cli._ui_port_has_listener",
+        lambda port: listener_checks.append(port) or False,
+    )
+    monkeypatch.setattr("time.sleep", lambda seconds: sleeps.append(seconds))
+
+    _require_available_ui_port("UI", 5198)
+
+    assert listener_checks == [5198]
+    assert sleeps == [0.1]
 
 
 def test_ui_refuses_an_occupied_api_port_before_starting_children(

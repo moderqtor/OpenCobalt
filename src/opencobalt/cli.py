@@ -1999,22 +1999,52 @@ def adapters_inspect(
 # ── UI command ────────────────────────────────────────────────────────────────
 
 
-def _require_available_ui_port(label: str, port: int) -> None:
-    """Fail before child startup when a requested loopback port cannot be bound."""
+def _can_bind_ui_port(port: int) -> bool:
+    """Match development-server bind semantics without accepting an active listener."""
     import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+
+
+def _ui_port_has_listener(port: int) -> bool:
+    """Return whether a loopback listener is currently accepting connections."""
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.05)
+            return probe.connect_ex(("127.0.0.1", port)) == 0
+    except OSError:
+        return False
+
+
+def _require_available_ui_port(
+    label: str,
+    port: int,
+    *,
+    release_timeout_seconds: float = 2.0,
+) -> None:
+    """Fail on a listener, but tolerate a bounded just-released macOS socket."""
+    import time
 
     if not 1 <= port <= 65535:
         err.print(f"\n[{_RED}]{label} port must be between 1 and 65535.[/{_RED}]\n")
         raise typer.Exit(1)
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.bind(("127.0.0.1", port))
-    except OSError:
-        err.print(
-            f"\n[{_RED}]{label} port {port} is already in use.[/{_RED}]  "
-            "Choose another port and try again.\n"
-        )
-        raise typer.Exit(1) from None
+    deadline = time.monotonic() + release_timeout_seconds
+    while not _can_bind_ui_port(port):
+        if _ui_port_has_listener(port) or time.monotonic() >= deadline:
+            err.print(
+                f"\n[{_RED}]{label} port {port} is already in use.[/{_RED}]  "
+                "Choose another port and try again.\n"
+            )
+            raise typer.Exit(1) from None
+        time.sleep(0.1)
 
 
 def _stop_ui_processes(processes: list, *, timeout_seconds: float = 5.0) -> None:
