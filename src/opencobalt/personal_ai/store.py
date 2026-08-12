@@ -557,6 +557,33 @@ CREATE TABLE IF NOT EXISTS research_disagreements (
 );
 """
 
+_SCHEMA_V4 = """
+CREATE TABLE IF NOT EXISTS coding_missions (
+    coding_id                 TEXT PRIMARY KEY,
+    mission_id                TEXT NOT NULL UNIQUE,
+    conversation_id           TEXT,
+    route_id                  TEXT,
+    objective                 TEXT NOT NULL,
+    repository_path           TEXT NOT NULL,
+    status                    TEXT NOT NULL,
+    acp_session_id            TEXT,
+    capability_role           TEXT NOT NULL,
+    provider_id               TEXT,
+    model_id                  TEXT,
+    plan_text                 TEXT NOT NULL DEFAULT '',
+    outcome                   TEXT NOT NULL DEFAULT '',
+    receipt_id                TEXT,
+    files_changed_json        TEXT NOT NULL DEFAULT '[]',
+    terminal_operations_json  TEXT NOT NULL DEFAULT '[]',
+    tests_json                TEXT NOT NULL DEFAULT '[]',
+    approvals_json            TEXT NOT NULL DEFAULT '[]',
+    limitations_json          TEXT NOT NULL DEFAULT '[]',
+    created_at                TEXT NOT NULL,
+    updated_at                TEXT NOT NULL,
+    metadata_json             TEXT NOT NULL DEFAULT '{}'
+);
+"""
+
 
 def _dump(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -587,6 +614,7 @@ class PersonalAIStore:
             conn.commit()
             self._apply_v2(conn)
             self._apply_v3(conn)
+            self._apply_v4(conn)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=5)
@@ -634,10 +662,28 @@ class PersonalAIStore:
         if 2 not in versions:
             return
         conn.executescript(_SCHEMA_V3)
+        if 3 in versions:
+            return
         conn.execute(
             "INSERT OR IGNORE INTO personal_ai_schema_versions (version, applied_at) "
             "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             (3,),
+        )
+
+    def _apply_v4(self, conn: sqlite3.Connection) -> None:
+        versions = {
+            row[0]
+            for row in conn.execute("SELECT version FROM personal_ai_schema_versions")
+        }
+        if 3 not in versions:
+            return
+        conn.executescript(_SCHEMA_V4)
+        if 4 in versions:
+            return
+        conn.execute(
+            "INSERT OR IGNORE INTO personal_ai_schema_versions (version, applied_at) "
+            "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            (4,),
         )
 
     @staticmethod
@@ -679,6 +725,16 @@ class PersonalAIStore:
                 ),
             )
         return conversation
+
+    def update_conversation_metadata(
+        self, conversation_id: str, metadata: dict[str, Any]
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE conversations SET metadata_json = ?, updated_at = ? "
+                "WHERE conversation_id = ?",
+                (_dump(metadata), _iso(datetime.now(tz=timezone.utc)), conversation_id),
+            )
 
     def get_conversation(self, conversation_id: str) -> Conversation | None:
         with self._connect() as conn:
@@ -1830,6 +1886,102 @@ class PersonalAIStore:
             "synthesis": row["synthesis"],
             "limitations": _load(row["limitations_json"], []),
             "model_roles": _load(row["model_roles_json"], {}),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "metadata": _load(row["metadata_json"], {}),
+        }
+
+    def save_coding_mission(self, record: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO coding_missions ("
+                "coding_id, mission_id, conversation_id, route_id, objective, "
+                "repository_path, status, acp_session_id, capability_role, provider_id, "
+                "model_id, plan_text, outcome, receipt_id, files_changed_json, "
+                "terminal_operations_json, tests_json, approvals_json, limitations_json, "
+                "created_at, updated_at, metadata_json) VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(coding_id) DO UPDATE SET "
+                "status=excluded.status, acp_session_id=excluded.acp_session_id, "
+                "provider_id=excluded.provider_id, model_id=excluded.model_id, "
+                "plan_text=excluded.plan_text, outcome=excluded.outcome, "
+                "receipt_id=excluded.receipt_id, files_changed_json=excluded.files_changed_json, "
+                "terminal_operations_json=excluded.terminal_operations_json, "
+                "tests_json=excluded.tests_json, approvals_json=excluded.approvals_json, "
+                "limitations_json=excluded.limitations_json, updated_at=excluded.updated_at, "
+                "metadata_json=excluded.metadata_json",
+                (
+                    record["coding_id"],
+                    record["mission_id"],
+                    record.get("conversation_id"),
+                    record.get("route_id"),
+                    record["objective"],
+                    record["repository_path"],
+                    record["status"],
+                    record.get("acp_session_id"),
+                    record["capability_role"],
+                    record.get("provider_id"),
+                    record.get("model_id"),
+                    record.get("plan_text", ""),
+                    record.get("outcome", ""),
+                    record.get("receipt_id"),
+                    _dump(record.get("files_changed", [])),
+                    _dump(record.get("terminal_operations", [])),
+                    _dump(record.get("tests", [])),
+                    _dump(record.get("approvals", [])),
+                    _dump(record.get("limitations", [])),
+                    record["created_at"],
+                    record["updated_at"],
+                    _dump(record.get("metadata", {})),
+                ),
+            )
+
+    def get_coding_mission(self, coding_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM coding_missions WHERE coding_id = ? OR mission_id = ?",
+                (coding_id, coding_id),
+            ).fetchone()
+        return self._decode_coding_mission(row) if row else None
+
+    def get_coding_mission_for_route(self, route_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM coding_missions WHERE route_id = ?",
+                (route_id,),
+            ).fetchone()
+        return self._decode_coding_mission(row) if row else None
+
+    def list_coding_missions(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM coding_missions ORDER BY updated_at DESC LIMIT ?",
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        return [self._decode_coding_mission(row) for row in rows]
+
+    @staticmethod
+    def _decode_coding_mission(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "coding_id": row["coding_id"],
+            "mission_id": row["mission_id"],
+            "conversation_id": row["conversation_id"],
+            "route_id": row["route_id"],
+            "objective": row["objective"],
+            "repository_path": row["repository_path"],
+            "status": row["status"],
+            "acp_session_id": row["acp_session_id"],
+            "capability_role": row["capability_role"],
+            "provider_id": row["provider_id"],
+            "model_id": row["model_id"],
+            "plan_text": row["plan_text"],
+            "outcome": row["outcome"],
+            "receipt_id": row["receipt_id"],
+            "files_changed": _load(row["files_changed_json"], []),
+            "terminal_operations": _load(row["terminal_operations_json"], []),
+            "tests": _load(row["tests_json"], []),
+            "approvals": _load(row["approvals_json"], []),
+            "limitations": _load(row["limitations_json"], []),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "metadata": _load(row["metadata_json"], {}),

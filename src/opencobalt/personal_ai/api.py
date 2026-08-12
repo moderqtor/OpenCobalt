@@ -652,6 +652,7 @@ class MissionListItem(MissionRecordView):
     conversation_id: str | None = None
     steps: list[MissionStepView] = Field(default_factory=list)
     research: dict[str, Any] | None = None
+    coding: dict[str, Any] | None = None
 
 
 class MissionPromotionResponse(BaseModel):
@@ -1660,12 +1661,18 @@ def list_missions(limit: int = Query(default=100, ge=1, le=500)) -> list[Mission
                 route_id = event["payload"].get("route_id")
                 conversation_id = event["payload"].get("conversation_id")
         research = None
+        coding = None
         if mission.mission_type == "research":
             research = context.store.get_research_mission(mission.mission_id)
             if research is not None:
                 research = context.store.research_bundle(research["research_id"])
                 route_id = research.get("route_id") or route_id
                 conversation_id = research.get("conversation_id") or conversation_id
+        if mission.mission_type == "coding":
+            coding = context.store.get_coding_mission(mission.mission_id)
+            if coding is not None:
+                route_id = coding.get("route_id") or route_id
+                conversation_id = coding.get("conversation_id") or conversation_id
         result.append(
             MissionListItem(
                 **asdict(mission),
@@ -1673,6 +1680,7 @@ def list_missions(limit: int = Query(default=100, ge=1, le=500)) -> list[Mission
                 conversation_id=conversation_id,
                 steps=_mission_steps(context, mission.mission_id),
                 research=research,
+                coding=coding,
             )
         )
     return result

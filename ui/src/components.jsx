@@ -235,6 +235,7 @@ export function RouteInspector({ route, candidates = [], providers = [], persona
     || route.execution?.model_id
     || executions.at(-1)?.model_id;
   const approvalRequirements = route.approval_requirements || [];
+  const acpPermissions = Array.isArray(route.metadata?.acp_permissions) ? route.metadata.acp_permissions : [];
   const fallbackEvents = Array.isArray(route.fallback_events) ? route.fallback_events : [];
   const streamEvents = Array.isArray(route.stream_events) ? route.stream_events : [];
   const actualUsage = route.actual_usage && Object.keys(route.actual_usage).length
@@ -271,6 +272,7 @@ export function RouteInspector({ route, candidates = [], providers = [], persona
       <DetailRow label="Receipt ID" value={receipt || "not recorded"} mono />
       <DetailRow label="Integrity result" value={compact(verification)} />
       <DetailRow label="Task" value={compact(route.task_class)} />
+      <DetailRow label="Capability role" value={compact(route.metadata?.capability_role || route.capability_role)} />
       <DetailRow label="Complexity" value={compact(route.task_complexity)} />
       <DetailRow label="Domain" value={compact(route.metadata?.domain)} />
       <DetailRow label="Reasoning quality need" value={compact(route.metadata?.reasoning_quality)} />
@@ -297,6 +299,7 @@ export function RouteInspector({ route, candidates = [], providers = [], persona
     </section>
     {route.persona_provider_mismatch && <div className="notice amber" role="note">{route.persona_provider_mismatch}</div>}
     {approvalRequirements.length > 0 && <section><h3>Approval boundary</h3><ul className="reason-list">{approvalRequirements.map((requirement) => <li key={requirement}>{requirement}</li>)}</ul></section>}
+    {acpPermissions.length > 0 && <section><h3>ACP approval events</h3><ul className="reason-list">{acpPermissions.map((item, index) => <li key={item.approval_request_id || index}>{compact(item.tool || "permission")} · {compact(item.risk_level)} · {compact(item.policy_decision)} · {compact(item.option_id)}</li>)}</ul></section>}
     {reasons.length > 0 && <section><h3>Why this route</h3><ul className="reason-list">{reasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul></section>}
     <section><h3>Verification boundary</h3><p className="route-note">Strategy: {compact(route.verification_strategy || "not recorded")}</p>{verificationChecks.length > 0 && <ul className="reason-list">{verificationChecks.map((check, index) => <li key={`${check}-${index}`}>{typeof check === "string" ? compact(check) : JSON.stringify(check)}</li>)}</ul>}{verificationLimitations.length > 0 && <ul className="reason-list">{verificationLimitations.map((limitation, index) => <li key={`${limitation}-${index}`}>{limitation}</li>)}</ul>}{verificationLimitations.length === 0 && route.verification_strategy === "response_integrity" && <p className="route-note">Response integrity does not verify factual correctness.</p>}</section>
     {fallbackEvents.length > 0 && <section><h3>Fallback history</h3><div className="event-history">{fallbackEvents.map((fallback, index) => <article key={`${fallback.created_at || "fallback"}-${index}`}><b>{fallback.from_provider || "unknown"} → {fallback.to_provider || "unknown"}</b><span>{fallback.reason_category ? `${compact(fallback.reason_category)} · ` : ""}{fallback.reason || "No reason recorded"}</span><code>{fallback.failed_receipt_id || "failed receipt not recorded"}</code></article>)}</div></section>}

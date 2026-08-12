@@ -124,6 +124,7 @@ class ExecutionEngine:
         approval_step_id: str | None = None,
         execution_context: Literal["general_task", "answer_only_inference"] = "general_task",
         risk_subject: str | None = None,
+        session_handler: Callable[..., Any] | None = None,
     ) -> ExecutionOutcome:
         """Run the full receipt-backed slice for one task.
 
@@ -317,7 +318,7 @@ class ExecutionEngine:
 
         result: ExecutionResult | None = None
         if policy.allowed and not dry_run and not command_error:
-            result = self._execute(plan, step, receipt)
+            result = self._execute(plan, step, receipt, session_handler=session_handler)
         elif dry_run or command_error:
             step.status = "skipped"
             self.store.save_plan(plan)
@@ -486,21 +487,36 @@ class ExecutionEngine:
         )
 
     def _execute(
-        self, plan: ExecutionPlan, step: ExecutionStep, receipt: WorkReceipt
+        self,
+        plan: ExecutionPlan,
+        step: ExecutionStep,
+        receipt: WorkReceipt,
+        session_handler: Callable[..., Any] | None = None,
     ) -> ExecutionResult:
         step.status = "running"
         self._emit(
             EVENT_EXECUTION_STARTED, plan.plan_id,
             f"executing: {' '.join(step.command_argv[:4])}...",
         )
-        result = self.runner.run(
-            step.command_argv,
-            plan_id=plan.plan_id,
-            step_id=step.step_id,
-            runtime=plan.runtime,
-            cwd=plan.cwd,
-            timeout_seconds=step.timeout_seconds,
-        )
+        if session_handler is not None:
+            result = self.runner.interact(
+                step.command_argv,
+                plan_id=plan.plan_id,
+                handler=session_handler,
+                step_id=step.step_id,
+                runtime=plan.runtime,
+                cwd=plan.cwd,
+                timeout_seconds=step.timeout_seconds,
+            )
+        else:
+            result = self.runner.run(
+                step.command_argv,
+                plan_id=plan.plan_id,
+                step_id=step.step_id,
+                runtime=plan.runtime,
+                cwd=plan.cwd,
+                timeout_seconds=step.timeout_seconds,
+            )
         step.status = "succeeded" if result.status == "succeeded" else "failed"
         step.started_at = result.started_at
         step.finished_at = result.finished_at

@@ -182,11 +182,17 @@ class CursorAdapter(RuntimeAdapter):
         *,
         app_paths: tuple[str | Path, ...] | None = None,
         help_text: str | None = None,
+        acp_help_text: str | None = None,
+        about_text: str | None = None,
+        agent_names: tuple[str, ...] = ("agent", "cursor-agent"),
     ) -> None:
         self._app_paths = tuple(Path(path) for path in app_paths) if app_paths is not None else (
             _default_cursor_app_paths()
         )
         self._help_text = help_text
+        self._acp_help_text = acp_help_text
+        self._about_text = about_text
+        self._agent_names = agent_names
         self._capabilities: dict[str, Any] | None = None
 
     def _path_binary(self) -> str | None:
@@ -203,6 +209,13 @@ class CursorAdapter(RuntimeAdapter):
                 return str(candidate)
         return None
 
+    def _agent_cli(self) -> str | None:
+        for name in self._agent_names:
+            found = shutil.which(name)
+            if _is_executable(found):
+                return found
+        return None
+
     def _execution_cli(self) -> str | None:
         return self._path_binary() or self._bundled_cli()
 
@@ -210,6 +223,9 @@ class CursorAdapter(RuntimeAdapter):
         path_binary = self._path_binary()
         if path_binary:
             return path_binary
+        agent = self._agent_cli()
+        if agent:
+            return agent
         apps = self._existing_app_paths()
         if apps:
             return str(apps[0])
@@ -233,6 +249,53 @@ class CursorAdapter(RuntimeAdapter):
             return ""
         return "\n".join(part for part in (result.stdout, result.stderr) if part)
 
+    def _acp_help(self) -> str:
+        if self._acp_help_text is not None:
+            return self._acp_help_text
+        executable = self._agent_cli()
+        if executable is None:
+            return ""
+        try:
+            result = subprocess.run(
+                [executable, "acp", "--help"],
+                capture_output=True,
+                text=True,
+                timeout=_CURSOR_HELP_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            return ""
+        return "\n".join(part for part in (result.stdout, result.stderr) if part)
+
+    def _about_output(self) -> str:
+        if self._about_text is not None:
+            return self._about_text
+        executable = self._agent_cli()
+        if executable is None:
+            return ""
+        try:
+            result = subprocess.run(
+                [executable, "about"],
+                capture_output=True,
+                text=True,
+                timeout=_CURSOR_HELP_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            return ""
+        return "\n".join(part for part in (result.stdout, result.stderr) if part)
+
+    def authentication_state(self) -> str:
+        """Return verified/unknown without storing account identifiers."""
+        about = self._about_output().casefold()
+        if not about:
+            return "unknown"
+        if "not logged in" in about:
+            return "unknown"
+        if "user email" in about or "logged in" in about:
+            return "verified"
+        return "unknown"
+
     def capabilities(self) -> dict[str, Any]:
         if self._capabilities is not None:
             return self._capabilities
@@ -249,6 +312,12 @@ class CursorAdapter(RuntimeAdapter):
         has_json = "json" in help_text and has_output_format
         has_sandbox = "--sandbox" in help_text
         has_model = "--model" in help_text
+        agent_cli = self._agent_cli()
+        acp_help = self._acp_help() if agent_cli else ""
+        has_acp = "agent client protocol" in acp_help.casefold() or (
+            "acp" in acp_help.casefold() and "json-rpc" in acp_help.casefold()
+        )
+        auth_state = self.authentication_state() if agent_cli or executable else "unknown"
 
         self._capabilities = {
             "macos_app": {
@@ -307,6 +376,20 @@ class CursorAdapter(RuntimeAdapter):
                 or "CURSOR_API_KEY" in help_text,
                 "stored_by_opencobalt": False,
             },
+            "agent_cli": {
+                "supported": agent_cli is not None,
+                "source": "PATH",
+                "path": agent_cli,
+            },
+            "acp_server": {
+                "supported": has_acp,
+                "source": "agent acp --help" if acp_help else "unknown",
+            },
+            "cursor_login_auth": {
+                "supported": auth_state == "verified",
+                "source": "agent about" if agent_cli else "unknown",
+                "stored_by_opencobalt": False,
+            },
         }
         return self._capabilities
 
@@ -318,23 +401,32 @@ class CursorAdapter(RuntimeAdapter):
 
         if not available:
             limitations.append("Cursor app or cursor executable not found")
-        elif raw["bundled_cli"]["supported"] is False and raw["path_binary"]["supported"] is False:
+        elif (
+            raw["bundled_cli"]["supported"] is False
+            and raw["path_binary"]["supported"] is False
+            and raw.get("agent_cli", {}).get("supported") is not True
+        ):
             limitations.append("Cursor app detected, but no executable agent CLI was found")
-        if available and not supports_noninteractive:
+        if available and not supports_noninteractive and not self.supports_acp():
             limitations.append("receipt-compatible cursor agent --print plan mode not discovered")
         if available:
             limitations.extend(
                 [
-                    "execution is limited to cursor agent --print --mode plan",
                     "cloud mode is not enabled by OpenCobalt",
                     "force, browser, MCP auto-approval, login, logout, and API-key flags are not used",
                     "Cursor credentials and account state remain outside OpenCobalt",
                 ]
             )
+            if self.supports_acp():
+                limitations.append(
+                    "Personal AI coding uses agent acp over stdio; plan-mode print remains inspect-only"
+                )
+            else:
+                limitations.append("execution is limited to cursor agent --print --mode plan")
 
         if not available:
             level = "unavailable"
-        elif supports_noninteractive:
+        elif supports_noninteractive or self.supports_acp():
             level = "partial"
         elif raw["macos_app"]["supported"] is True:
             level = "partial"
@@ -401,6 +493,20 @@ class CursorAdapter(RuntimeAdapter):
         argv.append("--")
         argv.append(task)
         return argv
+
+    def supports_acp(self) -> bool:
+        caps = self.capabilities()
+        return bool(
+            self._agent_cli() and caps.get("acp_server", {}).get("supported") is True
+        )
+
+    def build_acp_command(self) -> list[str]:
+        executable = self._agent_cli()
+        if executable is None:
+            raise ValueError("Cursor ACP executable not found")
+        if not self.supports_acp():
+            raise ValueError("Cursor ACP server was not discovered")
+        return [executable, "acp"]
 
 
 class ClaudeCodeAdapter(RuntimeAdapter):

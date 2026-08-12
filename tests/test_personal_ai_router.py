@@ -8,6 +8,7 @@ from opencobalt.personal_ai.router import (
     PersonalAIRouter,
     ProviderSnapshot,
     RoutingRequest,
+    classify_capability_role,
     classify_requirements,
     classify_task,
 )
@@ -32,6 +33,7 @@ def _provider(
     readiness_state: str = "unknown",
     authentication_state: str = "unknown",
     model_id: str | None = None,
+    capability_roles: frozenset[str] = frozenset(),
 ) -> ProviderSnapshot:
     return ProviderSnapshot(
         provider_id=provider_id,
@@ -52,6 +54,7 @@ def _provider(
         provider_priority=provider_priority,
         readiness_state=readiness_state,
         authentication_state=authentication_state,
+        capability_roles=capability_roles,
     )
 
 
@@ -543,3 +546,126 @@ def test_local_only_still_selects_local_or_fails_closed():
     assert cloud_candidate.rejection_reason == "strict local-only policy excludes network/cloud provider"
     with pytest.raises(NoEligibleRouteError):
         router.route(_request(KETAMINE_PROMPT, local_only=True), [cloud])
+
+
+def _cursor_coding(**changes: object) -> ProviderSnapshot:
+    values = dict(
+        provider_id="cursor",
+        local=False,
+        requires_network=True,
+        cost_category="standard",
+        quality_tier="strong",
+        latency_category="standard",
+        capabilities=frozenset({"coding", "file_analysis", "planning", "repository"}),
+        capability_roles=frozenset({"coding_analysis", "coding_agent"}),
+        authentication_state="verified",
+        readiness_state="ready",
+    )
+    values.update(changes)
+    return _provider(**values)
+
+
+def test_arithmetic_does_not_select_a_coding_agent_runtime():
+    plan = PersonalAIRouter().route(
+        _request("17 * 23"),
+        [_cursor_coding(), _cheap_local(), _strong_cloud()],
+    )
+    assert plan.capability_role == "cheap_local"
+    assert plan.record.selected_provider == "ollama"
+    cursor = next(item for item in plan.candidates if item.provider_id == "cursor")
+    assert cursor.eligible is False
+    assert "coding-agent runtime is not eligible" in (cursor.rejection_reason or "")
+
+
+def test_scientific_reasoning_does_not_select_a_coding_agent_runtime():
+    plan = PersonalAIRouter().route(
+        _request(KETAMINE_PROMPT),
+        [_cursor_coding(), _cheap_local(), _strong_cloud()],
+    )
+    assert plan.capability_role == "strong_reasoning"
+    assert plan.record.selected_provider == "antigravity"
+    cursor = next(item for item in plan.candidates if item.provider_id == "cursor")
+    assert cursor.eligible is False
+
+
+def test_research_role_does_not_select_a_coding_agent_runtime():
+    plan = PersonalAIRouter().route(
+        _request("Research Medicare periodontal coverage"),
+        [_cursor_coding(), _strong_cloud(capabilities=frozenset({"chat", "research"}))],
+    )
+    assert plan.capability_role == "research"
+    assert plan.record.selected_provider == "antigravity"
+    cursor = next(item for item in plan.candidates if item.provider_id == "cursor")
+    assert cursor.eligible is False
+
+
+def test_repository_code_explanation_makes_coding_analysis_eligible():
+    repo = "/workspace/OpenCobalt"
+    plan = PersonalAIRouter().route(
+        _request(
+            "Explain what src/opencobalt/personal_ai/router.py does",
+            project_path=repo,
+        ),
+        [_cursor_coding(), _cheap_local(), _strong_cloud()],
+    )
+    assert plan.capability_role == "coding_analysis"
+    cursor = next(item for item in plan.candidates if item.provider_id == "cursor")
+    assert cursor.eligible is True
+    assert cursor.score_components["role_fit"] == 24
+    assert plan.record.metadata["capability_role"] == "coding_analysis"
+
+
+def test_repository_refactor_prefers_coding_agent_runtime():
+    repo = "/workspace/OpenCobalt"
+    plan = PersonalAIRouter().route(
+        _request(
+            "Refactor router.py to separate candidate generation from candidate scoring and run tests",
+            project_path=repo,
+        ),
+        [_cursor_coding(), _cheap_local(), _strong_cloud()],
+    )
+    assert plan.capability_role == "coding_agent"
+    assert plan.record.selected_provider == "cursor"
+    local = next(item for item in plan.candidates if item.provider_id == "ollama")
+    cloud = next(item for item in plan.candidates if item.provider_id == "antigravity")
+    assert local.eligible is False
+    assert cloud.eligible is False
+    assert "coding_agent" in (local.rejection_reason or "")
+
+
+def test_general_chat_does_not_route_to_coding_agent_even_with_a_repo_attached():
+    plan = PersonalAIRouter().route(
+        _request("What is the capital of France?", project_path="/workspace/OpenCobalt"),
+        [_cursor_coding(), _cheap_local(), _strong_cloud()],
+    )
+    assert plan.capability_role in {"cheap_local", "fast_general"}
+    assert plan.record.selected_provider != "cursor"
+    cursor = next(item for item in plan.candidates if item.provider_id == "cursor")
+    assert cursor.eligible is False
+
+
+def test_local_only_excludes_cursor_coding_runtime():
+    repo = "/workspace/OpenCobalt"
+    plan = PersonalAIRouter().route(
+        _request(
+            "Explain what src/opencobalt/personal_ai/router.py does",
+            project_path=repo,
+            local_only=True,
+        ),
+        [_cursor_coding(), _cheap_local()],
+    )
+    cursor = next(item for item in plan.candidates if item.provider_id == "cursor")
+    assert cursor.eligible is False
+    assert cursor.rejection_reason == "strict local-only policy excludes network/cloud provider"
+    assert plan.record.selected_provider == "ollama"
+
+
+def test_coding_agent_without_repository_path_is_not_classified_as_agent_work():
+    role = classify_capability_role(
+        "Refactor router.py and run tests",
+        "coding",
+        "moderate",
+        classify_requirements("Refactor router.py and run tests", "coding", "moderate"),
+        project_path=None,
+    )
+    assert role != "coding_agent"

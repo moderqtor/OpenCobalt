@@ -46,6 +46,16 @@ DomainClass = Literal[
 SensitivityLevel = Literal["low", "moderate", "high"]
 QualityNeed = Literal["low", "standard", "high"]
 FreshnessNeed = Literal["none", "helpful", "required"]
+CapabilityRole = Literal[
+    "cheap_local",
+    "fast_general",
+    "strong_reasoning",
+    "research",
+    "coding_analysis",
+    "coding_agent",
+]
+SPECIALIZED_ROLES = frozenset({"research", "coding_analysis", "coding_agent"})
+CODING_AGENT_ONLY_ROLES = frozenset({"coding_analysis", "coding_agent"})
 
 
 @dataclass(frozen=True)
@@ -94,6 +104,7 @@ class ProviderSnapshot:
     display_name: str | None = None
     model_family: str | None = None
     profile_evidence: str | None = None
+    capability_roles: frozenset[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         """Reject unbounded evidence while normalizing capability collections."""
@@ -106,6 +117,7 @@ class ProviderSnapshot:
         object.__setattr__(self, "capabilities", frozenset(self.capabilities))
         object.__setattr__(self, "tool_names", frozenset(self.tool_names))
         object.__setattr__(self, "skill_names", frozenset(self.skill_names))
+        object.__setattr__(self, "capability_roles", frozenset(self.capability_roles))
 
 
 @dataclass(frozen=True)
@@ -126,6 +138,7 @@ class RoutingRequest:
     model_override: str | None = None
     requested_tools: tuple[str, ...] = ()
     requested_skills: tuple[str, ...] = ()
+    project_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +152,7 @@ class RoutingPlan:
     privacy_classification: PrivacyClassification
     risk_classification: RiskClassification
     requirements: TaskRequirements = field(default_factory=TaskRequirements)
+    capability_role: CapabilityRole = "fast_general"
 
 
 class NoEligibleRouteError(ValueError):
@@ -166,6 +180,13 @@ class PersonalAIRouter:
         requirements = classify_requirements(
             request.prompt, task_class, complexity, request.cognitive_policy
         )
+        capability_role = classify_capability_role(
+            request.prompt,
+            task_class,
+            complexity,
+            requirements,
+            project_path=request.project_path,
+        )
         privacy = classify_privacy(
             request.prompt,
             task_class,
@@ -185,6 +206,7 @@ class PersonalAIRouter:
                 task_class=task_class,
                 complexity=complexity,
                 requirements=requirements,
+                capability_role=capability_role,
                 privacy=privacy,
                 risk=risk,
                 local_only=local_only,
@@ -223,6 +245,7 @@ class PersonalAIRouter:
                 task_class=task_class,
                 complexity=complexity,
                 requirements=requirements,
+                capability_role=capability_role,
                 local_only=local_only,
                 persona_version=persona_version,
             )
@@ -263,6 +286,7 @@ class PersonalAIRouter:
             outcome_status="planned",
             metadata={
                 "routing": "deterministic_snapshot_v1",
+                "capability_role": capability_role,
                 "risk_classification": risk,
                 "local_only": local_only,
                 "privacy_mode": request.privacy_mode,
@@ -288,6 +312,7 @@ class PersonalAIRouter:
             privacy_classification=privacy,
             risk_classification=risk,
             requirements=requirements,
+            capability_role=capability_role,
         )
 
     def _candidate(
@@ -299,6 +324,7 @@ class PersonalAIRouter:
         task_class: TaskClass,
         complexity: Complexity,
         requirements: TaskRequirements,
+        capability_role: CapabilityRole,
         privacy: PrivacyClassification,
         risk: RiskClassification,
         local_only: bool,
@@ -309,9 +335,11 @@ class PersonalAIRouter:
         factual_points = _factual_sensitivity_fit(snapshot, requirements)
         freshness_points = _freshness_fit(snapshot, requirements)
         citation_points = _citation_requirement_fit(snapshot, requirements)
+        role_points = _role_fit(snapshot, capability_role)
         components = {
             "availability": 20 if snapshot.available else -100,
-            "capability_fit": _capability_fit(snapshot, task_class),
+            "capability_fit": _capability_fit(snapshot, task_class, capability_role),
+            "role_fit": role_points,
             "cost_fit": _cost_fit(
                 snapshot.cost_category, request.settings.cost_ceiling_category, demanding=demanding
             ),
@@ -334,6 +362,7 @@ class PersonalAIRouter:
             request=request,
             snapshot=snapshot,
             task_class=task_class,
+            capability_role=capability_role,
             risk=risk,
             local_only=local_only,
         )
@@ -353,6 +382,7 @@ class PersonalAIRouter:
             reasons.append(factual_reason)
         for label, value in (
             ("capability fit", components["capability_fit"]),
+            ("role fit", components["role_fit"]),
             ("privacy fit", components["privacy_fit"]),
             ("risk fit", components["risk_fit"]),
             ("cost fit", components["cost_fit"]),
@@ -550,6 +580,7 @@ def _rejection_reason(
     request: RoutingRequest,
     snapshot: ProviderSnapshot,
     task_class: TaskClass,
+    capability_role: CapabilityRole,
     risk: RiskClassification,
     local_only: bool,
 ) -> str | None:
@@ -561,9 +592,23 @@ def _rejection_reason(
         return "excluded by manual provider override"
     if request.model_override and snapshot.model_id != request.model_override:
         return "model does not match manual override"
-    required_capability = _task_capability(task_class)
-    if required_capability not in snapshot.capabilities:
-        return f"provider does not support required capability: {required_capability}"
+    if capability_role == "coding_agent" and not request.project_path:
+        return "coding-agent requests require an explicit repository path"
+    if (
+        capability_role not in CODING_AGENT_ONLY_ROLES
+        and "coding_agent" in snapshot.capability_roles
+        and capability_role not in snapshot.capability_roles
+        and "chat" not in snapshot.capabilities
+    ):
+        return f"coding-agent runtime is not eligible for {capability_role} requests"
+    if capability_role == "coding_agent" and "coding_agent" not in snapshot.capability_roles:
+        return "provider does not advertise required capability role: coding_agent"
+    if capability_role == "coding_analysis" and not _supports_coding_analysis(snapshot):
+        return "provider does not support required capability: coding_analysis"
+    if capability_role not in CODING_AGENT_ONLY_ROLES:
+        required_capability = _task_capability(task_class)
+        if required_capability not in snapshot.capabilities:
+            return f"provider does not support required capability: {required_capability}"
     missing_tools = sorted(set(request.requested_tools) - snapshot.tool_names)
     if missing_tools:
         return f"provider does not support required tools: {', '.join(missing_tools)}"
@@ -603,7 +648,11 @@ def _task_capability(task_class: TaskClass) -> str:
     }[task_class]
 
 
-def _capability_fit(snapshot: ProviderSnapshot, task_class: TaskClass) -> int:
+def _capability_fit(
+    snapshot: ProviderSnapshot, task_class: TaskClass, capability_role: CapabilityRole
+) -> int:
+    if capability_role in CODING_AGENT_ONLY_ROLES:
+        return 20 if _supports_coding_analysis(snapshot) else -40
     return 20 if _task_capability(task_class) in snapshot.capabilities else -40
 
 
@@ -747,6 +796,7 @@ def selection_narrative(
     requirements: TaskRequirements,
     local_only: bool,
     persona_version: PersonaVersion | None,
+    capability_role: CapabilityRole = "fast_general",
 ) -> str:
     """Human-readable selection reason. Heuristic, not a calibrated probability."""
     label = snapshot.display_name or snapshot.model_id or snapshot.provider_id
@@ -777,6 +827,8 @@ def selection_narrative(
         clauses.append("the claim is evidence-sensitive")
     if "research" in snapshot.capabilities and task_class == "research":
         clauses.append("it supports the required research capability")
+    if capability_role:
+        clauses.append(f"the selected capability role is {capability_role.replace('_', ' ')}")
     if local_only:
         clauses.append("the strict local-only constraint is active")
     else:
@@ -1017,3 +1069,109 @@ def _factual_sensitivity_reason(
     if requirements.factual_sensitivity == "high":
         return f"evidence-sensitive synthesis quality: {points:+d}"
     return f"factual sensitivity fit: {points:+d}"
+
+
+def classify_capability_role(
+    prompt: str,
+    task_class: TaskClass,
+    complexity: Complexity,
+    requirements: TaskRequirements,
+    *,
+    project_path: str | None = None,
+) -> CapabilityRole:
+    """Map task requirements onto a provider-neutral capability role."""
+    text = prompt.lower()
+    attached_repo = bool(project_path and project_path.strip())
+    if task_class == "research" or requirements.citations_required:
+        return "research"
+    if attached_repo and _is_mutating_repository_work(text, task_class):
+        return "coding_agent"
+    if attached_repo and _is_repository_analysis(text, task_class):
+        return "coding_analysis"
+    if _is_lightweight_task(prompt) or (
+        complexity == "simple" and requirements.reasoning_quality == "low"
+    ):
+        return "cheap_local"
+    if (
+        requirements.reasoning_quality == "high"
+        or requirements.domain in {"scientific", "medical", "philosophical", "legal"}
+        or task_class in {"security_review", "consequential_decision"}
+    ):
+        return "strong_reasoning"
+    return "fast_general"
+
+
+def _supports_coding_analysis(snapshot: ProviderSnapshot) -> bool:
+    return bool(
+        "coding_analysis" in snapshot.capability_roles
+        or "coding_agent" in snapshot.capability_roles
+        or "coding" in snapshot.capabilities
+        or "file_analysis" in snapshot.capabilities
+        or "chat" in snapshot.capabilities
+    )
+
+
+def _role_fit(snapshot: ProviderSnapshot, capability_role: CapabilityRole) -> int:
+    advertised = snapshot.capability_roles
+    if capability_role in advertised:
+        return {
+            "coding_agent": 36,
+            "coding_analysis": 24,
+            "research": 16,
+            "strong_reasoning": 10,
+            "cheap_local": 10,
+            "fast_general": 8,
+        }[capability_role]
+    if capability_role == "coding_agent":
+        return -40
+    if capability_role == "coding_analysis" and (
+        "coding" in snapshot.capabilities or "file_analysis" in snapshot.capabilities
+    ):
+        return 4
+    if capability_role == "cheap_local" and snapshot.cost_category == "free":
+        return 8
+    return 0
+
+
+def _is_mutating_repository_work(text: str, task_class: TaskClass) -> bool:
+    if _contains(
+        text,
+        "refactor",
+        "implement",
+        "apply the change",
+        "write tests",
+        "run tests",
+        "run the tests",
+        "fix the bug",
+        "patch",
+        "commit",
+        "create a file",
+        "modify",
+        "edit the",
+        "change the code",
+        "update this repository",
+        "update the repository",
+    ):
+        return True
+    return task_class in {"repository_execution", "coding"} and _contains(
+        text, "run", "execute", "write", "fix", "implement", "refactor"
+    )
+
+
+def _is_repository_analysis(text: str, task_class: TaskClass) -> bool:
+    if _is_mutating_repository_work(text, task_class):
+        return False
+    if task_class in {"coding", "repository_execution", "file_analysis"}:
+        return True
+    if _looks_like_source_path(text):
+        return True
+    return _contains(text, "codebase", "source code", "this file", "this module")
+
+
+_SOURCE_PATH = re.compile(
+    r"(?:^|[\s`])(?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]{1,8}|(?:^|[\s`])[\w.-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|rb|c|cc|cpp|h|md)"
+)
+
+
+def _looks_like_source_path(text: str) -> bool:
+    return _SOURCE_PATH.search(text) is not None
