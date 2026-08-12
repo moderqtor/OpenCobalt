@@ -27,7 +27,7 @@ const DEFAULT_SETTINGS = {
 };
 const TERMINAL_EVENTS = new Set(["completed", "cancelled", "error", "route_failed"]);
 const ERROR_EVENTS = new Set(["error", "route_failed"]);
-const COGNITIVE_POLICIES = ["fast_answer", "deep_analysis", "skeptical_review", "creative_divergence", "decision_support", "emotional_reflection", "implementation", "research_synthesis"];
+const COGNITIVE_POLICIES = ["fast_answer", "deep_analysis", "skeptical_review", "creative_divergence", "decision_support", "emotional_reflection", "implementation", "research_synthesis", "research"];
 const CONTROL_LEVELS = ["very_low", "low", "balanced", "high", "very_high"];
 const PERSONA_CONTROLS = ["directness", "warmth", "formality", "verbosity", "challenge_level", "emotional_attunement", "speculation_tolerance", "question_frequency", "citation_preference", "uncertainty_explicitness"];
 
@@ -190,6 +190,7 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
     {validationMessage && <p id="composer-provider-validation" className="composer-validation" role="status">{validationMessage}</p>}
     {expanded && <div id="composer-advanced" className="composer-advanced">
       <SelectField label="Cognitive policy" value={controls.cognitivePolicy} onChange={(cognitivePolicy) => onChange({ cognitivePolicy })}>{cognitivePolicies.map((policy) => <option key={policy} value={policy}>{label(policy)}</option>)}</SelectField>
+      {(controls.cognitivePolicy === "research" || controls.cognitivePolicy === "research_synthesis") && <p className="composer-validation">Research launches an evidence-backed mission: OpenCobalt retrieves public HTTPS sources, stores structured evidence, and links citations. It does not prove factual truth.</p>}
       <SelectField label="Reasoning effort" value={controls.reasoningEffort} onChange={(reasoningEffort) => onChange({ reasoningEffort })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option></SelectField>
       <SelectField label="Privacy" value={controls.privacy} onChange={(privacy) => onChange({ privacy })}><option value="standard">Standard</option><option value="private">Private</option><option value="sensitive">Sensitive</option></SelectField>
       <Toggle label="Local only" checked={controls.localOnly} onChange={(localOnly) => onChange({ localOnly })} note="Excludes routes whose capability record requires network access." />
@@ -471,6 +472,16 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
         if (type === "text_delta" && typeof payload.text_delta === "string") {
           setMessages((current) => current.map((message) => message.message_id === "local-stream" ? { ...message, content: `${message.content}${payload.text_delta}`, status: "streaming", route_id: routeId || message.route_id } : message));
         }
+        if (String(type).startsWith("research_")) {
+          const step = payload.step || type.replace("research_", "");
+          setMessages((current) => current.map((message) => message.message_id === "local-stream" ? {
+            ...message,
+            status: "streaming",
+            route_id: routeId || message.route_id,
+            content: payload.synthesis || `Research ${label(step)}${payload.retrieved_count != null ? ` · ${payload.retrieved_count} sources retrieved` : ""}${payload.evidence_count != null ? ` · ${payload.evidence_count} evidence records` : ""}`,
+            metadata: { ...(message.metadata || {}), research_id: payload.research_id, mission_id: payload.mission_id },
+          } : message));
+        }
 
         if (type === "completed") {
           const finalMessage = payload.message;
@@ -601,7 +612,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const selected = conversations.find((conversation) => conversationIdOf(conversation) === selectedId);
   const activePersona = personas.find((persona) => (persona.persona_id || persona.id) === controls.personaId);
   const comparableResponses = messages.filter((message) => message.role === "assistant" && message.status === "complete");
-  const executionEvents = streamEvents.filter((event) => ["tool", "tool_event", "tool_started", "tool_completed", "approval_required", "fallback_started"].includes(event.event_type));
+  const executionEvents = streamEvents.filter((event) => ["tool", "tool_event", "tool_started", "tool_completed", "approval_required", "fallback_started", "research_planning", "research_retrieving", "research_extracting", "research_reviewing", "research_synthesizing", "research_complete"].includes(event.event_type));
   const liveStatus = interactionBusy
     ? cancelling
       ? "OpenCobalt is finalizing cancellation and refreshing the durable record."
@@ -662,7 +673,13 @@ function CollectionPage({ kind, title, description, loader, render }) {
 function MissionsPage() {
   return <CollectionPage kind="Missions" title="Durable work" description="Longer objectives stay resumable with their checkpoints, approvals, artifacts, and outcomes." loader={api.missions} render={(mission) => {
     const steps = Array.isArray(mission.steps) ? mission.steps : [];
-    return <article className="record-card mission-card" key={missionIdOf(mission)}><div className="card-top"><div className="pill-row"><Pill tone={mission.status === "complete" ? "green" : mission.status === "blocked" ? "amber" : "neutral"}>{label(mission.status || "planned")}</Pill><Pill>{label(mission.mission_type || "mission")}</Pill></div><small className="mono">{mission.mission_id || mission.id}</small></div><h2>{mission.goal || mission.title || "Untitled mission"}</h2><p>{mission.current_state || mission.summary || "No current state has been recorded."}</p><details><summary>Inspect plan, checkpoints, and provenance</summary><div className="mission-detail"><dl><dt>Active plan</dt><dd>{mission.active_plan_id || "not recorded"}</dd><dt>Last receipt</dt><dd>{mission.last_receipt_id || "not recorded"}</dd><dt>Source route</dt><dd>{mission.route_id || "not promoted from chat"}</dd><dt>Outcome</dt><dd>{mission.outcome || "not final"}</dd></dl>{steps.length ? <ol>{steps.map((step) => <li key={step.step_id}><b>{step.title}</b><span>{label(step.execution_state)} · approval {label(step.approval_state)} · risk {label(step.risk_level)}</span>{step.receipt_id && <code>{step.receipt_id}</code>}</li>)}</ol> : <p>No durable steps were returned for this mission.</p>}</div></details></article>;
+    const research = mission.research && typeof mission.research === "object" ? mission.research : null;
+    const sources = Array.isArray(research?.sources) ? research.sources : [];
+    const evidence = Array.isArray(research?.evidence) ? research.evidence : [];
+    const citations = Array.isArray(research?.citations) ? research.citations : [];
+    const disagreements = Array.isArray(research?.disagreements) ? research.disagreements : [];
+    const roles = research?.model_roles && typeof research.model_roles === "object" ? Object.entries(research.model_roles) : [];
+    return <article className="record-card mission-card" key={missionIdOf(mission)}><div className="card-top"><div className="pill-row"><Pill tone={mission.status === "complete" || mission.status === "completed" ? "green" : mission.status === "blocked" ? "amber" : "neutral"}>{label(mission.status || "planned")}</Pill><Pill>{label(mission.mission_type || "mission")}</Pill>{research && <Pill>{sources.length} sources</Pill>}{research && <Pill>{evidence.length} evidence</Pill>}</div><small className="mono">{mission.mission_id || mission.id}</small></div><h2>{mission.goal || mission.title || "Untitled mission"}</h2><p>{mission.current_state || mission.summary || research?.synthesis || "No current state has been recorded."}</p><details><summary>Inspect plan, checkpoints, and provenance</summary><div className="mission-detail"><dl><dt>Active plan</dt><dd>{mission.active_plan_id || "not recorded"}</dd><dt>Last receipt</dt><dd>{mission.last_receipt_id || "not recorded"}</dd><dt>Source route</dt><dd>{mission.route_id || research?.route_id || "not promoted from chat"}</dd><dt>Outcome</dt><dd>{mission.outcome || "not final"}</dd></dl>{steps.length ? <ol>{steps.map((step) => <li key={step.step_id}><b>{step.title}</b><span>{label(step.execution_state)} · approval {label(step.approval_state)} · risk {label(step.risk_level)}</span>{step.receipt_id && <code>{step.receipt_id}</code>}</li>)}</ol> : <p>No durable steps were returned for this mission.</p>}</div></details>{research && <details><summary>Inspect research sources, evidence, and citations</summary><div className="mission-detail research-detail"><p>{research.question}</p>{Array.isArray(research.limitations) && research.limitations.length > 0 && <ul>{research.limitations.map((item) => <li key={item}>{item}</li>)}</ul>}{roles.length > 0 && <section><h3>Model roles</h3><dl>{roles.map(([role, value]) => <React.Fragment key={role}><dt>{label(role)}</dt><dd>{value?.display_name || value?.model_id || value?.provider_id} · {value?.reason || "role assigned"}</dd></React.Fragment>)}</dl></section>}{sources.length > 0 && <section><h3>Sources</h3><ol>{sources.map((source) => <li key={source.source_id}><b>{source.title || source.url}</b><span>{label(source.source_type)} · {label(source.retrieval_status)}</span><code>{source.url}</code></li>)}</ol></section>}{evidence.length > 0 && <section><h3>Evidence</h3><ol>{evidence.map((item) => <li key={item.evidence_id}><b>{item.claim}</b><span>{label(item.causal_class)} · {label(item.relation)} · {label(item.verification_status)}</span>{item.limitations && <span>{item.limitations}</span>}<code>{item.evidence_id}</code></li>)}</ol></section>}{disagreements.length > 0 && <section><h3>Disagreements preserved</h3><ol>{disagreements.map((item) => <li key={item.disagreement_id}><b>{item.topic}</b><span>{(item.positions || []).join(" · ")}</span></li>)}</ol></section>}{citations.length > 0 && <section><h3>Citations</h3><ol>{citations.map((item) => <li key={item.citation_id}><b>{item.claim_span || "claim"}</b><span>{label(item.verification_status)} · {item.verification_note}</span><code>{item.evidence_id || "no evidence id"}</code></li>)}</ol></section>}{research.synthesis && <section><h3>Final synthesis</h3><p>{research.synthesis}</p></section>}</div></details>}</article>;
   }} />;
 }
 

@@ -160,6 +160,7 @@ export const api = {
   updateMemory: (memoryId, input) => request(`/memory/${encodeURIComponent(memoryId)}`, jsonOptions("PATCH", input)),
   deleteMemory: (memoryId) => request(`/memory/${encodeURIComponent(memoryId)}`, { method: "DELETE" }),
   missions: () => request("/missions").then((value) => listOf(value, ["missions", "items", "data", "results"])),
+  research: (researchId) => request(`/research/${encodeURIComponent(researchId)}`).then((value) => recordOf(value, "research mission")),
   skills: () => request("/skills").then((value) => listOf(value, ["skills", "items", "data", "results"])),
   skill: (skillId) => request(`/skills/${encodeURIComponent(skillId)}`).then((value) => recordOf(value, "skill")),
   updateSkill: (skillId, input) => request(`/skills/${encodeURIComponent(skillId)}`, jsonOptions("PATCH", input)).then((value) => recordOf(value, "skill")),

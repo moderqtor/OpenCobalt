@@ -77,12 +77,34 @@ Known dynamically discoverable help evidence:
   argv form like `agy --print "hello"` for non-interactive tasks.
 - `--model`: marks `model_selection` supported. OpenCobalt can build a pure argv
   form like `agy --model <model> --print "hello"` when model selection is needed.
-- `plugin` or `plugins`: marks `plugin_support` supported when plugin text appears
-  in local help.
+- `--output-format`: marks `json_output` supported. `stream-json` in help also
+  marks `stream_json_output`.
+- `--json-schema`: marks structured output support.
+- `--effort`: marks `reasoning_effort` (`low`, `medium`, `high`).
 - `--sandbox`: marks `sandbox_mode` supported. This is safety enhancing and should
   be preferred for untrusted or worker-tier work if such work is routed to `agy`.
 - `--dangerously-skip-permissions`: marks `unsafe_skip_permissions` supported but
   red risk and not allowed by default.
+- `models` subcommand: marks authenticated catalog discovery via
+  `agy --output-format json models`. The global `--output-format` flag must come
+  before the subcommand.
+
+## Personal AI Chat boundary
+
+Ordinary Chat does not use the generic repository-cwd Antigravity adapter.
+When local help proves JSON print support, Chat invokes `agy` in an isolated
+scratch directory under `.opencobalt/scratch/antigravity/`, with `--sandbox`
+when discovered, `--output-format json`, and never `--dangerously-skip-permissions`.
+Headless permission prompts are not auto-approved.
+
+Authenticated models are discovered from the JSON catalog. Identifier suffixes
+such as `-high` or names such as `opus` are routing heuristics, not live
+quality or price calibration. Local-only Chat excludes Antigravity before any
+`agy` invocation, including model discovery.
+
+Research retrieval is owned by OpenCobalt: candidate URLs are fetched with a
+bounded HTTPS GET through `ExecutionEngine`. Cited claims are linked to
+retrieved evidence IDs; linkage is not a factual-truth proof.
 
 ## Unknown capabilities
 
