@@ -99,7 +99,14 @@ def _api_context() -> APIContext:
             events_path=state_root / "events" / "execution.jsonl",
         )
         providers = ProviderRegistry(engine)
-        service = ChatService(store=store, providers=providers, enable_mock=True)
+        missions = MissionStore(db_path)
+        service = ChatService(
+            store=store,
+            providers=providers,
+            enable_mock=True,
+            missions=missions,
+            engine=engine,
+        )
         context = APIContext(
             db_path=db_path,
             store=store,
@@ -108,7 +115,7 @@ def _api_context() -> APIContext:
             providers=providers,
             service=service,
             ledger=ledger,
-            missions=MissionStore(db_path),
+            missions=missions,
             skill_import=SkillImportService(
                 store=store,
                 ledger=ledger,
@@ -644,6 +651,7 @@ class MissionListItem(MissionRecordView):
     route_id: str | None = None
     conversation_id: str | None = None
     steps: list[MissionStepView] = Field(default_factory=list)
+    research: dict[str, Any] | None = None
 
 
 class MissionPromotionResponse(BaseModel):
@@ -807,6 +815,10 @@ def _validate_chat_request(context: APIContext, request: ChatRequest) -> ChatReq
     if (
         request.cognitive_policy is not None
         and request.cognitive_policy not in persona.allowed_cognitive_policies
+        and not (
+            request.cognitive_policy == "research"
+            and "research_synthesis" in persona.allowed_cognitive_policies
+        )
     ):
         raise _unprocessable(
             f"Cognitive policy {request.cognitive_policy!r} is not allowed by persona "
@@ -1647,15 +1659,31 @@ def list_missions(limit: int = Query(default=100, ge=1, le=500)) -> list[Mission
             if event["event_type"] == "mission.chat_route_promoted":
                 route_id = event["payload"].get("route_id")
                 conversation_id = event["payload"].get("conversation_id")
+        research = None
+        if mission.mission_type == "research":
+            research = context.store.get_research_mission(mission.mission_id)
+            if research is not None:
+                research = context.store.research_bundle(research["research_id"])
+                route_id = research.get("route_id") or route_id
+                conversation_id = research.get("conversation_id") or conversation_id
         result.append(
             MissionListItem(
                 **asdict(mission),
                 route_id=route_id,
                 conversation_id=conversation_id,
                 steps=_mission_steps(context, mission.mission_id),
+                research=research,
             )
         )
     return result
+
+
+@router.get("/research/{research_id}")
+def get_research(research_id: str) -> dict[str, Any]:
+    bundle = _api_context().store.research_bundle(research_id)
+    if bundle is None:
+        raise _not_found("research mission", research_id)
+    return bundle
 
 
 def _redacted_receipt(receipt: WorkReceipt) -> RedactedReceipt:

@@ -58,7 +58,7 @@ def _downgrade_to_true_v1_schema(conn: sqlite3.Connection) -> None:
         )
         conn.execute(f"DROP TABLE {table}")
         conn.execute(f"ALTER TABLE {legacy_table} RENAME TO {table}")
-    conn.execute("DELETE FROM personal_ai_schema_versions WHERE version = 2")
+    conn.execute("DELETE FROM personal_ai_schema_versions WHERE version >= 2")
 
 
 def test_store_adds_versioned_schema_without_disturbing_legacy_ledger(tmp_path):
@@ -118,8 +118,12 @@ def test_store_adds_versioned_schema_without_disturbing_legacy_ledger(tmp_path):
         "skill_versions",
         "provider_preferences",
         "personal_ai_settings",
+        "research_missions",
+        "research_sources",
+        "research_evidence",
+        "research_citations",
     }.issubset(tables)
-    assert versions == [(1,), (2,)]
+    assert versions == [(1,), (2,), (3,)]
     assert foreign_keys == {
         "personas": {("active_version_id", "persona_versions", "persona_version_id")},
         "persona_versions": {("persona_id", "personas", "persona_id")},
@@ -319,7 +323,7 @@ def test_v2_migration_rebuilds_pre_fix_tables_without_losing_records(tmp_path):
     with sqlite3.connect(db_path) as conn:
         assert conn.execute(
             "SELECT version FROM personal_ai_schema_versions ORDER BY version"
-        ).fetchall() == [(1,), (2,)]
+        ).fetchall() == [(1,), (2,), (3,)]
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert {
             (row[3], row[2], row[4])
@@ -460,3 +464,81 @@ def test_v2_migration_never_erases_or_recovers_invalid_legacy_provenance(
         assert conn.execute(
             f"SELECT {column} FROM {table} WHERE {key_column} = ?", (record_id,)
         ).fetchone()[0] == "missing-provenance-target"
+
+
+def test_research_records_survive_store_restart(tmp_path):
+    db_path = tmp_path / "ledger.db"
+    first = PersonalAIStore(db_path)
+    first.save_research_mission(
+        {
+            "research_id": "res-1",
+            "mission_id": "mis-1",
+            "conversation_id": None,
+            "route_id": None,
+            "question": "What claims can be made without overstating causality?",
+            "status": "complete",
+            "synthesis": "Association is not causation.",
+            "limitations": ["citation linkage is not factual proof"],
+            "model_roles": {"synthesizer": {"provider_id": "mock", "model_id": "mock-v1"}},
+            "created_at": "2026-08-12T00:00:00+00:00",
+            "updated_at": "2026-08-12T00:00:00+00:00",
+            "metadata": {},
+        }
+    )
+    first.save_research_source(
+        {
+            "source_id": "src-1",
+            "research_id": "res-1",
+            "url": "https://www.cms.gov/",
+            "title": "CMS",
+            "source_type": "government_policy",
+            "retrieval_status": "retrieved",
+            "excerpt": "Medicare coverage material",
+            "quality_assessment": "authoritative government/policy host; not causal proof",
+            "created_at": "2026-08-12T00:00:00+00:00",
+        }
+    )
+    first.save_research_evidence(
+        {
+            "evidence_id": "ev-1",
+            "research_id": "res-1",
+            "source_id": "src-1",
+            "claim": "CMS publishes Medicare policy material.",
+            "causal_class": "association",
+            "relation": "neutral",
+            "verification_status": "linked",
+            "created_at": "2026-08-12T00:00:00+00:00",
+        }
+    )
+    first.save_research_citation(
+        {
+            "citation_id": "cit-1",
+            "research_id": "res-1",
+            "evidence_id": "ev-1",
+            "source_id": "src-1",
+            "claim_span": "policy material",
+            "verification_status": "verified_link",
+            "verification_note": "citation points at retrieved source evidence from this mission",
+            "created_at": "2026-08-12T00:00:00+00:00",
+        }
+    )
+    first.save_research_mission(
+        {
+            "research_id": "res-1",
+            "mission_id": "mis-1",
+            "question": "What claims can be made without overstating causality?",
+            "status": "complete",
+            "synthesis": "Updated synthesis still linked to evidence.",
+            "limitations": ["citation linkage is not factual proof"],
+            "model_roles": {"synthesizer": {"provider_id": "mock", "model_id": "mock-v1"}},
+            "created_at": "2026-08-12T00:00:00+00:00",
+            "updated_at": "2026-08-12T00:01:00+00:00",
+            "metadata": {},
+        }
+    )
+
+    bundle = PersonalAIStore(db_path).research_bundle("res-1")
+    assert bundle["synthesis"] == "Updated synthesis still linked to evidence."
+    assert bundle["sources"][0]["url"] == "https://www.cms.gov/"
+    assert bundle["evidence"][0]["evidence_id"] == "ev-1"
+    assert bundle["citations"][0]["verification_status"] == "verified_link"

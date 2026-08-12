@@ -462,6 +462,101 @@ _V2_REQUIRED_FOREIGN_KEYS = {
     "skill_records": {("active_version_id", "skill_versions", "skill_version_id")},
 }
 
+_SCHEMA_V3 = """
+CREATE TABLE IF NOT EXISTS research_missions (
+    research_id      TEXT PRIMARY KEY,
+    mission_id       TEXT NOT NULL UNIQUE,
+    conversation_id  TEXT,
+    route_id         TEXT,
+    question         TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    synthesis        TEXT NOT NULL DEFAULT '',
+    limitations_json TEXT NOT NULL DEFAULT '[]',
+    model_roles_json TEXT NOT NULL DEFAULT '{}',
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    metadata_json    TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS research_queries (
+    query_id     TEXT PRIMARY KEY,
+    research_id  TEXT NOT NULL,
+    query_text   TEXT NOT NULL,
+    purpose      TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    FOREIGN KEY (research_id) REFERENCES research_missions(research_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS research_sources (
+    source_id            TEXT PRIMARY KEY,
+    research_id          TEXT NOT NULL,
+    url                  TEXT NOT NULL,
+    title                TEXT NOT NULL DEFAULT '',
+    source_type          TEXT NOT NULL DEFAULT 'unknown',
+    publication_date     TEXT,
+    authors_json         TEXT NOT NULL DEFAULT '[]',
+    retrieved_at         TEXT,
+    retrieval_status     TEXT NOT NULL DEFAULT 'unverified',
+    content_hash         TEXT,
+    excerpt              TEXT NOT NULL DEFAULT '',
+    quality_assessment   TEXT NOT NULL DEFAULT '',
+    created_at           TEXT NOT NULL,
+    FOREIGN KEY (research_id) REFERENCES research_missions(research_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_sources_research
+ON research_sources (research_id, created_at);
+
+CREATE TABLE IF NOT EXISTS research_evidence (
+    evidence_id          TEXT PRIMARY KEY,
+    research_id          TEXT NOT NULL,
+    source_id            TEXT,
+    claim                TEXT NOT NULL,
+    passage              TEXT NOT NULL DEFAULT '',
+    summary              TEXT NOT NULL DEFAULT '',
+    evidence_strength    TEXT NOT NULL DEFAULT 'unknown',
+    causal_class         TEXT NOT NULL DEFAULT 'unspecified',
+    relation             TEXT NOT NULL DEFAULT 'neutral',
+    study_design         TEXT NOT NULL DEFAULT '',
+    population           TEXT NOT NULL DEFAULT '',
+    sample_size          TEXT NOT NULL DEFAULT '',
+    endpoint             TEXT NOT NULL DEFAULT '',
+    effect_direction     TEXT NOT NULL DEFAULT '',
+    effect_magnitude     TEXT NOT NULL DEFAULT '',
+    limitations          TEXT NOT NULL DEFAULT '',
+    extraction_model     TEXT,
+    reviewer_model       TEXT,
+    verification_status  TEXT NOT NULL DEFAULT 'unverified',
+    created_at           TEXT NOT NULL,
+    FOREIGN KEY (research_id) REFERENCES research_missions(research_id) ON DELETE CASCADE,
+    FOREIGN KEY (source_id) REFERENCES research_sources(source_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_evidence_research
+ON research_evidence (research_id, created_at);
+
+CREATE TABLE IF NOT EXISTS research_citations (
+    citation_id          TEXT PRIMARY KEY,
+    research_id          TEXT NOT NULL,
+    evidence_id          TEXT,
+    source_id            TEXT,
+    claim_span           TEXT NOT NULL DEFAULT '',
+    verification_status  TEXT NOT NULL DEFAULT 'unverified',
+    verification_note    TEXT NOT NULL DEFAULT '',
+    created_at           TEXT NOT NULL,
+    FOREIGN KEY (research_id) REFERENCES research_missions(research_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS research_disagreements (
+    disagreement_id TEXT PRIMARY KEY,
+    research_id     TEXT NOT NULL,
+    topic           TEXT NOT NULL,
+    positions_json  TEXT NOT NULL DEFAULT '[]',
+    created_at      TEXT NOT NULL,
+    FOREIGN KEY (research_id) REFERENCES research_missions(research_id) ON DELETE CASCADE
+);
+"""
+
 
 def _dump(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -491,6 +586,7 @@ class PersonalAIStore:
             )
             conn.commit()
             self._apply_v2(conn)
+            self._apply_v3(conn)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=5)
@@ -529,6 +625,20 @@ class PersonalAIStore:
                 "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
                 (2,),
             )
+
+    def _apply_v3(self, conn: sqlite3.Connection) -> None:
+        versions = {
+            row[0]
+            for row in conn.execute("SELECT version FROM personal_ai_schema_versions")
+        }
+        if 2 not in versions:
+            return
+        conn.executescript(_SCHEMA_V3)
+        conn.execute(
+            "INSERT OR IGNORE INTO personal_ai_schema_versions (version, applied_at) "
+            "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            (3,),
+        )
 
     @staticmethod
     def _foreign_keys(
@@ -1510,3 +1620,217 @@ class PersonalAIStore:
             receipt_id=row["receipt_id"],
             created_at=row["created_at"],
         )
+
+    def save_research_mission(self, record: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO research_missions ("
+                "research_id, mission_id, conversation_id, route_id, question, status, "
+                "synthesis, limitations_json, model_roles_json, created_at, updated_at, "
+                "metadata_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(research_id) DO UPDATE SET "
+                "mission_id=excluded.mission_id, conversation_id=excluded.conversation_id, "
+                "route_id=excluded.route_id, question=excluded.question, status=excluded.status, "
+                "synthesis=excluded.synthesis, limitations_json=excluded.limitations_json, "
+                "model_roles_json=excluded.model_roles_json, updated_at=excluded.updated_at, "
+                "metadata_json=excluded.metadata_json",
+                (
+                    record["research_id"],
+                    record["mission_id"],
+                    record.get("conversation_id"),
+                    record.get("route_id"),
+                    record["question"],
+                    record["status"],
+                    record.get("synthesis", ""),
+                    _dump(record.get("limitations", [])),
+                    _dump(record.get("model_roles", {})),
+                    record["created_at"],
+                    record["updated_at"],
+                    _dump(record.get("metadata", {})),
+                ),
+            )
+
+    def get_research_mission(self, research_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM research_missions WHERE research_id = ? OR mission_id = ?",
+                (research_id, research_id),
+            ).fetchone()
+        return self._decode_research_mission(row) if row else None
+
+    def get_research_by_route(self, route_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM research_missions WHERE route_id = ?",
+                (route_id,),
+            ).fetchone()
+        return self._decode_research_mission(row) if row else None
+
+    def list_research_missions(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM research_missions ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._decode_research_mission(row) for row in rows]
+
+    def save_research_query(self, record: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO research_queries "
+                "(query_id, research_id, query_text, purpose, created_at) VALUES (?,?,?,?,?)",
+                (
+                    record["query_id"],
+                    record["research_id"],
+                    record["query_text"],
+                    record.get("purpose", ""),
+                    record["created_at"],
+                ),
+            )
+
+    def save_research_source(self, record: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO research_sources ("
+                "source_id, research_id, url, title, source_type, publication_date, "
+                "authors_json, retrieved_at, retrieval_status, content_hash, excerpt, "
+                "quality_assessment, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    record["source_id"],
+                    record["research_id"],
+                    record["url"],
+                    record.get("title", ""),
+                    record.get("source_type", "unknown"),
+                    record.get("publication_date"),
+                    _dump(record.get("authors", [])),
+                    record.get("retrieved_at"),
+                    record.get("retrieval_status", "unverified"),
+                    record.get("content_hash"),
+                    record.get("excerpt", ""),
+                    record.get("quality_assessment", ""),
+                    record["created_at"],
+                ),
+            )
+
+    def save_research_evidence(self, record: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO research_evidence ("
+                "evidence_id, research_id, source_id, claim, passage, summary, "
+                "evidence_strength, causal_class, relation, study_design, population, "
+                "sample_size, endpoint, effect_direction, effect_magnitude, limitations, "
+                "extraction_model, reviewer_model, verification_status, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    record["evidence_id"],
+                    record["research_id"],
+                    record.get("source_id"),
+                    record["claim"],
+                    record.get("passage", ""),
+                    record.get("summary", ""),
+                    record.get("evidence_strength", "unknown"),
+                    record.get("causal_class", "unspecified"),
+                    record.get("relation", "neutral"),
+                    record.get("study_design", ""),
+                    record.get("population", ""),
+                    record.get("sample_size", ""),
+                    record.get("endpoint", ""),
+                    record.get("effect_direction", ""),
+                    record.get("effect_magnitude", ""),
+                    record.get("limitations", ""),
+                    record.get("extraction_model"),
+                    record.get("reviewer_model"),
+                    record.get("verification_status", "unverified"),
+                    record["created_at"],
+                ),
+            )
+
+    def save_research_citation(self, record: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO research_citations ("
+                "citation_id, research_id, evidence_id, source_id, claim_span, "
+                "verification_status, verification_note, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    record["citation_id"],
+                    record["research_id"],
+                    record.get("evidence_id"),
+                    record.get("source_id"),
+                    record.get("claim_span", ""),
+                    record.get("verification_status", "unverified"),
+                    record.get("verification_note", ""),
+                    record["created_at"],
+                ),
+            )
+
+    def save_research_disagreement(self, record: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO research_disagreements "
+                "(disagreement_id, research_id, topic, positions_json, created_at) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    record["disagreement_id"],
+                    record["research_id"],
+                    record["topic"],
+                    _dump(record.get("positions", [])),
+                    record["created_at"],
+                ),
+            )
+
+    def research_bundle(self, research_id: str) -> dict[str, Any] | None:
+        mission = self.get_research_mission(research_id)
+        if mission is None:
+            return None
+        with self._connect() as conn:
+            queries = conn.execute(
+                "SELECT * FROM research_queries WHERE research_id = ? ORDER BY created_at",
+                (mission["research_id"],),
+            ).fetchall()
+            sources = conn.execute(
+                "SELECT * FROM research_sources WHERE research_id = ? ORDER BY created_at",
+                (mission["research_id"],),
+            ).fetchall()
+            evidence = conn.execute(
+                "SELECT * FROM research_evidence WHERE research_id = ? ORDER BY created_at",
+                (mission["research_id"],),
+            ).fetchall()
+            citations = conn.execute(
+                "SELECT * FROM research_citations WHERE research_id = ? ORDER BY created_at",
+                (mission["research_id"],),
+            ).fetchall()
+            disagreements = conn.execute(
+                "SELECT * FROM research_disagreements WHERE research_id = ? ORDER BY created_at",
+                (mission["research_id"],),
+            ).fetchall()
+        return {
+            **mission,
+            "queries": [dict(row) for row in queries],
+            "sources": [
+                {**dict(row), "authors": _load(row["authors_json"], [])} for row in sources
+            ],
+            "evidence": [dict(row) for row in evidence],
+            "citations": [dict(row) for row in citations],
+            "disagreements": [
+                {**dict(row), "positions": _load(row["positions_json"], [])}
+                for row in disagreements
+            ],
+        }
+
+    @staticmethod
+    def _decode_research_mission(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "research_id": row["research_id"],
+            "mission_id": row["mission_id"],
+            "conversation_id": row["conversation_id"],
+            "route_id": row["route_id"],
+            "question": row["question"],
+            "status": row["status"],
+            "synthesis": row["synthesis"],
+            "limitations": _load(row["limitations_json"], []),
+            "model_roles": _load(row["model_roles_json"], {}),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "metadata": _load(row["metadata_json"], {}),
+        }

@@ -154,11 +154,15 @@ class ChatService:
         providers: ProviderRegistry,
         router: PersonalAIRouter | None = None,
         enable_mock: bool = False,
+        missions: Any | None = None,
+        engine: Any | None = None,
     ) -> None:
         self.store = store
         self.providers = providers
         self.router = router or PersonalAIRouter()
         self.enable_mock = enable_mock
+        self.missions = missions
+        self.engine = engine
         self._cancellations: dict[str, CancellationToken] = {}
         self._cancellation_lock = threading.Lock()
         ensure_builtin_personas(self.store)
@@ -287,6 +291,7 @@ class ChatService:
             cognitive_policy=cognitive_policy,
             conversation=conversation,
             user_message=user_message,
+            snapshots=snapshots,
         )
 
     def cancel(self, execution_id: str) -> bool:
@@ -486,6 +491,7 @@ class ChatService:
         cognitive_policy: str,
         conversation: Conversation,
         user_message: ChatMessage,
+        snapshots: Sequence[Any] | None = None,
     ) -> Iterator[ChatLifecycleEvent]:
         stream_sequence = 0
 
@@ -520,6 +526,21 @@ class ChatService:
         ordered = ordered[selected_index:] + ordered[:selected_index]
         if not ordered:
             raise RuntimeError("selected route has no eligible candidate")
+
+        if cognitive_policy in {"research", "research_synthesis"}:
+            yield from self._execute_research_route(
+                request=request,
+                routing_request=routing_request,
+                route=route,
+                candidate=ordered[0],
+                persona_version=persona_version,
+                cognitive_policy=cognitive_policy,
+                conversation=conversation,
+                user_message=user_message,
+                snapshots=snapshots or [],
+                lifecycle=lifecycle,
+            )
+            return
 
         current: ChatExecution | None = None
         final_content = ""
@@ -622,6 +643,8 @@ class ChatService:
                 metadata={
                     "route_id": route.route_id,
                     "persona_version_id": persona_version.persona_version_id,
+                    "reasoning_effort": request.reasoning_effort,
+                    "cognitive_policy": cognitive_policy,
                 },
             )
             attempt_content = ""
@@ -761,7 +784,14 @@ class ChatService:
                 yield cancelled
                 return
 
-            next_candidate = ordered[attempt_index + 1] if attempt_index + 1 < len(ordered) else None
+            next_candidate = next(
+                (
+                    candidate
+                    for candidate in ordered[attempt_index + 1 :]
+                    if candidate.provider_id != current.provider_id
+                ),
+                None,
+            )
             can_fallback = (
                 request.allow_fallback
                 and next_candidate is not None
@@ -825,7 +855,7 @@ class ChatService:
                 }
             )
             self.store.save_route(route)
-            attempt_index += 1
+            attempt_index = ordered.index(next_candidate)
 
         if current is None or not final_content.strip():
             raise RuntimeError("route execution ended without a terminal result")
@@ -912,6 +942,208 @@ class ChatService:
             },
         )
 
+    def _execute_research_route(
+        self,
+        *,
+        request: ChatRequest,
+        routing_request: RoutingRequest,
+        route: RouteRecord,
+        candidate: RouteCandidate,
+        persona_version: PersonaVersion,
+        cognitive_policy: str,
+        conversation: Conversation,
+        user_message: ChatMessage,
+        snapshots: Sequence[Any],
+        lifecycle,
+    ) -> Iterator[ChatLifecycleEvent]:
+        from opencobalt.core.mission_engine import MissionStore
+        from opencobalt.personal_ai.research import ResearchOrchestrator
+
+        current = ChatExecution(
+            request_id=routing_request.request_id,
+            route_id=route.route_id,
+            conversation_id=conversation.conversation_id,
+            provider_id=candidate.provider_id,
+            model_id=candidate.model_id,
+            status="running",
+            started_at=_now(),
+        )
+        self.store.save_execution(current)
+        cancellation = CancellationToken()
+        with self._cancellation_lock:
+            self._cancellations[current.execution_id] = cancellation
+        accepted = lifecycle(
+            "request_accepted",
+            execution=current,
+            payload={"message_id": user_message.message_id},
+        )
+        self._persist_lifecycle_event(current, accepted)
+        yield accepted
+        selected = lifecycle(
+            "route_selected",
+            execution=current,
+            payload={"route": route.model_dump(mode="json"), "research": True},
+        )
+        self._persist_lifecycle_event(current, selected)
+        yield selected
+
+        engine = self.engine or getattr(self.providers.get(candidate.provider_id), "engine", None)
+        missions = self.missions or MissionStore(self.store.db_path)
+        if engine is None:
+            error = ProviderError(
+                category="configuration",
+                message="Research execution requires ExecutionEngine",
+            )
+            yield lifecycle("error", execution=current, payload={"error": error.model_dump(mode="json")})
+            return
+
+        orchestrator = ResearchOrchestrator(
+            store=self.store,
+            providers=self.providers,
+            missions=missions,
+            engine=engine,
+        )
+        rendered_policy = render_persona_policy(persona_version, cognitive_policy)
+        final_payload: dict[str, Any] = {}
+        try:
+            for step in orchestrator.run(
+                question=request.message,
+                conversation_id=conversation.conversation_id,
+                route_id=route.route_id,
+                snapshots=snapshots,
+                local_only=bool(route.metadata.get("local_only", False)),
+                timeout_seconds=max(request.timeout_seconds, 180),
+                cancellation=cancellation,
+                system_policy=rendered_policy,
+            ):
+                event = lifecycle(
+                    f"research_{step.get('step', 'update')}",
+                    execution=current,
+                    payload=step,
+                )
+                self._persist_lifecycle_event(current, event)
+                yield event
+                final_payload = step
+        except Exception as exc:
+            error = ProviderError(
+                category="provider_error",
+                message=_safe_diagnostic(str(exc)) or "research workflow failed",
+            )
+            current = self._finish_execution(
+                current, status="failed", receipt_id=None, usage=ProviderUsage(), error=error
+            )
+            route = self._finish_route(
+                route,
+                status="failed",
+                receipt_id=None,
+                usage=ProviderUsage(),
+                actual_provider_id=current.provider_id,
+                actual_model_id=current.model_id,
+            )
+            self._persist_terminal_assistant_message(
+                route=route,
+                execution=current,
+                user_message=user_message,
+                status="failed",
+                content=f"Research workflow failed: {error.message}",
+                error=error,
+            )
+            yield lifecycle("error", execution=current, payload={"error": error.model_dump(mode="json")})
+            return
+
+        synthesis = str(final_payload.get("synthesis") or "").strip()
+        status = "complete" if synthesis and final_payload.get("step") == "complete" else "failed"
+        if final_payload.get("step") == "blocked":
+            status = "failed"
+        error = None
+        if status != "complete":
+            error = ProviderError(
+                category="policy_denied" if final_payload.get("step") == "blocked" else "provider_error",
+                message=str(final_payload.get("error") or "research workflow did not complete"),
+            )
+            synthesis = synthesis or (
+                "OpenCobalt did not complete this Research mission. "
+                + (error.message)
+            )
+        receipt_id = final_payload.get("receipt_id")
+        if isinstance(receipt_id, str) and receipt_id:
+            pass
+        else:
+            receipt_id = None
+        current = self._finish_execution(
+            current,
+            status="complete" if status == "complete" else "failed",
+            receipt_id=receipt_id,
+            usage=ProviderUsage(),
+            error=error,
+        )
+        route = self._finish_route(
+            route,
+            status="complete" if status == "complete" else (
+                "policy_denied" if error and error.category == "policy_denied" else "failed"
+            ),
+            receipt_id=receipt_id,
+            usage=ProviderUsage(),
+            actual_provider_id=current.provider_id,
+            actual_model_id=current.model_id,
+        )
+        route = route.model_copy(
+            update={
+                "metadata": {
+                    **route.metadata,
+                    "research_id": final_payload.get("research_id"),
+                    "mission_id": final_payload.get("mission_id"),
+                    "research_source_count": final_payload.get("source_count"),
+                    "research_evidence_count": final_payload.get("evidence_count"),
+                }
+            }
+        )
+        self.store.save_route(route)
+        assistant_metadata = {
+            "requested_persona_id": route.requested_persona_id,
+            "actual_persona_id": route.actual_persona_id,
+            "provider_id": current.provider_id,
+            "model_id": current.model_id,
+            "persona_provider_mismatch": route.persona_provider_mismatch,
+            "research_id": final_payload.get("research_id"),
+            "mission_id": final_payload.get("mission_id"),
+            "receipt_id": receipt_id,
+        }
+        if error is not None:
+            assistant_metadata["error_category"] = error.category
+        assistant = self.store.add_message(
+            route.conversation_id,
+            role="assistant",
+            content=synthesis if status == "complete" else _safe_diagnostic(synthesis),
+            status="complete" if status == "complete" else "failed",
+            persona_version_id=route.actual_persona_version_id,
+            route_id=route.route_id,
+            parent_message_id=user_message.message_id,
+            metadata=assistant_metadata,
+        )
+        current = self._finish_execution(
+            current,
+            status=current.status,
+            receipt_id=receipt_id,
+            usage=ProviderUsage(),
+            error=error,
+            assistant_message_id=assistant.message_id,
+        )
+        terminal = lifecycle(
+            "completed" if status == "complete" else "error",
+            execution=current,
+            payload={
+                "research_id": final_payload.get("research_id"),
+                "mission_id": final_payload.get("mission_id"),
+                "receipt_id": receipt_id,
+                **({"error": error.model_dump(mode="json")} if error else {}),
+            },
+        )
+        self._persist_lifecycle_event(current, terminal)
+        yield terminal
+        with self._cancellation_lock:
+            self._cancellations.pop(current.execution_id, None)
+
     def _provider_snapshots(
         self,
         request: RoutingRequest,
@@ -972,6 +1204,7 @@ class ChatService:
             discovery_receipt_id: str | None = None
             model_locations: dict[str, str] = {}
             model_evidence: dict[str, tuple[str, ...]] = {}
+            model_records: dict[str, Any] = {}
             if available and status.capabilities.model_discovery:
                 catalog = self.providers.get(status.provider_id).discover_models(
                     local_only=bool(effective_local_only)
@@ -986,6 +1219,7 @@ class ChatService:
                 else:
                     model_catalog_checked = True
                 discovered = [model.model_id for model in catalog.models]
+                model_records = {model.model_id: model for model in catalog.models}
                 model_locations = {
                     model.model_id: model.execution_location for model in catalog.models
                 }
@@ -995,7 +1229,7 @@ class ChatService:
                 }
                 if discovered:
                     models = discovered
-                elif status.provider_id == "ollama" and catalog.error is None:
+                elif status.provider_id in {"ollama", "antigravity"} and catalog.error is None:
                     available = False
                     evidence = "; ".join(
                         _safe_diagnostic(item) for item in catalog.limitations[:3]
@@ -1003,6 +1237,8 @@ class ChatService:
                     unavailable_reason = (
                         "Ollama model catalog: no models passed local-provenance "
                         "admission"
+                        if status.provider_id == "ollama"
+                        else f"{status.display_name} model catalog returned no usable models"
                     )
                     if evidence:
                         unavailable_reason = f"{unavailable_reason}: {evidence}"
@@ -1020,6 +1256,7 @@ class ChatService:
                 preference_score = max(-10, min(10, round((preference.priority - 50) / 5)))
             priority = max(preference_score, settings_order.get(status.provider_id, 0))
             for model_id in models:
+                record = model_records.get(model_id) if model_id else None
                 snapshots.append(
                     ProviderSnapshot(
                         provider_id=status.provider_id,
@@ -1029,11 +1266,19 @@ class ChatService:
                         available=available,
                         local=status.capabilities.local_only_eligible,
                         requires_network=status.capabilities.requires_network,
-                        cost_category=profile.cost_category,
-                        quality_tier=profile.quality_tier,
+                        cost_category=(
+                            getattr(record, "cost_category", None) or profile.cost_category
+                        ),
+                        quality_tier=(
+                            getattr(record, "quality_tier", None) or profile.quality_tier
+                        ),
                         capabilities=frozenset(profile.task_capabilities),
-                        tool_names=frozenset(profile.tool_names),
-                        latency_category=profile.latency_category,
+                        tool_names=frozenset(
+                            list(profile.tool_names) + list(getattr(record, "tool_names", []) or [])
+                        ),
+                        latency_category=(
+                            getattr(record, "latency_category", None) or profile.latency_category
+                        ),
                         historical_success_signal=historical_signals.get(
                             status.provider_id, 0
                         ),
@@ -1042,8 +1287,11 @@ class ChatService:
                         authentication_state=status.authentication,
                         unavailable_reason=unavailable_reason,
                         discovery_receipt_id=discovery_receipt_id,
-                        execution_location=model_locations.get(model_id, "unknown"),
-                        model_locality_evidence=model_evidence.get(model_id, ()),
+                        execution_location=model_locations.get(model_id or "", "unknown"),
+                        model_locality_evidence=model_evidence.get(model_id or "", ()),
+                        display_name=getattr(record, "display_name", None),
+                        model_family=getattr(record, "family", None),
+                        profile_evidence=getattr(record, "profile_evidence", None),
                     )
                 )
 
@@ -1171,8 +1419,13 @@ class ChatService:
 
     @staticmethod
     def _cognitive_policy(version: PersonaVersion, requested: str | None) -> str:
+        allowed = list(version.allowed_cognitive_policies)
         if requested is not None:
-            if requested not in version.allowed_cognitive_policies:
+            if requested == "research" and (
+                "research" in allowed or "research_synthesis" in allowed
+            ):
+                return "research"
+            if requested not in allowed:
                 raise ValueError(
                     f"cognitive policy {requested!r} is not allowed by persona {version.persona_id}"
                 )
