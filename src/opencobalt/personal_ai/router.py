@@ -7,6 +7,7 @@ discovery and execution remain separate concerns: routing produces a proposed
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal, Sequence
 
@@ -32,6 +33,31 @@ TaskClass = Literal[
 Complexity = Literal["simple", "moderate", "complex"]
 PrivacyClassification = Literal["standard", "private", "sensitive"]
 RiskClassification = Literal["green", "yellow", "red"]
+DomainClass = Literal[
+    "general",
+    "scientific",
+    "medical",
+    "philosophical",
+    "technical",
+    "legal",
+    "financial",
+    "personal",
+]
+SensitivityLevel = Literal["low", "moderate", "high"]
+QualityNeed = Literal["low", "standard", "high"]
+FreshnessNeed = Literal["none", "helpful", "required"]
+
+
+@dataclass(frozen=True)
+class TaskRequirements:
+    """Inspectable task demands used to score model quality against the request."""
+
+    domain: DomainClass = "general"
+    factual_sensitivity: SensitivityLevel = "low"
+    reasoning_quality: QualityNeed = "standard"
+    consequence: SensitivityLevel = "low"
+    freshness: FreshnessNeed = "none"
+    citations_required: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,6 +138,7 @@ class RoutingPlan:
     task_complexity: Complexity
     privacy_classification: PrivacyClassification
     risk_classification: RiskClassification
+    requirements: TaskRequirements = field(default_factory=TaskRequirements)
 
 
 class NoEligibleRouteError(ValueError):
@@ -136,6 +163,9 @@ class PersonalAIRouter:
         complexity = classify_complexity(
             request.prompt, task_class, request.cognitive_policy, request.reasoning_effort
         )
+        requirements = classify_requirements(
+            request.prompt, task_class, complexity, request.cognitive_policy
+        )
         privacy = classify_privacy(
             request.prompt,
             task_class,
@@ -153,6 +183,8 @@ class PersonalAIRouter:
                 request=request,
                 snapshot=snapshot,
                 task_class=task_class,
+                complexity=complexity,
+                requirements=requirements,
                 privacy=privacy,
                 risk=risk,
                 local_only=local_only,
@@ -190,6 +222,7 @@ class PersonalAIRouter:
                 snapshot,
                 task_class=task_class,
                 complexity=complexity,
+                requirements=requirements,
                 local_only=local_only,
                 persona_version=persona_version,
             )
@@ -236,6 +269,12 @@ class PersonalAIRouter:
                 "privacy_policy": request.settings.privacy_policy,
                 "cognitive_policy": request.cognitive_policy,
                 "reasoning_effort": request.reasoning_effort,
+                "domain": requirements.domain,
+                "factual_sensitivity": requirements.factual_sensitivity,
+                "reasoning_quality": requirements.reasoning_quality,
+                "answer_consequence": requirements.consequence,
+                "freshness_requirement": requirements.freshness,
+                "citations_required": requirements.citations_required,
                 "provider_discovery_receipt_id": snapshot.discovery_receipt_id,
                 "model_execution_location": snapshot.execution_location,
                 "model_locality_evidence": list(snapshot.model_locality_evidence),
@@ -248,6 +287,7 @@ class PersonalAIRouter:
             task_complexity=complexity,
             privacy_classification=privacy,
             risk_classification=risk,
+            requirements=requirements,
         )
 
     def _candidate(
@@ -257,25 +297,38 @@ class PersonalAIRouter:
         request: RoutingRequest,
         snapshot: ProviderSnapshot,
         task_class: TaskClass,
+        complexity: Complexity,
+        requirements: TaskRequirements,
         privacy: PrivacyClassification,
         risk: RiskClassification,
         local_only: bool,
         persona_version: PersonaVersion | None,
     ) -> RouteCandidate:
+        demanding = _quality_sensitive(requirements)
+        reasoning_points = _reasoning_quality_fit(snapshot, requirements)
+        factual_points = _factual_sensitivity_fit(snapshot, requirements)
+        freshness_points = _freshness_fit(snapshot, requirements)
+        citation_points = _citation_requirement_fit(snapshot, requirements)
         components = {
             "availability": 20 if snapshot.available else -100,
             "capability_fit": _capability_fit(snapshot, task_class),
-            "cost_fit": _cost_fit(snapshot.cost_category, request.settings.cost_ceiling_category),
+            "cost_fit": _cost_fit(
+                snapshot.cost_category, request.settings.cost_ceiling_category, demanding=demanding
+            ),
             "persona_affinity": _persona_affinity(snapshot, persona_version),
             "privacy_fit": _privacy_fit(snapshot, privacy),
             "risk_fit": _risk_fit(snapshot, task_class, risk),
             "tool_fit": _tool_fit(snapshot, request.requested_tools),
-            "latency_fit": _latency_fit(snapshot, request),
+            "latency_fit": _latency_fit(snapshot, complexity, demanding=demanding),
             "historical_success": snapshot.historical_success_signal,
             "quota_pressure": -snapshot.quota_pressure,
             "provider_priority": snapshot.provider_priority,
             "readiness_evidence": _readiness_evidence(snapshot),
-            "model_economy": _model_economy(snapshot, task_class, complexity_is_complex(request, task_class)),
+            "model_economy": _model_economy(snapshot, task_class, complexity, requirements),
+            "reasoning_quality_fit": reasoning_points,
+            "factual_sensitivity_fit": factual_points,
+            "freshness_fit": freshness_points,
+            "citation_requirement_fit": citation_points,
         }
         rejection = _rejection_reason(
             request=request,
@@ -287,24 +340,34 @@ class PersonalAIRouter:
         reasons = [
             f"execution boundary: {'discovered' if snapshot.available else 'unavailable'}",
             (
-                f"readiness evidence: {_readiness_evidence(snapshot)} "
+                f"readiness evidence: {_readiness_evidence(snapshot):+d} "
                 f"(health {snapshot.readiness_state}; authentication "
                 f"{label_authentication(snapshot.authentication_state)})"
             ),
-            f"capability fit: {_capability_fit(snapshot, task_class)}",
-            f"privacy fit: {_privacy_fit(snapshot, privacy)}",
-            f"risk fit: {_risk_fit(snapshot, task_class, risk)}",
-            f"cost fit: {_cost_fit(snapshot.cost_category, request.settings.cost_ceiling_category)}",
-            f"persona affinity: {_persona_affinity(snapshot, persona_version)}",
-            f"tool fit: {_tool_fit(snapshot, request.requested_tools)}",
-            f"latency fit: {_latency_fit(snapshot, request)}",
-            f"historical success: {snapshot.historical_success_signal}",
-            f"quota pressure: {-snapshot.quota_pressure}",
-            f"provider priority: {snapshot.provider_priority}",
-            (
-                f"model economy: {_model_economy(snapshot, task_class, complexity_is_complex(request, task_class))}"
-            ),
         ]
+        quality_reason = _reasoning_quality_reason(requirements, reasoning_points)
+        if quality_reason:
+            reasons.append(quality_reason)
+        factual_reason = _factual_sensitivity_reason(snapshot, requirements, factual_points)
+        if factual_reason:
+            reasons.append(factual_reason)
+        for label, value in (
+            ("capability fit", components["capability_fit"]),
+            ("privacy fit", components["privacy_fit"]),
+            ("risk fit", components["risk_fit"]),
+            ("cost fit", components["cost_fit"]),
+            ("persona affinity", components["persona_affinity"]),
+            ("tool fit", components["tool_fit"]),
+            ("latency fit", components["latency_fit"]),
+            ("historical success", components["historical_success"]),
+            ("quota pressure", components["quota_pressure"]),
+            ("provider priority", components["provider_priority"]),
+            ("model economy", components["model_economy"]),
+            ("freshness requirement", components["freshness_fit"]),
+            ("citation requirement", components["citation_requirement_fit"]),
+        ):
+            if value:
+                reasons.append(f"{label}: {value:+d}")
         if snapshot.discovery_receipt_id:
             reasons.append(f"model discovery receipt: {snapshot.discovery_receipt_id}")
         if snapshot.model_locality_evidence:
@@ -358,7 +421,7 @@ def classify_task(prompt: str, cognitive_policy: str = "fast_answer") -> TaskCla
         return "multi_step_mission"
     if _contains(text, "csv", "dataset", "spreadsheet", "data analysis"):
         return "data_analysis"
-    if _contains(text, "pdf", "file", "document", "log"):
+    if _contains(text, "pdf", "file", "document", "logfile", "log file") or _has_term(text, "log"):
         return "file_analysis"
     if _contains(text, "repository", "repo", "codebase", "pull request", "git", "diff"):
         return "repository_execution"
@@ -395,6 +458,8 @@ def classify_complexity(
     reasoning_effort: str = "medium",
 ) -> Complexity:
     text = prompt.lower()
+    if _is_lightweight_task(prompt):
+        return "simple"
     if reasoning_effort in {"high", "xhigh"}:
         return "complex"
     if task_class in {"security_review", "consequential_decision", "multi_step_mission"} or _contains(
@@ -412,6 +477,36 @@ def classify_complexity(
     if len(prompt.split()) <= 6 and task_class == "general_reasoning":
         return "simple"
     return "moderate"
+
+
+def classify_requirements(
+    prompt: str,
+    task_class: TaskClass,
+    complexity: Complexity,
+    cognitive_policy: str = "fast_answer",
+) -> TaskRequirements:
+    """Score task demands independently of any provider identity."""
+    text = prompt.lower()
+    domain = _classify_domain(text, task_class)
+    citations_required = task_class == "research" or _contains(
+        text, "cite", "citation", "sources", "literature", "compare evidence"
+    )
+    freshness = _classify_freshness(text, task_class)
+    factual = _classify_factual_sensitivity(
+        text, task_class, domain, cognitive_policy, citations_required
+    )
+    reasoning = _classify_reasoning_quality(
+        prompt, text, task_class, complexity, domain, factual, cognitive_policy
+    )
+    consequence = _classify_consequence(text, task_class, domain)
+    return TaskRequirements(
+        domain=domain,
+        factual_sensitivity=factual,
+        reasoning_quality=reasoning,
+        consequence=consequence,
+        freshness=freshness,
+        citations_required=citations_required,
+    )
 
 
 def classify_privacy(
@@ -512,8 +607,11 @@ def _capability_fit(snapshot: ProviderSnapshot, task_class: TaskClass) -> int:
     return 20 if _task_capability(task_class) in snapshot.capabilities else -40
 
 
-def _cost_fit(cost_category: str, ceiling: str) -> int:
-    base = {"free": 8, "low": 5, "standard": 2, "high": -4}[cost_category]
+def _cost_fit(cost_category: str, ceiling: str, *, demanding: bool = False) -> int:
+    if demanding:
+        base = {"free": 2, "low": 2, "standard": 2, "high": -4}[cost_category]
+    else:
+        base = {"free": 8, "low": 5, "standard": 2, "high": -4}[cost_category]
     return base if _cost_rank(cost_category) <= _cost_rank(ceiling) else base - 10
 
 
@@ -557,11 +655,11 @@ def _tool_fit(snapshot: ProviderSnapshot, requested_tools: tuple[str, ...]) -> i
     return 12 if set(requested_tools).issubset(snapshot.tool_names) else -30
 
 
-def _latency_fit(snapshot: ProviderSnapshot, request: RoutingRequest) -> int:
-    complexity = classify_complexity(
-        request.prompt, classify_task(request.prompt, request.cognitive_policy),
-        request.cognitive_policy, request.reasoning_effort
-    )
+def _latency_fit(
+    snapshot: ProviderSnapshot, complexity: Complexity, *, demanding: bool = False
+) -> int:
+    if demanding:
+        return {"low": 2, "standard": 4, "high": 3}[snapshot.latency_category]
     return {
         "simple": {"low": 8, "standard": 4, "high": 0},
         "moderate": {"low": 7, "standard": 8, "high": 3},
@@ -619,10 +717,19 @@ def approval_requirements(risk: RiskClassification) -> list[str]:
     ]
 
 
-def _model_economy(snapshot: ProviderSnapshot, task_class: TaskClass, complex_task: bool) -> int:
+def _model_economy(
+    snapshot: ProviderSnapshot,
+    task_class: TaskClass,
+    complexity: Complexity,
+    requirements: TaskRequirements,
+) -> int:
     """Prefer inexpensive models for simple work and strong models for hard work."""
-    if task_class in {"research", "security_review", "consequential_decision"} or complex_task:
-        return {"strong": 12, "standard": 4, "weak": -8}[snapshot.quality_tier]
+    if _quality_sensitive(requirements) or task_class in {
+        "research",
+        "security_review",
+        "consequential_decision",
+    } or complexity == "complex":
+        return {"strong": 4, "standard": 0, "weak": -6}[snapshot.quality_tier]
     if snapshot.cost_category == "high":
         return -10
     if snapshot.cost_category == "low" and snapshot.quality_tier != "weak":
@@ -637,6 +744,7 @@ def selection_narrative(
     *,
     task_class: TaskClass,
     complexity: Complexity,
+    requirements: TaskRequirements,
     local_only: bool,
     persona_version: PersonaVersion | None,
 ) -> str:
@@ -648,6 +756,11 @@ def selection_narrative(
         clauses.append("this request requires evidence-backed research and synthesis")
     elif task_class in {"security_review", "consequential_decision"}:
         clauses.append(f"this request is classified as {task_class.replace('_', ' ')}")
+    elif requirements.reasoning_quality == "high":
+        clauses.append(
+            f"this request needs {requirements.domain} reasoning at "
+            f"{requirements.reasoning_quality} quality"
+        )
     elif complexity == "simple":
         clauses.append("this request is a simple completion")
     else:
@@ -660,6 +773,8 @@ def selection_narrative(
         )
     if snapshot.profile_evidence:
         clauses.append(f"those tiers are {snapshot.profile_evidence.replace('_', ' ')}")
+    if requirements.factual_sensitivity == "high":
+        clauses.append("the claim is evidence-sensitive")
     if "research" in snapshot.capabilities and task_class == "research":
         clauses.append("it supports the required research capability")
     if local_only:
@@ -692,4 +807,213 @@ def _verification_strategy(task_class: TaskClass, settings: AISettings) -> str:
 
 
 def _contains(text: str, *terms: str) -> bool:
-    return any(term in text for term in terms)
+    return any(_has_term(text, term) for term in terms)
+
+
+def _has_term(text: str, term: str) -> bool:
+    needle = term.lower()
+    if " " in needle or "-" in needle:
+        return needle in text
+    return re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", text) is not None
+
+
+def _is_lightweight_task(prompt: str) -> bool:
+    text = prompt.strip().lower()
+    if not text:
+        return False
+    if re.fullmatch(r"[\d\s.+\-*/x×÷()]+", text) and re.search(r"\d", text):
+        return True
+    if len(text.split()) <= 12 and re.search(r"\d+\s*[*x×/+\-]\s*\d+", text):
+        return True
+    if _contains(text, "extract", "extraction") and len(text.split()) <= 40:
+        return True
+    if _contains(text, "summarize", "summary") and len(text.split()) <= 25:
+        return True
+    return False
+
+
+def _classify_domain(text: str, task_class: TaskClass) -> DomainClass:
+    if task_class == "personal_reflection":
+        return "personal"
+    if task_class == "coding" or _contains(
+        text, "algorithm", "compiler", "concurrency", "distributed system", "type system"
+    ):
+        return "technical"
+    if _contains(
+        text,
+        "pharmacology",
+        "pharmacologic",
+        "receptor",
+        "antagonism",
+        "agonist",
+        "synapse",
+        "neurotransmitter",
+        "pathophysiology",
+        "randomized",
+        "placebo",
+        "mechanism",
+        "hypothesis",
+        "circuit-level",
+        "neuron",
+        "enzyme",
+        "molecule",
+        "clinical trial",
+    ):
+        return "scientific"
+    if _contains(
+        text,
+        "diagnosis",
+        "patient",
+        "dosage",
+        "contraindication",
+        "side effect",
+        "clinical",
+        "therapeutic",
+    ):
+        return "medical"
+    if _contains(
+        text,
+        "epistemology",
+        "metaphysics",
+        "phenomenology",
+        "ontology",
+        "thought experiment",
+        "free will",
+        "ethics",
+        "moral",
+    ):
+        return "philosophical"
+    if task_class == "consequential_decision" and _contains(text, "legal"):
+        return "legal"
+    if task_class == "consequential_decision" and _contains(text, "financial", "investment"):
+        return "financial"
+    return "general"
+
+
+def _classify_freshness(text: str, task_class: TaskClass) -> FreshnessNeed:
+    if _contains(text, "latest", "current", "today", "breaking", "as of", "this year"):
+        return "required"
+    if task_class == "research":
+        return "helpful"
+    return "none"
+
+
+def _classify_factual_sensitivity(
+    text: str,
+    task_class: TaskClass,
+    domain: DomainClass,
+    cognitive_policy: str,
+    citations_required: bool,
+) -> SensitivityLevel:
+    if task_class in {"research", "consequential_decision", "security_review"} or citations_required:
+        return "high"
+    if domain in {"scientific", "medical", "legal", "financial"}:
+        return "high"
+    if cognitive_policy in {"research", "research_synthesis", "skeptical_review", "deep_analysis"}:
+        return "high"
+    if _contains(text, "evidence", "established", "speculative", "distinguish", "cite"):
+        return "high"
+    if task_class in {"coding", "repository_execution", "planning"}:
+        return "moderate"
+    return "low"
+
+
+def _classify_reasoning_quality(
+    prompt: str,
+    text: str,
+    task_class: TaskClass,
+    complexity: Complexity,
+    domain: DomainClass,
+    factual: SensitivityLevel,
+    cognitive_policy: str,
+) -> QualityNeed:
+    if _is_lightweight_task(prompt):
+        return "low"
+    if complexity == "simple" and domain == "general" and factual == "low":
+        return "low"
+    if (
+        complexity == "complex"
+        or factual == "high"
+        or domain in {"scientific", "medical", "philosophical"}
+        or cognitive_policy in {
+            "deep_analysis",
+            "skeptical_review",
+            "research",
+            "research_synthesis",
+        }
+        or task_class in {"research", "security_review", "consequential_decision"}
+        or _contains(text, "distinguish", "hypothesis", "speculative", "nuance", "tradeoff")
+    ):
+        return "high"
+    return "standard"
+
+
+def _classify_consequence(text: str, task_class: TaskClass, domain: DomainClass) -> SensitivityLevel:
+    if task_class in {"security_review", "consequential_decision"}:
+        return "high"
+    if domain == "medical" and _contains(text, "should i", "dose", "treat", "prescribe"):
+        return "high"
+    if domain in {"scientific", "medical", "legal", "financial"}:
+        return "moderate"
+    return "low"
+
+
+def _quality_sensitive(requirements: TaskRequirements) -> bool:
+    return (
+        requirements.reasoning_quality == "high"
+        or requirements.factual_sensitivity == "high"
+        or requirements.citations_required
+    )
+
+
+def _reasoning_quality_fit(snapshot: ProviderSnapshot, requirements: TaskRequirements) -> int:
+    if requirements.reasoning_quality == "high":
+        return {"strong": 12, "standard": 2, "weak": -18}[snapshot.quality_tier]
+    if requirements.reasoning_quality == "low":
+        return {"strong": 0, "standard": 1, "weak": 2}[snapshot.quality_tier]
+    return {"strong": 4, "standard": 4, "weak": -2}[snapshot.quality_tier]
+
+
+def _factual_sensitivity_fit(snapshot: ProviderSnapshot, requirements: TaskRequirements) -> int:
+    if requirements.factual_sensitivity == "high":
+        return {"strong": 10, "standard": 1, "weak": -15}[snapshot.quality_tier]
+    if requirements.factual_sensitivity == "moderate":
+        return {"strong": 4, "standard": 2, "weak": -4}[snapshot.quality_tier]
+    return 0
+
+
+def _freshness_fit(snapshot: ProviderSnapshot, requirements: TaskRequirements) -> int:
+    if requirements.freshness != "required":
+        return 0
+    if snapshot.local and not snapshot.requires_network:
+        return -6
+    return 4
+
+
+def _citation_requirement_fit(snapshot: ProviderSnapshot, requirements: TaskRequirements) -> int:
+    if not requirements.citations_required:
+        return 0
+    if "research" not in snapshot.capabilities:
+        return -8
+    return {"strong": 6, "standard": 2, "weak": -4}[snapshot.quality_tier]
+
+
+def _reasoning_quality_reason(requirements: TaskRequirements, points: int) -> str | None:
+    if not points:
+        return None
+    if requirements.reasoning_quality == "high":
+        domain = requirements.domain if requirements.domain != "general" else "demanding"
+        return f"{domain} reasoning quality requirement: {points:+d}"
+    return f"reasoning quality fit: {points:+d}"
+
+
+def _factual_sensitivity_reason(
+    snapshot: ProviderSnapshot, requirements: TaskRequirements, points: int
+) -> str | None:
+    if not points:
+        return None
+    if requirements.factual_sensitivity == "high" and snapshot.quality_tier == "weak":
+        return f"weak model quality penalty for evidence-sensitive synthesis: {points:+d}"
+    if requirements.factual_sensitivity == "high":
+        return f"evidence-sensitive synthesis quality: {points:+d}"
+    return f"factual sensitivity fit: {points:+d}"

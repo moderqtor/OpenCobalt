@@ -107,8 +107,29 @@ export function DetailRow({ label, value, mono = false }) {
 }
 
 function compact(value) {
+  if (value === 0) return "0";
   if (!value) return "not recorded";
   return String(value).replaceAll("_", " ");
+}
+
+function formatPoints(points) {
+  const value = Number(points);
+  if (!Number.isFinite(value)) return String(points);
+  const signed = value > 0 ? `+${value}` : String(value);
+  return `${signed} pts`;
+}
+
+function scoreComponentEntries(components) {
+  if (!components || typeof components !== "object" || Array.isArray(components)) return [];
+  return Object.entries(components).filter(([, points]) => {
+    const value = Number(points);
+    return Number.isFinite(value) && value !== 0;
+  });
+}
+
+function visibleReasons(reasons) {
+  if (!Array.isArray(reasons)) return [];
+  return reasons.map((reason) => String(reason || "").trim()).filter(Boolean);
 }
 
 function compactId(value) {
@@ -195,7 +216,7 @@ export function RouteInspector({ route, candidates = [], providers = [], persona
   }, [isOpen, onClose]);
 
   if (!route) return null;
-  const reasons = route.reasons || route.selection_reasons || [];
+  const reasons = visibleReasons(route.reasons || route.selection_reasons);
   const tools = route.selected_tools || route.tools || [];
   const skills = route.selected_skills || route.skills || [];
   const receipt = route.receipt_id || route.work_receipt_id;
@@ -251,6 +272,10 @@ export function RouteInspector({ route, candidates = [], providers = [], persona
       <DetailRow label="Integrity result" value={compact(verification)} />
       <DetailRow label="Task" value={compact(route.task_class)} />
       <DetailRow label="Complexity" value={compact(route.task_complexity)} />
+      <DetailRow label="Domain" value={compact(route.metadata?.domain)} />
+      <DetailRow label="Reasoning quality need" value={compact(route.metadata?.reasoning_quality)} />
+      <DetailRow label="Factual sensitivity" value={compact(route.metadata?.factual_sensitivity)} />
+      <DetailRow label="Freshness need" value={compact(route.metadata?.freshness_requirement)} />
       <DetailRow label="Selected provider" value={route.selected_provider || route.provider_id} />
       <DetailRow label="Actual provider" value={actualProvider || "not recorded"} />
       <DetailRow label="Selected model" value={route.selected_model || route.model_id || "not specified"} />
@@ -277,7 +302,11 @@ export function RouteInspector({ route, candidates = [], providers = [], persona
     {fallbackEvents.length > 0 && <section><h3>Fallback history</h3><div className="event-history">{fallbackEvents.map((fallback, index) => <article key={`${fallback.created_at || "fallback"}-${index}`}><b>{fallback.from_provider || "unknown"} → {fallback.to_provider || "unknown"}</b><span>{fallback.reason_category ? `${compact(fallback.reason_category)} · ` : ""}{fallback.reason || "No reason recorded"}</span><code>{fallback.failed_receipt_id || "failed receipt not recorded"}</code></article>)}</div></section>}
     {streamEvents.length > 0 && <section><h3>Durable execution events</h3><div className="event-history">{streamEvents.map((event) => <article key={event.event_id || `${event.execution_id}-${event.sequence}`}><b>{compact(event.event_type)}</b><span>Execution {compactId(event.execution_id)} · sequence {event.sequence}</span><code>{event.created_at ? new Date(event.created_at).toLocaleString() : "time not recorded"}</code></article>)}</div></section>}
     {(tools.length > 0 || skills.length > 0) && <section><h3>Tools and skills</h3><div className="pill-row">{tools.map((tool) => <Pill key={`tool-${tool}`}>{tool}</Pill>)}{skills.map((skill) => <Pill key={`skill-${skill}`}>{skill}</Pill>)}</div></section>}
-    {candidates.length > 0 && <section><h3>Alternatives considered</h3>{candidates.map((candidate) => <details className="candidate" key={candidate.candidate_id || `${candidate.provider_id}-${candidate.model_id || "default"}`}><summary><span>{candidate.provider_id}{candidate.model_id ? ` · ${candidate.model_id}` : ""}</span><b>{candidate.eligible === false ? "not eligible" : `${candidate.score ?? "—"} pts`}</b></summary><div>{candidate.rejection_reason && <p className="inline-error">{candidate.rejection_reason}</p>}{candidate.score_components && <dl className="score-components">{Object.entries(candidate.score_components).map(([name, points]) => <React.Fragment key={name}><dt>{compact(name)}</dt><dd>{points} pts</dd></React.Fragment>)}</dl>}{candidate.reasons?.length > 0 && <ul className="reason-list">{candidate.reasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul>}</div></details>)}</section>}
+    {candidates.length > 0 && <section><h3>Alternatives considered</h3>{candidates.map((candidate) => {
+      const componentEntries = scoreComponentEntries(candidate.score_components);
+      const reasonItems = visibleReasons(candidate.reasons);
+      return <details className="candidate" key={candidate.candidate_id || `${candidate.provider_id}-${candidate.model_id || "default"}`}><summary><span>{candidate.provider_id}{candidate.model_id ? ` · ${candidate.model_id}` : ""}</span><b>{candidate.eligible === false ? "not eligible" : `${candidate.score ?? "—"} pts`}</b></summary><div>{candidate.rejection_reason && <p className="inline-error">{candidate.rejection_reason}</p>}{componentEntries.length > 0 && <dl className="score-components">{componentEntries.map(([name, points]) => <React.Fragment key={name}><dt>{compact(name)}</dt><dd>{formatPoints(points)}</dd></React.Fragment>)}</dl>}{reasonItems.length > 0 && <ul className="reason-list">{reasonItems.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul>}{!candidate.rejection_reason && componentEntries.length === 0 && reasonItems.length === 0 && <p className="route-note">No inspectable score components were recorded for this candidate.</p>}</div></details>;
+    })}</section>}
     {!receipt && <div className="notice amber" role="note">This decision stopped before provider execution, so it has no execution receipt. The route and rejection reasons remain recorded.</div>}
     {promoted && <div className="notice success" role="status">Planning mission {promoted.mission?.mission_id || promoted.mission_id || "created"} was created. No mission step was executed.</div>}
     <section className="rerun-controls" aria-labelledby="rerun-heading"><h3 id="rerun-heading">Rerun controls</h3><p>Blank choices preserve the recorded route. A rerun creates a new decision and links an execution receipt only when a provider invocation starts.</p><div className="rerun-grid"><label><span>Persona</span><select aria-label="Rerun persona" value={rerunOptions.persona_id} onChange={(event) => setRerunOptions((current) => ({ ...current, persona_id: event.target.value }))}><option value="">Keep {route.requested_persona_id || "recorded persona"}</option>{personas.map((persona) => <option key={persona.persona_id || persona.id} value={persona.persona_id || persona.id}>{persona.name || persona.persona_id || persona.id}</option>)}</select></label><label><span>Provider</span><select aria-label="Rerun provider" value={rerunOptions.provider_id} onChange={(event) => setRerunOptions((current) => ({ ...current, provider_id: event.target.value, model_id: "" }))}><option value="" disabled={!providerIsChatEligible(providers.find((provider) => (provider.provider_id || provider.id) === recordedProviderId))}>Keep {recordedProviderId || "recorded provider"}{providerIsChatEligible(providers.find((provider) => (provider.provider_id || provider.id) === recordedProviderId)) ? "" : " — Chat unavailable"}</option>{providers.map((provider) => { const providerId = provider.provider_id || provider.id; const chatEligible = providerIsChatEligible(provider); return <option key={providerId} value={providerId} disabled={!chatEligible}>{provider.display_name || providerId}{chatEligible ? "" : " — Chat unavailable"}</option>; })}</select></label><label><span>Model override</span><input aria-label="Rerun model override" value={rerunOptions.model_id} maxLength="200" placeholder="Keep provider default" onChange={(event) => setRerunOptions((current) => ({ ...current, model_id: event.target.value }))} /></label><label><span>Cognitive policy</span><select aria-label="Rerun cognitive policy" value={rerunOptions.cognitive_policy} onChange={(event) => setRerunOptions((current) => ({ ...current, cognitive_policy: event.target.value }))}><option value="">Keep recorded policy</option><option value="fast_answer">Fast answer</option><option value="deep_analysis">Deep analysis</option><option value="skeptical_review">Skeptical review</option><option value="creative_divergence">Creative divergence</option><option value="decision_support">Decision support</option><option value="emotional_reflection">Emotional reflection</option><option value="implementation">Implementation</option><option value="research_synthesis">Research synthesis</option></select></label><label><span>Reasoning effort</span><select aria-label="Rerun reasoning effort" value={rerunOptions.reasoning_effort} onChange={(event) => setRerunOptions((current) => ({ ...current, reasoning_effort: event.target.value }))}><option value="">Keep recorded effort</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option></select></label><label><span>Local-only policy</span><select aria-label="Rerun local-only policy" value={rerunOptions.local_only} onChange={(event) => setRerunOptions((current) => ({ ...current, local_only: event.target.value === "" ? "" : event.target.value === "true" }))}><option value="">Keep recorded boundary</option><option value="true">Require local only</option><option value="false">Allow eligible cloud routes</option></select></label></div><label className="check-control"><input type="checkbox" checked={rerunOptions.allow_fallback} onChange={(event) => setRerunOptions((current) => ({ ...current, allow_fallback: event.target.checked }))} /><span>Allow an explicit, recorded fallback</span></label>{!rerunProviderEligible && <div className="notice amber" role="note">Choose a provider with a proven answer-only Chat boundary before rerunning this recorded route.</div>}</section>
