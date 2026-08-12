@@ -18,14 +18,35 @@ this file as a short overlay for AI coding tools that look for AGENTS.md.
 - Do not assume runtime CLI syntax from installation or old notes.
 - Do not push or merge unless Colin explicitly instructs it.
 
+## Daily Operator Product Contract
+
+- OpenCobalt is evolving into Colin's personal daily operating system for efficiency.
+- Core 5 questions answered:
+  1. What matters right now? (`opencobalt today` / `opencobalt next`)
+  2. Why does it matter? (`opencobalt why <id>`)
+  3. What is the smallest concrete next action? (`opencobalt next`)
+  4. What was I doing before I was interrupted? (`opencobalt focus` / `opencobalt continue`)
+  5. What happened after I acted? (`opencobalt done` / `opencobalt review`)
+- Principles: Local-first, CLI-first, deterministic core, transparent prioritization formula, receipts over claims, preserve human authority, zero productivity theater.
+
+## Guidelines for Coding Agents
+
+1. **Schema Changes**: Place new SQLite DDL in `src/opencobalt/core/ledger.py` or dedicated store module. Use `CREATE TABLE IF NOT EXISTS`, explicit `FOREIGN KEY` constraints, append-only triggers where required, and dynamic/idempotent column migration logic.
+2. **Execution Boundary**: All external process execution must route through `src/opencobalt/execution/engine.py` (`ExecutionEngine`).
+3. **Quality Gates**: Before reporting completion, always run:
+   ```bash
+   .venv/bin/ruff check .
+   .venv/bin/opencobalt public-check
+   .venv/bin/pytest
+   ```
+4. **Receipts & Provenance**: Every task execution and commitment completion creates a receipt and attaches a provenance link in `.opencobalt/ledger.db`.
+
 ## Current Gate Baseline
 
-At the start of `autonomy-envelope-and-auto-orchestrator-v1`, `main` at
-`ed792859ae5896c6a2eb9a45525952c1fd130c62` verified with:
-
+On branch `daily-operator-v0` branched from HEAD `a265ef1`:
 - `.venv/bin/ruff check .`: clean
 - `.venv/bin/opencobalt public-check`: clean
-- `.venv/bin/pytest`: 1050 passed, 1 warning
+- `.venv/bin/pytest`: 1126 passed, 1 warning
 
 Re-run gates before making current claims.
 
@@ -39,3 +60,4 @@ Colin, COBALT-SENTINEL: receipts-first.
 
 Then report branch, base SHA, test baseline, worktree cleanliness, push/merge
 state, and local commit state. If a fact is unknown, say so.
+

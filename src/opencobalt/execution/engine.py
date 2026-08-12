@@ -10,8 +10,9 @@ task status (planning / running / verifying / done / failed).
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -121,6 +122,8 @@ class ExecutionEngine:
         approval_id: str | None = None,
         mission_step_id: str | None = None,
         approval_step_id: str | None = None,
+        execution_context: Literal["general_task", "answer_only_inference"] = "general_task",
+        risk_subject: str | None = None,
     ) -> ExecutionOutcome:
         """Run the full receipt-backed slice for one task.
 
@@ -158,12 +161,53 @@ class ExecutionEngine:
         if adapter is None:
             adapter = get_adapter(runtime)
 
-        # 2. Classify risk: worst of policy keywords, router, and adapter view.
-        risk = max_risk(classify_risk(task), risk_from_route, adapter.risk_for_task(task))
+        # 2. Classify process authority separately from answer-only subject matter.
+        # Only runtimes whose adapter contract isolates inference from tools/files
+        # may de-escalate topic keywords. Agent CLIs retain prompt risk, and a
+        # yellow action becomes red because "answer only" is not an OS sandbox.
+        authority_evidence: dict[str, Any] = {}
+        if execution_context == "answer_only_inference":
+            subject = risk_subject if risk_subject is not None else task
+            subject_risk = max_risk(
+                classify_risk(subject),
+                adapter.risk_for_task(subject),
+            )
+            isolation_proven = bool(
+                getattr(adapter, "isolates_answer_only_inference", False)
+            )
+            if isolation_proven:
+                risk = max_risk("yellow", risk_from_route)
+            else:
+                risk = max_risk("red", subject_risk, risk_from_route)
+            authority_evidence = {
+                "execution_context": execution_context,
+                "risk_subject_source": (
+                    "current_user_request" if risk_subject is not None else "composed_task"
+                ),
+                "risk_subject_risk": subject_risk,
+                "risk_subject_sha256": hashlib.sha256(
+                    redact_text(subject).encode("utf-8")
+                ).hexdigest(),
+                "runtime_isolation_proven": isolation_proven,
+            }
+            route_reason = f"{route_reason}; bounded answer-only inference process"
+        else:
+            risk = max_risk(classify_risk(task), risk_from_route, adapter.risk_for_task(task))
         needs_approval = risk in ("red", "black")
         capability_snapshot = adapter.discover_capabilities()
         capabilities = capability_snapshot.capability_details
         limitations = list(capability_snapshot.limitations)
+        if execution_context == "answer_only_inference":
+            if getattr(adapter, "isolates_answer_only_inference", False):
+                limitations.append(
+                    "isolated answer-only inference process; subject-matter and outcome risk "
+                    "remain on the linked OpenCobalt route record"
+                )
+            else:
+                limitations.append(
+                    "answer-only intent is not runtime isolation; this agent invocation "
+                    "requires explicit approval through ExecutionEngine"
+                )
 
         # 3. Build the safe command. Capability mismatches fail before any plan runs.
         options = CommandOptions(
@@ -231,7 +275,10 @@ class ExecutionEngine:
             approval_id=approval_id,
             mission_step_id=mission_step_id,
             approval_step_id=approval_step_id,
-            structured_action={"skipped_reason": command_error} if command_error else None,
+            structured_action={
+                **authority_evidence,
+                **({"skipped_reason": command_error} if command_error else {}),
+            },
         )
         self.store.save_plan(plan)
         self._emit(
@@ -245,7 +292,9 @@ class ExecutionEngine:
         self._emit(
             EVENT_POLICY_CHECKED, plan.plan_id,
             f"policy: {'allowed' if policy.allowed else 'blocked'} ({policy.reason})",
-            allowed=policy.allowed, risk_level=policy.risk_level,
+            allowed=policy.allowed,
+            risk_level=policy.risk_level,
+            **authority_evidence,
         )
 
         receipt = WorkReceipt(

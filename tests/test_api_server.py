@@ -55,6 +55,13 @@ class TestStatus:
         data = _get("/api/status", tmp_path, monkeypatch)
         assert isinstance(data["uptime_seconds"], int)
 
+    def test_missing_test_tree_is_reported_as_unknown_not_a_fabricated_count(
+        self, tmp_path, monkeypatch
+    ):
+        data = _get("/api/status", tmp_path, monkeypatch)
+        assert data["test_count"] is None
+        assert data["test_count_evidence"] == "tests_directory_unavailable"
+
 
 # ---------------------------------------------------------------------------
 # /api/sessions
@@ -86,8 +93,9 @@ class TestSessions:
         entry = data[0]
         for key in ("ts", "task", "model", "tier", "cost", "ok"):
             assert key in entry, f"missing key: {key}"
-        assert entry["cost"].startswith("$")
-        assert isinstance(entry["ok"], bool)
+        assert entry["cost"] is None
+        assert entry["ok"] is None
+        assert entry["evidence"] == "route_decision_only"
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +121,8 @@ class TestAgents:
             for key in ("id", "tier", "caps", "on"):
                 assert key in entry, f"missing key: {key}"
             assert isinstance(entry["caps"], list)
-            assert isinstance(entry["on"], bool)
+            assert entry["on"] is None
+            assert entry["availability"] == "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +336,8 @@ class TestTimeline:
         assert isinstance(scores, dict)
         assert scores
         assert decision.recommended_tool in scores
+        assert route_entries[0]["cost"] is None
+        assert route_entries[0]["status"] == "recorded"
 
 
 # ---------------------------------------------------------------------------

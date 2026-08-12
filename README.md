@@ -56,15 +56,16 @@ This uses the same local extraction, verification, and handoff paths. Mission st
 
 Deeper demo material:
 
+- [Founder feedback packet](docs/FOUNDER_FEEDBACK_PACKET.md)
 - [Cold resume demo guide](docs/COLD_RESUME_DEMO.md)
 - [Cold resume video script](docs/COLD_RESUME_VIDEO_SCRIPT.md)
 - [Sanitized terminal transcript](docs/assets/cold-resume-demo-transcript.txt)
 - [Expected output guide](docs/assets/cold-resume-demo-output.md)
 - [Recording checklist](docs/assets/cold-resume-recording-checklist.md)
 
-Beyond cold resume, OpenCobalt is a local-first control and provenance layer for AI work. It routes across agent runtimes, records verifiable work receipts, preserves project memory, and enforces policy across tools such as Google Antigravity CLI, Claude Code, Codex, Aider, and Ollama.
+Beyond cold resume, OpenCobalt is a local-first personal AI control and provenance layer. Its web workspace provides durable chat while the control plane routes across discovered providers and agent runtimes, records verifiable work receipts, preserves project memory, and enforces policy across tools such as Google Antigravity CLI, Claude Code, Codex, Aider, and Ollama.
 
-It is not a chatbot, hosted service, or API proxy. The default configuration makes no API calls. Ollama and external CLI tools are optional and degrade gracefully when unavailable. OpenCobalt supports routing, diagnostics, audit logging, integration discovery, and receipt-backed execution: policy-gated one-shot runs that capture output, hash artifacts, and write verifiable work receipts (see `docs/EXECUTION_LAYER.md`).
+It is not a hosted service or credential broker. Starting the workspace and inspecting local records makes no provider call; executing a route may use a discovered local model or an explicitly selected external CLI. Optional providers degrade visibly when unavailable. OpenCobalt supports routing, diagnostics, audit logging, integration discovery, and receipt-backed execution: policy-gated one-shot runs that capture output, hash artifacts, and write verifiable work receipts (see `docs/EXECUTION_LAYER.md`).
 
 ## What It Does
 
@@ -74,7 +75,7 @@ It is not a chatbot, hosted service, or API proxy. The default configuration mak
 - Runs local shell workflows for routing, orchestration, convergence checks, autonomous task queues, mission planning, and context briefs.
 - Scores completed runs across output quality, adherence, latency, token efficiency, tool fit, decomposition, agent selection, and convergence quality.
 - Exports ledger and scored telemetry runs to markdown for project notes.
-- Provides a React and FastAPI dashboard plus a Tauri desktop wrapper.
+- Provides a React and FastAPI personal-AI workspace plus a Tauri desktop wrapper.
 
 ## Quickstart
 
@@ -86,9 +87,12 @@ pip install -e ".[dev,server]"
 opencobalt status
 opencobalt route "review this module and write focused tests"
 opencobalt
+opencobalt ui
 ```
 
 Ollama is optional. If it is installed, OpenCobalt can use it for worker-tier summarization and telemetry judging. Without Ollama, routing and telemetry fallback scoring still work locally.
+
+`opencobalt ui` opens the local personal-AI workspace. It requires the server extras plus Node.js/npm and uses the checkout's shared `.opencobalt/ledger.db`. See the [Personal AI Router guide](docs/PERSONAL_AI_ROUTER.md) for setup, provider boundaries, data handling, and current limitations.
 
 ## Core Commands
 
@@ -104,7 +108,7 @@ opencobalt public-check                         # pre-push safety scan
 opencobalt doctor antigravity                   # inspect local agy runtime
 opencobalt context                              # build a context pack
 opencobalt brief                                # session brief for handoff
-opencobalt ui                                   # dashboard at localhost:5173
+opencobalt ui                                   # personal-AI workspace at localhost:5173
 opencobalt desktop                              # Tauri desktop wrapper
 ```
 
@@ -156,7 +160,7 @@ graph LR
     Scores --> Export["Markdown Export"]
     Ledger --> API["FastAPI"]
     Telemetry --> API
-    API --> UI["React Dashboard"]
+    API --> UI["React Personal AI UI"]
 ```
 
 SQLite is the source of truth:
@@ -180,14 +184,25 @@ Ollama is worker-tier only and optional.
 
 Gemini CLI integration is deprecated. OpenCobalt now treats Google Antigravity CLI (`agy`) as the canonical Google agent runtime. Existing Gemini CLI config aliases remain supported temporarily and resolve to `google-antigravity` with a deprecation warning. Gemini remains a valid model-family name.
 
-## Dashboard
+## Personal AI UI
 
 `opencobalt ui` starts:
 
 - FastAPI backend on `localhost:8000`
-- Vite dashboard on `localhost:5173`
+- Vite personal-AI workspace on `localhost:5173`
 
-The dashboard includes command routing, agents, telemetry scores, routing graph, ledger timeline, benchmarks, integrations, context pack, verification receipts, and DesignLab notes. Views are hash-linkable, for example `http://localhost:5173/#telemetry`.
+The workspace has eight hash-linkable pages:
+
+- **Chat** for durable conversations, bounded workspace context, persona controls, automatic or manual routing, local-only requests, lifecycle events, and cancellation.
+- **Routes** for heuristic components, candidates, reasons, persona/provider disclosures, controlled reruns, and receipt lineage.
+- **Missions** for existing durable mission records and resume context.
+- **Skills** for searchable local skill inventory; inspection does not execute imported code.
+- **Memory** for explicit, attributable, editable, scoped, and user-controlled memory records.
+- **Ledger** for normalized local execution receipts.
+- **Providers** for separate installation, authentication, health, model, limitation, and execution-support evidence.
+- **Settings** for local routing, versioned personas, providers, approval, cost, privacy, skills, memory, verification, export, theme, and local-only defaults.
+
+Start from the repository root so the UI and CLI share the same relative SQLite path. Provider installation does not prove authentication, subscription access, or successful invocation, and fallback is never implicit. The [Personal AI Router guide](docs/PERSONAL_AI_ROUTER.md) documents those boundaries in detail.
 
 ## Verification
 
@@ -227,12 +242,14 @@ src/opencobalt/
   skills/
   integrations/
     antigravity_integration.py Google Antigravity CLI discovery
+  personal_ai/                 conversations, personas, routing, providers, and persistence
 ui/
-  src/App.jsx                React dashboard
+  src/App.jsx                React personal-AI workspace
   src/RoutingGraph.jsx       routing visualization
   src-tauri/                 desktop wrapper
 tests/
 docs/
+  PERSONAL_AI_ROUTER.md      setup, provider boundaries, and data guidance
 ```
 
 ## Safety Model

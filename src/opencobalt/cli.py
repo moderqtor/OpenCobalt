@@ -164,6 +164,36 @@ evolve_app = typer.Typer(
 )
 app.add_typer(evolve_app, name="evolve")
 
+from opencobalt.core.daily_cli import (  # noqa: E402
+    capture_cmd,
+    clarify_cmd,
+    daily_app,
+    defer_cmd,
+    done_cmd,
+    focus_cmd,
+    inbox_cmd,
+    next_cmd,
+    review_cmd,
+    search_cmd,
+    today_cmd,
+    waiting_cmd,
+)
+
+app.add_typer(daily_app, name="daily")
+
+# Top-level daily operator command aliases
+app.command("capture")(capture_cmd)
+app.command("inbox")(inbox_cmd)
+app.command("clarify")(clarify_cmd)
+app.command("today")(today_cmd)
+app.command("next")(next_cmd)
+app.command("focus")(focus_cmd)
+app.command("done")(done_cmd)
+app.command("defer")(defer_cmd)
+app.command("waiting")(waiting_cmd)
+app.command("review")(review_cmd)
+app.command("search")(search_cmd)
+
 console = Console()
 err = Console(stderr=True)
 
@@ -1968,6 +1998,94 @@ def adapters_inspect(
 
 # ── UI command ────────────────────────────────────────────────────────────────
 
+
+def _can_bind_ui_port(port: int) -> bool:
+    """Match development-server bind semantics without accepting an active listener."""
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+
+
+def _ui_port_has_listener(port: int) -> bool:
+    """Return whether a loopback listener is currently accepting connections."""
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.05)
+            return probe.connect_ex(("127.0.0.1", port)) == 0
+    except OSError:
+        return False
+
+
+def _require_available_ui_port(
+    label: str,
+    port: int,
+    *,
+    release_timeout_seconds: float = 2.0,
+) -> None:
+    """Fail on a listener, but tolerate a bounded just-released macOS socket."""
+    import time
+
+    if not 1 <= port <= 65535:
+        err.print(f"\n[{_RED}]{label} port must be between 1 and 65535.[/{_RED}]\n")
+        raise typer.Exit(1)
+    deadline = time.monotonic() + release_timeout_seconds
+    while not _can_bind_ui_port(port):
+        if _ui_port_has_listener(port) or time.monotonic() >= deadline:
+            err.print(
+                f"\n[{_RED}]{label} port {port} is already in use.[/{_RED}]  "
+                "Choose another port and try again.\n"
+            )
+            raise typer.Exit(1) from None
+        time.sleep(0.1)
+
+
+def _stop_ui_processes(processes: list, *, timeout_seconds: float = 5.0) -> None:
+    """Terminate launcher-owned process groups and wait for their ports to release."""
+    import os
+    import signal
+    import subprocess
+    import time
+
+    def send(process, signal_number: int) -> None:
+        if process.poll() is not None:
+            return
+        pid = getattr(process, "pid", None)
+        if os.name == "posix" and isinstance(pid, int):
+            try:
+                process_group = os.getpgid(pid)
+                if process_group != os.getpgrp():
+                    os.killpg(process_group, signal_number)
+                    return
+            except (OSError, ProcessLookupError):
+                pass
+        if signal_number == signal.SIGTERM:
+            process.terminate()
+        else:
+            process.kill()
+
+    for process in processes:
+        send(process, signal.SIGTERM)
+    deadline = time.monotonic() + timeout_seconds
+    for process in processes:
+        remaining = max(0.01, deadline - time.monotonic())
+        try:
+            process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            send(process, signal.SIGKILL)
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+
+
 @app.command("ui")
 def ui_shell(
     port: int = typer.Option(5173, "--port", help="Vite dev server port"),
@@ -1975,6 +2093,7 @@ def ui_shell(
     no_browser: bool = typer.Option(False, "--no-browser", help="Skip opening browser"),
 ) -> None:
     """Start the API server and React dashboard. Opens http://localhost:5173."""
+    import os
     import shutil
     import subprocess
     import time as _time
@@ -1983,6 +2102,12 @@ def ui_shell(
     if not shutil.which("npm"):
         err.print(f"\n[{_RED}]npm not found.[/{_RED}]  Install Node.js from https://nodejs.org\n")
         raise typer.Exit(1)
+
+    if port == api_port:
+        err.print(f"\n[{_RED}]UI and API ports must be different.[/{_RED}]\n")
+        raise typer.Exit(1)
+    _require_available_ui_port("UI", port)
+    _require_available_ui_port("API", api_port)
 
     ui_dir = Path("ui")
     if not ui_dir.exists():
@@ -2012,14 +2137,19 @@ def ui_shell(
              "--port", str(api_port), "--log-level", "warning"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=os.name == "posix",
         )
         procs.append(api_proc)
 
+        vite_environment = dict(os.environ)
+        vite_environment["OPENCOBALT_API_ORIGIN"] = f"http://127.0.0.1:{api_port}"
         vite_proc = subprocess.Popen(
             ["npm", "run", "dev", "--", "--port", str(port)],
             cwd=ui_dir,
+            env=vite_environment,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=os.name == "posix",
         )
         procs.append(vite_proc)
 
@@ -2027,14 +2157,12 @@ def ui_shell(
         console.print(f"  [{_GREEN}]Dashboard running at[/{_GREEN}]  http://localhost:{port}")
         console.print("  [dim]Ctrl+C to stop.[/dim]\n")
 
-        # Wait for servers to start, then verify API is up before opening browser
-        _time.sleep(3)
+        # Open the browser only after the API is actually ready. Child failures and
+        # transient loopback resets remain bounded and produce a useful CLI error.
         import urllib.error
         import urllib.request
-        try:
-            urllib.request.urlopen(f"http://localhost:{api_port}/api/status", timeout=3)
-        except urllib.error.URLError:
-            # API failed -- could be missing server extras
+        readiness_deadline = _time.monotonic() + 10
+        while True:
             if api_proc.poll() is not None:
                 err.print(
                     f"\n[{_RED}]API server failed to start.[/{_RED}]  "
@@ -2042,19 +2170,49 @@ def ui_shell(
                 )
                 vite_proc.terminate()
                 raise typer.Exit(1)
+            if vite_proc.poll() is not None:
+                err.print(
+                    f"\n[{_RED}]UI server failed to start.[/{_RED}]  "
+                    "Run: npm install --prefix ui\n"
+                )
+                api_proc.terminate()
+                raise typer.Exit(1)
+            try:
+                response = urllib.request.urlopen(
+                    f"http://127.0.0.1:{api_port}/api/status", timeout=1
+                )
+                response.close()
+                break
+            except (urllib.error.URLError, OSError):
+                if _time.monotonic() >= readiness_deadline:
+                    err.print(
+                        f"\n[{_RED}]API server did not become ready within 10 seconds.[/{_RED}]\n"
+                    )
+                    raise typer.Exit(1) from None
+                _time.sleep(0.1)
 
         if not no_browser:
             webbrowser.open(f"http://localhost:{port}")
 
-        for p in procs:
-            p.wait()
+        while True:
+            api_status = api_proc.poll()
+            vite_status = vite_proc.poll()
+            if api_status is not None:
+                err.print(
+                    f"\n[{_RED}]API server stopped unexpectedly (exit {api_status}).[/{_RED}]\n"
+                )
+                raise typer.Exit(1)
+            if vite_status is not None:
+                err.print(
+                    f"\n[{_RED}]UI server stopped unexpectedly (exit {vite_status}).[/{_RED}]\n"
+                )
+                raise typer.Exit(1)
+            _time.sleep(0.2)
 
     except KeyboardInterrupt:
         pass
     finally:
-        for p in procs:
-            if p.poll() is None:
-                p.terminate()
+        _stop_ui_processes(procs)
         console.print("\n  [dim]Stopped.[/dim]\n")
 
 
@@ -5720,9 +5878,10 @@ def why(
     """Trace the lineage of any object: what caused it, what evidence and
     score supported it, what approval applied, what execution and receipt
     came out of it, and what outcome was recorded."""
+    from .core.config import get_db_path
     from .core.provenance import ProvenanceBuilder, render_trace_lines
 
-    trace = ProvenanceBuilder(_DB_PATH).trace(any_id)
+    trace = ProvenanceBuilder(get_db_path()).trace(any_id)
     if trace is None:
         err.print(
             f"  [red]No lineage found for: {any_id}[/red]\n"
