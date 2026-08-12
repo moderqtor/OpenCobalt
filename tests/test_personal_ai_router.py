@@ -8,6 +8,7 @@ from opencobalt.personal_ai.router import (
     PersonalAIRouter,
     ProviderSnapshot,
     RoutingRequest,
+    classify_requirements,
     classify_task,
 )
 
@@ -30,10 +31,11 @@ def _provider(
     provider_priority: int = 0,
     readiness_state: str = "unknown",
     authentication_state: str = "unknown",
+    model_id: str | None = None,
 ) -> ProviderSnapshot:
     return ProviderSnapshot(
         provider_id=provider_id,
-        model_id=f"{provider_id}-model",
+        model_id=model_id or f"{provider_id}-model",
         runtime_id=f"{provider_id}-runtime",
         provider_family=provider_family or provider_id,
         available=available,
@@ -431,3 +433,113 @@ def test_unknown_cloud_auth_is_ranked_below_no_auth_local_runtime_without_overri
     assert local_candidate.score_components["readiness_evidence"] == 2
     assert any("authentication unknown" in reason for reason in cloud_candidate.reasons)
     assert any("authentication not required" in reason for reason in local_candidate.reasons)
+
+
+KETAMINE_PROMPT = (
+    "Explain in 3-4 paragraphs why ketamine's NMDA receptor antagonism can produce "
+    "dissociation. Include the major circuit-level hypothesis, but distinguish "
+    "established pharmacology from more speculative network-level explanations."
+)
+
+
+def _cheap_local(**changes: object) -> ProviderSnapshot:
+    values = dict(
+        provider_id="ollama",
+        local=True,
+        requires_network=False,
+        cost_category="free",
+        quality_tier="weak",
+        latency_category="low",
+        capabilities=frozenset({"chat", "coding", "research", "file_analysis"}),
+        authentication_state="not_required",
+    )
+    values.update(changes)
+    return _provider(**values)
+
+
+def _strong_cloud(**changes: object) -> ProviderSnapshot:
+    values = dict(
+        provider_id="antigravity",
+        local=False,
+        requires_network=True,
+        cost_category="standard",
+        quality_tier="strong",
+        latency_category="high",
+        capabilities=frozenset({"chat", "coding", "research", "file_analysis"}),
+        authentication_state="unknown",
+    )
+    values.update(changes)
+    return _provider(**values)
+
+
+def test_substring_log_does_not_classify_scientific_prose_as_file_analysis():
+    assert classify_task(KETAMINE_PROMPT) != "file_analysis"
+    assert classify_task(KETAMINE_PROMPT) == "general_reasoning"
+    assert classify_task("Analyze this PDF file") == "file_analysis"
+    assert classify_task("Review the error log") == "file_analysis"
+    assert classify_task("Offer a difficult explanation of receptor antagonism") == "general_reasoning"
+
+
+def test_scientific_prompt_has_high_reasoning_and_factual_requirements():
+    requirements = classify_requirements(
+        KETAMINE_PROMPT, "general_reasoning", "moderate", "fast_answer"
+    )
+    assert requirements.domain == "scientific"
+    assert requirements.reasoning_quality == "high"
+    assert requirements.factual_sensitivity == "high"
+
+
+def test_arithmetic_prefers_cheap_local_over_strong_cloud():
+    plan = PersonalAIRouter().route(_request("17 * 23"), [_strong_cloud(), _cheap_local()])
+    assert plan.task_complexity == "simple"
+    assert plan.requirements.reasoning_quality == "low"
+    assert plan.record.selected_provider == "ollama"
+
+
+def test_simple_extraction_prefers_cheap_local_over_strong_cloud():
+    plan = PersonalAIRouter().route(
+        _request("Extract the names from this list: Alice, Bob, Cara"),
+        [_strong_cloud(), _cheap_local()],
+    )
+    assert plan.record.selected_provider == "ollama"
+    assert plan.requirements.reasoning_quality == "low"
+
+
+def test_nuanced_scientific_reasoning_prefers_stronger_eligible_model():
+    local = _cheap_local()
+    strong = _strong_cloud(model_id="gemini-3.1-pro-high")
+    standard = _strong_cloud(
+        provider_id="antigravity-flash",
+        quality_tier="standard",
+        cost_category="low",
+        latency_category="low",
+        model_id="gemini-3.6-flash-low",
+    )
+    plan = PersonalAIRouter().route(_request(KETAMINE_PROMPT), [local, standard, strong])
+    assert plan.task_class == "general_reasoning"
+    assert plan.record.selected_provider == "antigravity"
+    assert plan.record.selected_model == "gemini-3.1-pro-high"
+    local_candidate = next(item for item in plan.candidates if item.provider_id == "ollama")
+    strong_candidate = next(item for item in plan.candidates if item.model_id == "gemini-3.1-pro-high")
+    assert strong_candidate.score > local_candidate.score
+    assert strong_candidate.score_components["reasoning_quality_fit"] == 12
+    assert local_candidate.score_components["factual_sensitivity_fit"] == -15
+    assert any("scientific reasoning quality requirement: +12" in reason for reason in strong_candidate.reasons)
+    assert any(
+        "weak model quality penalty for evidence-sensitive synthesis: -15" in reason
+        for reason in local_candidate.reasons
+    )
+    assert all(reason.strip() for reason in local_candidate.reasons)
+
+
+def test_local_only_still_selects_local_or_fails_closed():
+    router = PersonalAIRouter()
+    local = _cheap_local()
+    cloud = _strong_cloud()
+    forced_local = router.route(_request(KETAMINE_PROMPT, local_only=True), [cloud, local])
+    assert forced_local.record.selected_provider == "ollama"
+    cloud_candidate = next(item for item in forced_local.candidates if item.provider_id == "antigravity")
+    assert cloud_candidate.eligible is False
+    assert cloud_candidate.rejection_reason == "strict local-only policy excludes network/cloud provider"
+    with pytest.raises(NoEligibleRouteError):
+        router.route(_request(KETAMINE_PROMPT, local_only=True), [cloud])
