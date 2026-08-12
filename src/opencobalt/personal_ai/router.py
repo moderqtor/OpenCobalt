@@ -65,6 +65,9 @@ class ProviderSnapshot:
     discovery_receipt_id: str | None = None
     execution_location: Literal["local", "remote", "unknown"] = "unknown"
     model_locality_evidence: tuple[str, ...] = ()
+    display_name: str | None = None
+    model_family: str | None = None
+    profile_evidence: str | None = None
 
     def __post_init__(self) -> None:
         """Reject unbounded evidence while normalizing capability collections."""
@@ -182,6 +185,15 @@ class PersonalAIRouter:
             reasons.append("manual model override honored")
         if mismatch:
             reasons.append(mismatch)
+        reasons.append(
+            selection_narrative(
+                snapshot,
+                task_class=task_class,
+                complexity=complexity,
+                local_only=local_only,
+                persona_version=persona_version,
+            )
+        )
 
         record = RouteRecord(
             route_id=route_id,
@@ -263,6 +275,7 @@ class PersonalAIRouter:
             "quota_pressure": -snapshot.quota_pressure,
             "provider_priority": snapshot.provider_priority,
             "readiness_evidence": _readiness_evidence(snapshot),
+            "model_economy": _model_economy(snapshot, task_class, complexity_is_complex(request, task_class)),
         }
         rejection = _rejection_reason(
             request=request,
@@ -288,6 +301,9 @@ class PersonalAIRouter:
             f"historical success: {snapshot.historical_success_signal}",
             f"quota pressure: {-snapshot.quota_pressure}",
             f"provider priority: {snapshot.provider_priority}",
+            (
+                f"model economy: {_model_economy(snapshot, task_class, complexity_is_complex(request, task_class))}"
+            ),
         ]
         if snapshot.discovery_receipt_id:
             reasons.append(f"model discovery receipt: {snapshot.discovery_receipt_id}")
@@ -365,6 +381,7 @@ def classify_task(prompt: str, cognitive_policy: str = "fast_answer") -> TaskCla
     return {
         "implementation": "coding",
         "research_synthesis": "research",
+        "research": "research",
         "creative_divergence": "creative_ideation",
         "emotional_reflection": "personal_reflection",
         "decision_support": "planning",
@@ -384,7 +401,13 @@ def classify_complexity(
         text, "comprehensive", "architecture", "multiple", "system-wide"
     ):
         return "complex"
-    if cognitive_policy in {"deep_analysis", "skeptical_review", "implementation", "research_synthesis"}:
+    if cognitive_policy in {
+        "deep_analysis",
+        "skeptical_review",
+        "implementation",
+        "research_synthesis",
+        "research",
+    }:
         return "moderate"
     if len(prompt.split()) <= 6 and task_class == "general_reasoning":
         return "simple"
@@ -594,6 +617,60 @@ def approval_requirements(risk: RiskClassification) -> list[str]:
     return [
         "explicit human approval required before any consequential action based on this answer"
     ]
+
+
+def _model_economy(snapshot: ProviderSnapshot, task_class: TaskClass, complex_task: bool) -> int:
+    """Prefer inexpensive models for simple work and strong models for hard work."""
+    if task_class in {"research", "security_review", "consequential_decision"} or complex_task:
+        return {"strong": 12, "standard": 4, "weak": -8}[snapshot.quality_tier]
+    if snapshot.cost_category == "high":
+        return -10
+    if snapshot.cost_category == "low" and snapshot.quality_tier != "weak":
+        return 8
+    if snapshot.cost_category == "free":
+        return 6
+    return 0
+
+
+def selection_narrative(
+    snapshot: ProviderSnapshot,
+    *,
+    task_class: TaskClass,
+    complexity: Complexity,
+    local_only: bool,
+    persona_version: PersonaVersion | None,
+) -> str:
+    """Human-readable selection reason. Heuristic, not a calibrated probability."""
+    label = snapshot.display_name or snapshot.model_id or snapshot.provider_id
+    provider = snapshot.provider_id
+    clauses: list[str] = []
+    if task_class == "research":
+        clauses.append("this request requires evidence-backed research and synthesis")
+    elif task_class in {"security_review", "consequential_decision"}:
+        clauses.append(f"this request is classified as {task_class.replace('_', ' ')}")
+    elif complexity == "simple":
+        clauses.append("this request is a simple completion")
+    else:
+        clauses.append(f"this request is {complexity} {task_class.replace('_', ' ')}")
+    clauses.append(f"it is available through {provider}")
+    if snapshot.model_id:
+        clauses.append(
+            f"its declared quality tier is {snapshot.quality_tier} with cost category "
+            f"{snapshot.cost_category}"
+        )
+    if snapshot.profile_evidence:
+        clauses.append(f"those tiers are {snapshot.profile_evidence.replace('_', ' ')}")
+    if "research" in snapshot.capabilities and task_class == "research":
+        clauses.append("it supports the required research capability")
+    if local_only:
+        clauses.append("the strict local-only constraint is active")
+    else:
+        clauses.append("no local-only constraint is active")
+    if persona_version is not None:
+        affinity = _persona_affinity(snapshot, persona_version)
+        if affinity > 0:
+            clauses.append(f"persona affinity for this runtime is {affinity}")
+    return f"{label} was selected because " + "; ".join(clauses) + "."
 
 
 def _latency(complexity: Complexity) -> str:

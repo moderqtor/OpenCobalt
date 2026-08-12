@@ -75,7 +75,7 @@ MISSION_STATUSES = (
 
 TERMINAL_STATUSES = ("completed", "failed", "abandoned")
 
-MISSION_TYPES = ("opportunity", "evolve", "auto")
+MISSION_TYPES = ("opportunity", "evolve", "auto", "research")
 
 # Outcomes reuse the opportunity outcome vocabulary unchanged.
 OUTCOME_TO_STATUS = {

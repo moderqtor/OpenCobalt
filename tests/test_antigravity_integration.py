@@ -152,7 +152,16 @@ def test_unknowns_stay_unknown_with_generic_antigravity_help(monkeypatch):
     assert capabilities["skills_hooks_subagents"]["source"] == "unknown"
 
 
-def test_non_interactive_print_command_construction():
+def test_help_parsing_detects_json_output_and_effort(monkeypatch):
+    result = _discover_with_help(
+        monkeypatch,
+        "--print\n--output-format text, json, stream-json\n--effort\n--json-schema\nmodels List available models\n",
+    )
+    assert result["capabilities"]["json_output"]["supported"] is True
+    assert result["capabilities"]["stream_json_output"]["supported"] is True
+    assert result["capabilities"]["reasoning_effort"]["supported"] is True
+    assert result["capabilities"]["json_schema"]["supported"] is True
+    assert result["capabilities"]["models_subcommand"]["supported"] is True
     assert build_antigravity_command("hello") == ["agy", "--print", "hello"]
 
 

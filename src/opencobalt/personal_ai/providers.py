@@ -113,6 +113,18 @@ class ProviderModel(BaseModel):
     source: Literal["builtin", "runtime_discovered"]
     execution_location: Literal["local", "remote", "unknown"] = "unknown"
     locality_evidence: list[str] = Field(default_factory=list)
+    reasoning_support: bool | None = None
+    effort_levels: list[str] = Field(default_factory=list)
+    tool_names: list[str] = Field(default_factory=list)
+    context_window: int | None = Field(default=None, ge=1)
+    streaming_support: bool | None = None
+    available: bool = True
+    discovered_at: datetime | None = None
+    quality_tier: Literal["weak", "standard", "strong"] | None = None
+    cost_category: Literal["free", "low", "standard", "high"] | None = None
+    latency_category: Literal["low", "standard", "high"] | None = None
+    family: str | None = None
+    profile_evidence: str | None = None
 
 
 class ProviderError(BaseModel):
@@ -201,6 +213,7 @@ class ProviderResult(BaseModel):
     error: ProviderError | None = None
     limitations: list[str] = Field(default_factory=list)
     tool_events: list[ProviderToolEvent] = Field(default_factory=list)
+    session_id: str | None = None
 
 
 class ProviderEvent(BaseModel):
@@ -467,6 +480,7 @@ class EngineBackedChatProvider(ChatProvider):
         task: str | None = None,
         adapter: _AdapterLike | None = None,
         model_id: str | None = None,
+        cwd: str | None = None,
     ) -> ProviderResult:
         if cancellation is not None and cancellation.cancelled:
             return _pre_execution_error(
@@ -512,7 +526,7 @@ class EngineBackedChatProvider(ChatProvider):
                 execute=True,
                 approved=False,
                 timeout_seconds=request.timeout_seconds,
-                cwd=request.cwd,
+                cwd=cwd if cwd is not None else request.cwd,
                 unsafe_skip_permissions=False,
                 execution_context="answer_only_inference",
                 risk_subject=request.message,
@@ -615,9 +629,11 @@ class MockChatProvider(EngineBackedChatProvider):
             model_id=model_id,
         )
         if result.status == "complete":
-            # The engine receipt retains the complete policy-bearing task while
-            # development chat remains readable and deterministic.
-            result.content = f"Mock response: {request.message}"
+            schema = request.metadata.get("json_schema")
+            if isinstance(schema, dict):
+                result.content = json.dumps(_mock_structured_payload(request.message, schema))
+            else:
+                result.content = f"Mock response: {request.message}"
             if result.usage.source == "unavailable":
                 result.usage = ProviderUsage(
                     input_characters=len(request.message) + len(request.system_policy),
@@ -1058,13 +1074,7 @@ class ProviderRegistry:
                 adapter=runtime_adapters["codex-cli"],
                 routing_profile=_ROUTING_PROFILES["codex"],
             ),
-            EngineBackedChatProvider(
-                provider_id="antigravity",
-                display_name="Google Antigravity",
-                engine=engine,
-                adapter=runtime_adapters["google-antigravity"],
-                routing_profile=_ROUTING_PROFILES["antigravity"],
-            ),
+            _antigravity_chat_provider(engine, runtime_adapters["google-antigravity"]),
             EngineBackedChatProvider(
                 provider_id="claude",
                 display_name="Claude Code",
@@ -1257,11 +1267,22 @@ def _normalize_outcome(
     parsed_content, parsed_usage, tool_events = _normalize_provider_payload(
         provider_id, raw_content
     )
+    session_id = None
+    extra_limitations: list[str] = []
+    if provider_id == "antigravity":
+        from opencobalt.personal_ai.antigravity import parse_antigravity_payload
+
+        parsed_content, parsed_usage, tool_events, session_id, extra_limitations = (
+            parse_antigravity_payload(raw_content)
+        )
     content = _public_output_text(parsed_content)
+    if extra_limitations:
+        limitations.extend(_public_error_text(item) for item in extra_limitations)
     usage = _normalize_usage(getattr(result, "usage", None))
     if usage.source == "unavailable" and parsed_usage is not None:
         usage = _normalize_usage(parsed_usage)
-    if result_status == "succeeded":
+    envelope_error = _antigravity_envelope_error(provider_id, raw_content)
+    if result_status == "succeeded" and envelope_error is None:
         return ProviderResult(
             request_id=request.request_id,
             provider_id=provider_id,
@@ -1272,10 +1293,12 @@ def _normalize_outcome(
             receipt_id=receipt_id,
             limitations=limitations,
             tool_events=tool_events,
+            session_id=session_id,
         )
 
     raw_error = str(
-        getattr(result, "error", None)
+        envelope_error
+        or getattr(result, "error", None)
         or getattr(result, "stderr_preview", None)
         or f"provider execution {result_status}"
     )
@@ -1295,6 +1318,7 @@ def _normalize_outcome(
         ),
         limitations=limitations,
         tool_events=tool_events,
+        session_id=session_id,
     )
 
 
@@ -1313,12 +1337,50 @@ def _engine_result_output(result: Any, *, limit: int = 200_000) -> str:
     return str(getattr(result, "stdout_preview", ""))[:limit]
 
 
+def _antigravity_chat_provider(engine: _EngineLike, adapter: _AdapterLike) -> ChatProvider:
+    from opencobalt.personal_ai.antigravity import AntigravityChatProvider
+
+    return AntigravityChatProvider(engine, adapter)
+
+
+def _antigravity_envelope_error(provider_id: str, raw_content: str) -> str | None:
+    if provider_id != "antigravity":
+        return None
+    from opencobalt.personal_ai.antigravity import parse_antigravity_payload
+
+    _content, _usage, _tools, _session, limitations = parse_antigravity_payload(raw_content)
+    for item in limitations:
+        lowered = item.lower()
+        if "status error" in lowered or "invalid model" in lowered or "authentication" in lowered:
+            return item
+    try:
+        payload = json.loads(raw_content)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict) and str(payload.get("status", "")).upper() in {
+        "ERROR",
+        "CANCELED",
+        "INTERRUPTED",
+        "INVALID",
+    }:
+        error = payload.get("error")
+        return str(error) if error else f"Antigravity status {payload.get('status')}"
+    return None
+
+
 def _normalize_provider_payload(
     provider_id: str,
     raw_content: str,
 ) -> tuple[str, dict[str, Any] | None, list[ProviderToolEvent]]:
     if provider_id == "ollama":
         return _parse_ollama_generate_payload(raw_content)
+    if provider_id == "antigravity":
+        from opencobalt.personal_ai.antigravity import parse_antigravity_payload
+
+        content, usage, tool_events, _session_id, _limitations = parse_antigravity_payload(
+            raw_content
+        )
+        return content, usage, tool_events
     if provider_id != "codex":
         return raw_content, None, []
     return _parse_codex_jsonl(raw_content)
@@ -1803,6 +1865,57 @@ def _looks_like_ollama_cloud_model(model_id: str) -> bool:
     lowered = model_id.casefold()
     tag = lowered.rsplit(":", 1)[-1]
     return tag == "cloud" or tag.endswith("-cloud") or lowered.endswith("-cloud")
+
+
+def _mock_structured_payload(message: str, schema: dict[str, Any]) -> dict[str, Any]:
+    required = schema.get("required") if isinstance(schema.get("required"), list) else []
+    if "candidate_urls" in required:
+        return {
+            "research_question": message[:200],
+            "subquestions": ["What primary sources exist?", "What claims are causal vs associative?"],
+            "queries": [{"query": "medicare oral health screening older adults", "purpose": "policy"}],
+            "candidate_urls": [
+                {
+                    "url": "https://www.cms.gov/",
+                    "why": "authoritative Medicare/CMS host",
+                    "source_type": "government_policy",
+                }
+            ],
+            "limitations": ["mock research payload; not live evidence"],
+        }
+    if "evidence" in required:
+        return {
+            "evidence": [
+                {
+                    "source_url": "https://www.cms.gov/",
+                    "claim": "CMS publishes Medicare coverage and screening policy material.",
+                    "passage": "Medicare coverage determinations are published by CMS.",
+                    "summary": "Policy host, not a causal trial.",
+                    "evidence_strength": "policy_document",
+                    "causal_class": "association",
+                    "relation": "neutral",
+                    "study_design": "government document",
+                    "limitations": "Does not establish periodontal causation.",
+                }
+            ],
+            "disagreements": [
+                {
+                    "topic": "systemic causal claims",
+                    "positions": ["association is documented", "causation is not established by this source"],
+                }
+            ],
+        }
+    if "synthesis" in required:
+        return {
+            "synthesis": (
+                "Mock research synthesis: treat CMS material as policy context and do not "
+                "convert oral-health association into Medicare-entry causation. [ev-mock]"
+            ),
+            "citations": [{"claim_span": "policy context", "evidence_id": "ev-mock"}],
+            "unresolved": ["Live literature retrieval was not used in this mock payload"],
+            "causal_caution": "Association is not causation.",
+        }
+    return {"mock": True, "message": message[:200]}
 
 
 __all__ = [

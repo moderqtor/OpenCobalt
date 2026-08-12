@@ -42,6 +42,15 @@ ANTIGRAVITY_CAPABILITIES: dict[str, dict[str, bool | str | None]] = {
     "artifact_locations": _capability(None, "unknown"),
     "screenshot_capture": _capability(None, "unknown"),
     "sqlite_conversation_schema": _capability(None, "unknown"),
+    "json_output": _capability(None, "unknown"),
+    "stream_json_output": _capability(None, "unknown"),
+    "json_schema": _capability(None, "unknown"),
+    "reasoning_effort": _capability(None, "unknown"),
+    "execution_mode": _capability(None, "unknown"),
+    "conversation_resume": _capability(None, "unknown"),
+    "disable_slash_commands": _capability(None, "unknown"),
+    "print_timeout": _capability(None, "unknown"),
+    "models_subcommand": _capability(None, "unknown"),
 }
 
 
@@ -121,6 +130,36 @@ def _capabilities_from_help(help_text: str, installed: bool) -> dict[str, dict[s
             allowed_by_default=False,
             risk="red",
         )
+
+    if _help_has_flag(help_text, "--output-format"):
+        _mark_help_flag_capability(capabilities, "json_output", "--output-format")
+        if re.search(r"(?i)stream-json", help_text):
+            _mark_runtime_capability(capabilities, "stream_json_output", "stream-json found in agy help")
+
+    if _help_has_flag(help_text, "--json-schema"):
+        _mark_help_flag_capability(capabilities, "json_schema", "--json-schema")
+
+    if _help_has_flag(help_text, "--effort"):
+        _mark_help_flag_capability(capabilities, "reasoning_effort", "--effort")
+
+    if _help_has_flag(help_text, "--mode"):
+        _mark_help_flag_capability(capabilities, "execution_mode", "--mode")
+
+    if _help_has_flag(help_text, "--conversation"):
+        _mark_help_flag_capability(capabilities, "conversation_resume", "--conversation")
+
+    if _help_has_flag(help_text, "--disable-slash-commands"):
+        _mark_help_flag_capability(
+            capabilities, "disable_slash_commands", "--disable-slash-commands"
+        )
+
+    if _help_has_flag(help_text, "--print-timeout"):
+        _mark_help_flag_capability(capabilities, "print_timeout", "--print-timeout")
+
+    if re.search(r"(?im)^\s*models\b", help_text) or re.search(
+        r"(?i)list available models", help_text
+    ):
+        _mark_runtime_capability(capabilities, "models_subcommand", "models subcommand found in agy help")
     return capabilities
 
 
@@ -138,6 +177,13 @@ def build_antigravity_command(
     dangerously_skip_permissions: bool = False,
     allow_dangerously_skip_permissions: bool = False,
     capabilities: dict[str, dict[str, Any]] | None = None,
+    output_format: str | None = None,
+    effort: str | None = None,
+    mode: str | None = None,
+    json_schema: str | None = None,
+    disable_slash_commands: bool = False,
+    print_timeout: str | None = None,
+    conversation_id: str | None = None,
 ) -> list[str]:
     """Build a default-safe agy argv without invoking the runtime."""
     if capabilities is not None and not _capability_supported(
@@ -150,6 +196,49 @@ def build_antigravity_command(
         raise ValueError("agy --model is not supported by discovered help")
     if sandbox and not _capability_supported(capabilities, "sandbox_mode", "terminal_sandbox"):
         raise ValueError("agy --sandbox is not supported by discovered help")
+    if output_format is not None:
+        if output_format not in {"text", "json", "stream-json"}:
+            raise ValueError("agy output format must be text, json, or stream-json")
+        if output_format == "json" and not _capability_supported(capabilities, "json_output"):
+            raise ValueError("agy --output-format json is not supported by discovered help")
+        if output_format == "stream-json" and not _capability_supported(
+            capabilities, "stream_json_output", "json_output"
+        ):
+            raise ValueError("agy --output-format stream-json is not supported by discovered help")
+    if effort is not None:
+        if effort not in {"low", "medium", "high"}:
+            raise ValueError("agy --effort must be low, medium, or high")
+        if not _capability_supported(capabilities, "reasoning_effort"):
+            raise ValueError("agy --effort is not supported by discovered help")
+    if mode is not None:
+        if mode not in {"plan", "accept-edits"}:
+            raise ValueError("agy --mode must be plan or accept-edits")
+        if not _capability_supported(capabilities, "execution_mode"):
+            raise ValueError("agy --mode is not supported by discovered help")
+    if json_schema is not None and not _capability_supported(capabilities, "json_schema"):
+        raise ValueError("agy --json-schema is not supported by discovered help")
+    if disable_slash_commands and not _capability_supported(
+        capabilities, "disable_slash_commands"
+    ):
+        raise ValueError("agy --disable-slash-commands is not supported by discovered help")
+    if print_timeout is not None:
+        if not re.fullmatch(r"\d+[smh](\d+[smh])?", print_timeout):
+            raise ValueError("agy --print-timeout must be a bounded Go duration")
+        if not _capability_supported(capabilities, "print_timeout"):
+            raise ValueError("agy --print-timeout is not supported by discovered help")
+    if conversation_id is not None:
+        if (
+            not conversation_id
+            or conversation_id.startswith("-")
+            or len(conversation_id) > 200
+            or any(
+                not (character.isalnum() or character in "-_")
+                for character in conversation_id
+            )
+        ):
+            raise ValueError("agy conversation id must be a bounded identifier")
+        if not _capability_supported(capabilities, "conversation_resume"):
+            raise ValueError("agy --conversation is not supported by discovered help")
 
     command = [_COMMAND]
     if sandbox:
@@ -161,10 +250,38 @@ def build_antigravity_command(
             stacklevel=2,
         )
         command.append("--dangerously-skip-permissions")
+    if mode is not None:
+        command.extend(["--mode", mode])
+    if output_format is not None:
+        command.extend(["--output-format", output_format])
+    if json_schema is not None:
+        command.extend(["--json-schema", json_schema])
+    if disable_slash_commands:
+        command.append("--disable-slash-commands")
+    if print_timeout is not None:
+        command.extend(["--print-timeout", print_timeout])
+    if conversation_id is not None:
+        command.extend(["--conversation", conversation_id])
     if model is not None:
         command.extend(["--model", model])
+    if effort is not None:
+        command.extend(["--effort", effort])
     command.extend(["--print", prompt])
     return command
+
+
+def build_antigravity_models_command(
+    *,
+    capabilities: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    """Build argv for machine-readable model discovery without starting an agent turn."""
+    if capabilities is not None and not _capability_supported(
+        capabilities, "models_subcommand"
+    ):
+        raise ValueError("agy models is not supported by discovered help")
+    if capabilities is not None and not _capability_supported(capabilities, "json_output"):
+        raise ValueError("agy --output-format json is not supported by discovered help")
+    return [_COMMAND, "--output-format", "json", "models"]
 
 
 def discover_antigravity_runtime(ledger=None) -> dict[str, Any]:

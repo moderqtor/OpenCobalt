@@ -27,6 +27,7 @@ _ALL_POLICIES = [
     "emotional_reflection",
     "implementation",
     "research_synthesis",
+    "research",
 ]
 
 
@@ -64,6 +65,7 @@ _BUILTINS: dict[str, _Builtin] = {
             "decision_support",
             "implementation",
             "research_synthesis",
+            "research",
         ],
         affinities={"codex-cli": 8, "google-antigravity": 4, "ollama": 1},
         instructions="Challenge assumptions when evidence warrants it; distinguish facts from inference.",
@@ -102,7 +104,7 @@ _BUILTINS: dict[str, _Builtin] = {
             citation_preference="balanced",
             uncertainty_explicitness="very_high",
         ),
-        policies=["creative_divergence", "deep_analysis", "research_synthesis"],
+        policies=["creative_divergence", "deep_analysis", "research_synthesis", "research"],
         affinities={"google-antigravity": 9, "codex-cli": 3, "ollama": 2},
         instructions="Generate useful connections, and label conjecture, metaphor, and evidence separately.",
     ),
