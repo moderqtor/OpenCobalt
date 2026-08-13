@@ -12,7 +12,15 @@ from fastapi import APIRouter, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
-from opencobalt.core.approval_bridge import ApprovalError
+from opencobalt.core.approval_bridge import (
+    ApprovalBridge,
+    ApprovalError,
+    ApprovalStore,
+    BlockedStepError,
+    InvalidApprovalTransitionError,
+    StaleApprovalError,
+)
+from opencobalt.core.approval_runtime import LiveApprovalCoordinator
 from opencobalt.core.ledger import Ledger
 from opencobalt.core.mission_engine import Mission, MissionStep, MissionStore
 from opencobalt.core.models import SessionEvent
@@ -76,6 +84,7 @@ class APIContext:
     ledger: Ledger
     missions: MissionStore
     skill_import: SkillImportService
+    approvals: LiveApprovalCoordinator
 
 
 _CONTEXTS: dict[Path, tuple[tuple[int | None, int | None], APIContext]] = {}
@@ -120,7 +129,19 @@ def _api_context() -> APIContext:
             runner=ProcessRunner(artifact_dir=state_root / "artifacts"),
             events_path=state_root / "events" / "execution.jsonl",
         )
-        providers = ProviderRegistry(engine)
+        approval_store = ApprovalStore(db_path)
+        approvals = LiveApprovalCoordinator(
+            ApprovalBridge(
+                store=approval_store,
+                events_path=state_root / "events" / "approval.jsonl",
+            )
+        )
+        approvals.mark_orphaned_acp_stale()
+        providers = ProviderRegistry(
+            engine,
+            approval_store=approval_store,
+            approval_coordinator=approvals,
+        )
         missions = MissionStore(db_path)
         service = ChatService(
             store=store,
@@ -128,6 +149,7 @@ def _api_context() -> APIContext:
             enable_mock=True,
             missions=missions,
             engine=engine,
+            approval_coordinator=approvals,
         )
         context = APIContext(
             db_path=db_path,
@@ -143,6 +165,7 @@ def _api_context() -> APIContext:
                 ledger=ledger,
                 install_root=state_root / "skills" / "imported",
             ),
+            approvals=approvals,
         )
         _CONTEXTS[db_path] = (_workspace_token(db_path), context)
         return context
@@ -318,6 +341,34 @@ def _stream_event_payload(event: StreamEvent) -> dict[str, Any]:
                 result[key] = payload[key]
         return result
 
+    if event.event_type in {"approval_required", "approval_decided"}:
+        approval = payload.get("approval") if isinstance(payload.get("approval"), dict) else {}
+        result: dict[str, Any] = {}
+        for key in (
+            "request_id",
+            "step_id",
+            "state",
+            "headline",
+            "summary",
+            "action",
+            "category",
+            "risk_level",
+            "policy_classification",
+            "path",
+            "command",
+            "provider",
+            "capability_role",
+            "repository",
+            "decision",
+            "decision_source",
+        ):
+            safe = _safe_event_identifier(approval.get(key))
+            if safe is not None:
+                result[key] = safe
+        if isinstance(approval.get("actionable"), bool):
+            result["actionable"] = approval["actionable"]
+        return {"approval": result}
+
     allowed_keys = {
         "request_accepted": ("message_id",),
         "execution_started": ("provider_id", "model_id", "attempt"),
@@ -393,6 +444,46 @@ class RouteRerunResponse(BaseModel):
 class CancellationResponse(BaseModel):
     execution_id: str
     status: Literal["cancel_requested", "cancelled"]
+
+
+class ApprovalView(BaseModel):
+    request_id: str
+    step_id: str
+    state: str
+    actionable: bool = False
+    decision: str | None = None
+    decision_source: str | None = None
+    decision_kind: str | None = None
+    headline: str
+    summary: str = ""
+    action: str | None = None
+    category: str | None = None
+    risk_level: str
+    policy_classification: str | None = None
+    path: str | None = None
+    command: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    provider: str | None = None
+    runtime: str | None = None
+    capability_role: str | None = None
+    repository: str | None = None
+    mission_id: str | None = None
+    execution_id: str | None = None
+    route_id: str | None = None
+    conversation_id: str | None = None
+    provider_session_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    expires_at: str | None = None
+    provider_status: str | None = None
+    live_decision: str | None = None
+
+
+class LiveApprovalDecisionResponse(BaseModel):
+    approval: ApprovalView
+    previous_state: str
+    new_state: str
+    decision: str
 
 
 class MessageCompareRequest(BaseModel):
@@ -780,16 +871,12 @@ def compare_messages(request: MessageCompareRequest) -> MessageCompareResponse:
 def _canonical_project_path(project_path: str | None) -> str | None:
     if project_path is None:
         return None
-    workspace_root = Path.cwd().resolve()
+    from opencobalt.personal_ai.cursor_acp import validate_repository_path
+
     try:
-        resolved = Path(project_path).expanduser().resolve(strict=True)
-    except OSError as exc:
-        raise _unprocessable("Project path must be an existing directory") from exc
-    if not resolved.is_dir():
-        raise _unprocessable("Project path must be an existing directory")
-    if resolved != workspace_root and not resolved.is_relative_to(workspace_root):
-        raise _unprocessable("Project path must stay within the current workspace root")
-    return str(resolved)
+        return str(validate_repository_path(project_path))
+    except ValueError as exc:
+        raise _unprocessable(str(exc)) from exc
 
 
 _RESERVED_CHAT_METADATA_KEYS = frozenset(
@@ -879,7 +966,9 @@ def _stream_ndjson(service: ChatService, request: ChatRequest):
             yield event.model_dump_json() + "\n"
     finally:
         if active_execution_id is not None:
-            service.abandon(active_execution_id)
+            has_pending = getattr(service, "has_live_pending_approval", None)
+            if not (callable(has_pending) and has_pending(active_execution_id)):
+                service.abandon(active_execution_id)
 
 
 @router.post("/chat/stream")
@@ -913,6 +1002,115 @@ def cancel_execution(execution_id: str) -> CancellationResponse:
     raise _conflict(
         "Execution is not cancellable in this process; its in-memory cancellation token "
         "is unavailable"
+    )
+
+
+def _approval_view(context: APIContext, payload: dict[str, Any]) -> ApprovalView:
+    return ApprovalView.model_validate(payload)
+
+
+def _decide_live_approval(
+    context: APIContext,
+    approval_request_id: str,
+    *,
+    decision: Literal["approved", "rejected"],
+    reason: str,
+) -> LiveApprovalDecisionResponse:
+    request = context.approvals.bridge.store.get_request(approval_request_id)
+    if request is None:
+        raise _not_found("approval request", approval_request_id)
+    previous = request.steps[0].approval_state if request.steps else request.state
+    try:
+        step = context.approvals.decide(
+            request.request_id,
+            decision=decision,
+            decided_by="human",
+            reason=reason,
+            require_live=True,
+        )
+    except KeyError as exc:
+        raise _not_found("approval request", approval_request_id) from exc
+    except BlockedStepError as exc:
+        raise _conflict(_error_text(exc)) from exc
+    except StaleApprovalError as exc:
+        raise _conflict(_error_text(exc)) from exc
+    except InvalidApprovalTransitionError as exc:
+        raise _conflict(_error_text(exc)) from exc
+    except ApprovalError as exc:
+        raise _conflict(_error_text(exc)) from exc
+    refreshed = context.approvals.bridge.store.get_request(request.request_id)
+    if refreshed is None:
+        raise _not_found("approval request", approval_request_id)
+    view = context.approvals.public_view(refreshed, step=step)
+    return LiveApprovalDecisionResponse(
+        approval=_approval_view(context, view),
+        previous_state=previous,
+        new_state=step.approval_state,
+        decision="allow_once" if decision == "approved" else "deny",
+    )
+
+
+@router.get("/approvals", response_model=list[ApprovalView])
+def list_approvals(
+    state: str | None = None,
+    execution_id: str | None = None,
+    mission_id: str | None = None,
+    conversation_id: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[ApprovalView]:
+    context = _api_context()
+    return [
+        _approval_view(context, item)
+        for item in context.approvals.list_public(
+            state=state,
+            execution_id=execution_id,
+            mission_id=mission_id,
+            conversation_id=conversation_id,
+            limit=limit,
+        )
+    ]
+
+
+@router.get("/approvals/{approval_request_id}", response_model=ApprovalView)
+def get_approval(approval_request_id: str) -> ApprovalView:
+    context = _api_context()
+    request = context.approvals.bridge.store.get_request(approval_request_id)
+    if request is None:
+        raise _not_found("approval request", approval_request_id)
+    return _approval_view(context, context.approvals.public_view(request))
+
+
+@router.post(
+    "/approvals/{approval_request_id}/allow-once",
+    response_model=LiveApprovalDecisionResponse,
+)
+def allow_approval_once(
+    approval_request_id: str,
+    request: ApprovalDecisionRequest | None = None,
+) -> LiveApprovalDecisionResponse:
+    body = request or ApprovalDecisionRequest()
+    return _decide_live_approval(
+        _api_context(),
+        approval_request_id,
+        decision="approved",
+        reason=body.reason,
+    )
+
+
+@router.post(
+    "/approvals/{approval_request_id}/deny",
+    response_model=LiveApprovalDecisionResponse,
+)
+def deny_approval(
+    approval_request_id: str,
+    request: ApprovalDecisionRequest | None = None,
+) -> LiveApprovalDecisionResponse:
+    body = request or ApprovalDecisionRequest()
+    return _decide_live_approval(
+        _api_context(),
+        approval_request_id,
+        decision="rejected",
+        reason=body.reason,
     )
 
 

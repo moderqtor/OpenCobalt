@@ -6,8 +6,11 @@ speaks the documented Cursor ACP surface through ExecutionEngine.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import queue
 import re
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +22,13 @@ from opencobalt.core.approval_bridge import (
     ApprovalRequest,
     ApprovalStep,
     ApprovalStore,
+)
+from opencobalt.core.approval_runtime import (
+    DEFAULT_APPROVAL_WAIT_SECONDS,
+    LiveApprovalContext,
+    LiveApprovalCoordinator,
+    approval_expiry_iso,
+    redact_arguments,
 )
 from opencobalt.execution.adapters import CommandOptions, CursorAdapter
 from opencobalt.execution.models import RuntimeCapabilitySnapshot
@@ -69,6 +79,24 @@ DANGEROUS_PERMISSION_MARKERS = (
 _SOURCE_PATH = re.compile(
     r"(?:^|[\s`])(?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]{1,8}|(?:^|[\s`])[\w.-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|rb|c|cc|cpp|h|md)"
 )
+_FORBIDDEN_REPOSITORY_ROOTS = frozenset(
+    {
+        Path("/"),
+        Path("/Users"),
+        Path("/home"),
+        Path("/etc"),
+        Path("/System"),
+        Path("/usr"),
+        Path("/bin"),
+        Path("/sbin"),
+        Path("/var"),
+        Path("/private"),
+        Path("/opt"),
+        Path("/tmp"),
+        Path("/private/tmp"),
+        Path("/private/var"),
+    }
+)
 
 
 def _now() -> datetime:
@@ -76,41 +104,137 @@ def _now() -> datetime:
 
 
 def validate_repository_path(project_path: str | None, *, workspace_root: Path | None = None) -> Path:
-    """Require an explicit existing directory that cannot escape the workspace."""
+    """Require an explicit existing directory. Optional workspace_root bounds file paths."""
     if project_path is None or not str(project_path).strip():
         raise ValueError("coding requests require an explicit repository path")
-    if "\x00" in project_path or ".." in Path(project_path).parts:
+    if "\x00" in project_path:
+        raise ValueError("repository path must not contain a null byte")
+    raw = Path(project_path)
+    if ".." in raw.parts:
         raise ValueError("repository path must not contain traversal")
-    root = (workspace_root or Path.cwd()).expanduser().resolve()
     try:
-        resolved = Path(project_path).expanduser().resolve(strict=True)
+        resolved = raw.expanduser().resolve(strict=True)
     except OSError as exc:
         raise ValueError("repository path must be an existing directory") from exc
     if not resolved.is_dir():
         raise ValueError("repository path must be an existing directory")
-    if resolved != root and not resolved.is_relative_to(root):
-        raise ValueError("repository path must stay within the current workspace root")
+    if workspace_root is not None:
+        root = workspace_root.expanduser().resolve()
+        if resolved != root and not resolved.is_relative_to(root):
+            raise ValueError("path must stay within the attached repository")
+    home = Path.home().expanduser().resolve()
+    if resolved in _FORBIDDEN_REPOSITORY_ROOTS or resolved == home:
+        raise ValueError("repository path is too broad to attach as a coding workspace")
     return resolved
+
+
+def path_escapes_repository(path: str | None, repository: Path | None) -> bool:
+    if path is None or repository is None:
+        return False
+    if "\x00" in path or ".." in Path(path).parts:
+        return True
+    try:
+        candidate = Path(path)
+        resolved = (
+            candidate.resolve()
+            if candidate.is_absolute()
+            else (repository / candidate).resolve()
+        )
+    except (OSError, RuntimeError, ValueError):
+        return True
+    return resolved != repository and not resolved.is_relative_to(repository)
+
+
+def permission_details(
+    params: Mapping[str, Any],
+    *,
+    repository: Path | None = None,
+) -> dict[str, Any]:
+    """Normalize a documented ACP permission request into redacted display fields."""
+    tool = params.get("toolCall") if isinstance(params.get("toolCall"), Mapping) else {}
+    kind = str(tool.get("kind") or params.get("kind") or "other").casefold()[:40]
+    title = str(tool.get("title") or params.get("title") or kind)[:200]
+    raw_input = tool.get("rawInput") if isinstance(tool.get("rawInput"), Mapping) else {}
+    if not raw_input and isinstance(params.get("rawInput"), Mapping):
+        raw_input = params["rawInput"]
+    path = None
+    locations = tool.get("locations")
+    if isinstance(locations, list):
+        for location in locations:
+            if isinstance(location, Mapping) and location.get("path"):
+                path = str(location["path"])[:1024]
+                break
+    if path is None:
+        for key in ("path", "file", "filePath", "target"):
+            value = raw_input.get(key)
+            if isinstance(value, str) and value.strip():
+                path = value[:1024]
+                break
+    command = None
+    for key in ("command", "cmd", "shellCommand"):
+        value = raw_input.get(key)
+        if isinstance(value, str) and value.strip():
+            command = value[:500]
+            break
+    name = Path(path).name if path else None
+    if kind in {"edit", "write", "move"} and name:
+        headline = f"Cursor wants to modify {name}"
+    elif kind == "delete" and name:
+        headline = f"Cursor wants to delete {name}"
+    elif kind in {"execute", "terminal"} and command:
+        headline = f"Cursor wants to run {redact_text(command)[:120]}"
+    elif kind == "read" and name:
+        headline = f"Cursor wants to read {name}"
+    else:
+        headline = f"Cursor wants to {redact_text(title)[:120]}"
+    return {
+        "kind": kind,
+        "title": redact_text(title),
+        "headline": headline[:200],
+        "affected_path": path,
+        "command": redact_text(command) if command else None,
+        "arguments": redact_arguments(raw_input),
+        "path_escaped": path_escapes_repository(path, repository),
+    }
 
 
 def classify_permission_risk(
     params: Mapping[str, Any],
     *,
     mode: str,
+    repository: Path | None = None,
 ) -> tuple[str, str]:
     """Return (risk_level, tool_summary) from a documented permission request."""
-    tool = params.get("toolCall") if isinstance(params.get("toolCall"), Mapping) else {}
-    kind = str(tool.get("kind") or params.get("kind") or "other").casefold()
-    title = str(tool.get("title") or params.get("title") or kind)[:200]
-    summary = redact_text(title)
-    blob = f"{kind} {title}".casefold()
-    if any(marker in blob for marker in DANGEROUS_PERMISSION_MARKERS):
+    details = permission_details(params, repository=repository)
+    kind = details["kind"]
+    summary = details["title"]
+    blob = f"{kind} {summary} {details.get('command') or ''} {details.get('affected_path') or ''}".casefold()
+    if details.get("path_escaped") or any(marker in blob for marker in DANGEROUS_PERMISSION_MARKERS):
         return "black", summary
-    if mode != "agent" and kind in {"edit", "delete", "move", "execute"}:
+    mutation_hint = any(
+        token in blob
+        for token in (
+            "edit",
+            "write",
+            "delete",
+            "move",
+            "apply",
+            "patch",
+            "create",
+            "overwrite",
+            "unlink",
+        )
+    )
+    execute_hint = kind in {"execute", "terminal"} or any(
+        token in blob for token in ("terminal", "bash", "shell", "run ")
+    )
+    if mutation_hint and kind in {"read", "search", "think", "fetch", "other", ""}:
+        kind = "execute" if execute_hint else "edit"
+    if mode != "agent" and kind in {"edit", "delete", "move", "execute", "write"}:
         return "red", summary
-    if kind in {"delete", "execute"}:
+    if kind in {"delete", "execute"} or execute_hint:
         return "red", summary
-    if kind in {"edit", "move"}:
+    if kind in {"edit", "move", "write"} or mutation_hint:
         return "yellow", summary
     if kind in {"read", "search", "think", "fetch"}:
         return "green", summary
@@ -149,15 +273,36 @@ class AcpPermissionGate:
         mode: str,
         bridge: ApprovalBridge | None = None,
         decision_hook: Callable[[ApprovalStep], str] | None = None,
+        coordinator: LiveApprovalCoordinator | None = None,
+        context: LiveApprovalContext | None = None,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
+        repository: Path | None = None,
+        wait_seconds: int = DEFAULT_APPROVAL_WAIT_SECONDS,
     ) -> None:
         self.mode = mode
         self.bridge = bridge or ApprovalBridge(policy=ApprovalPolicy(auto_approve_green=True))
         self.decision_hook = decision_hook
+        self.coordinator = coordinator
+        self.context = context or LiveApprovalContext()
+        self.event_sink = event_sink
+        self.repository = repository
+        self.wait_seconds = wait_seconds
         self.records: list[dict[str, Any]] = []
 
-    def decide(self, params: Mapping[str, Any]) -> dict[str, Any]:
-        risk, summary = classify_permission_risk(params, mode=self.mode)
-        request = self._persist_request(params, risk=risk, summary=summary)
+    def decide(
+        self,
+        params: Mapping[str, Any],
+        *,
+        is_alive: Callable[[], bool] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        details = permission_details(params, repository=self.repository)
+        risk, summary = classify_permission_risk(
+            params, mode=self.mode, repository=self.repository
+        )
+        request = self._persist_request(
+            params, risk=risk, summary=summary, details=details
+        )
         step = request.steps[0]
         policy = "pending"
         allow = False
@@ -172,8 +317,8 @@ class AcpPermissionGate:
         elif risk == "green" and self.bridge.policy.auto_approve_green:
             allow = True
             policy = "auto_approved_green"
-        else:
-            hook_decision = self.decision_hook(step) if self.decision_hook else "rejected"
+        elif self.decision_hook is not None:
+            hook_decision = self.decision_hook(step)
             if hook_decision == "approved":
                 self.bridge.approve(
                     request.request_id,
@@ -187,14 +332,44 @@ class AcpPermissionGate:
                 self.bridge.reject(
                     request.request_id,
                     step_id=step.step_id,
-                    decided_by="policy" if self.decision_hook is None else "human",
+                    decided_by="human",
                     reason="ACP permission denied pending explicit approval",
                 )
-                policy = (
-                    "denied_missing_human"
-                    if self.decision_hook is None
-                    else "rejected_by_human"
-                )
+                policy = "rejected_by_human"
+        elif self.coordinator is not None:
+            self.coordinator.register_waiter(
+                request, step, execution_id=self.context.execution_id
+            )
+            self._emit("approval_required", request, step, policy="pending_human")
+            decision = self.coordinator.wait_for_decision(
+                request,
+                step,
+                timeout_seconds=self.wait_seconds,
+                cancelled=cancelled,
+                is_alive=is_alive,
+            )
+            allow = decision == "approved"
+            policy = {
+                "approved": "approved_by_human",
+                "rejected": "rejected_by_human",
+                "expired": "expired",
+                "cancelled": "cancelled",
+            }.get(decision, "stale")
+            self._emit(
+                "approval_decided",
+                request,
+                step,
+                policy=policy,
+                decision=decision,
+            )
+        else:
+            self.bridge.reject(
+                request.request_id,
+                step_id=step.step_id,
+                decided_by="policy",
+                reason="ACP permission denied pending explicit approval",
+            )
+            policy = "denied_missing_human"
         option_id = permission_option_id(params, allow=allow)
         if option_id not in ALLOWED_ACP_OPTIONS and allow:
             option_id = permission_option_id(params, allow=False)
@@ -204,47 +379,113 @@ class AcpPermissionGate:
             "approval_request_id": request.request_id,
             "approval_step_id": step.step_id,
             "tool": summary,
+            "headline": details["headline"],
             "risk_level": risk,
             "policy_decision": policy,
             "option_id": option_id,
+            "path": details.get("affected_path"),
+            "command": details.get("command"),
             "acp_response": {"outcome": {"outcome": "selected", "optionId": option_id}},
         }
         self.records.append(record)
         refreshed = self.bridge.store.get_request(request.request_id)
         if refreshed is not None:
-            refreshed.metadata = {**refreshed.metadata, "acp_permission": record}
+            refreshed.metadata = {
+                **refreshed.metadata,
+                "acp_permission": record,
+                "policy_classification": policy,
+                "provider_status": option_id,
+            }
             self.bridge.store.save_request(refreshed)
         return record["acp_response"]
 
+    def _emit(
+        self,
+        event_type: str,
+        request: ApprovalRequest,
+        step: ApprovalStep,
+        *,
+        policy: str,
+        decision: str | None = None,
+    ) -> None:
+        if self.event_sink is None or self.coordinator is None:
+            return
+        refreshed = self.bridge.store.get_request(request.request_id) or request
+        view = self.coordinator.public_view(refreshed, step=step)
+        view["policy_classification"] = policy
+        if decision is not None:
+            view["live_decision"] = decision
+        self.event_sink({"event_type": event_type, "approval": view})
+
     def _persist_request(
-        self, params: Mapping[str, Any], *, risk: str, summary: str
+        self,
+        params: Mapping[str, Any],
+        *,
+        risk: str,
+        summary: str,
+        details: Mapping[str, Any],
     ) -> ApprovalRequest:
+        auto_approved = (
+            risk == "green"
+            and self.bridge.policy.auto_approve_green
+            and not details.get("path_escaped")
+        )
+        context = self.context
         request = ApprovalRequest(
             request_id=_uid("areq"),
             source_type="acp_permission",
-            source_id=_uid("acp"),
-            run_id="acp",
-            goal_id="acp",
-            track_id="acp-permission",
-            opportunity_plan_id="acp-permission",
-            goal_text=summary,
+            source_id=context.execution_id or _uid("acp"),
+            run_id=context.execution_id or "acp",
+            goal_id=context.chat_request_id or "acp",
+            track_id=context.mission_id or "acp-permission",
+            opportunity_plan_id=context.route_id or "acp-permission",
+            goal_text=str(details.get("headline") or summary),
             track_name="ACP permission",
             risk_level=risk,
-            metadata={"acp_params_keys": sorted(str(key) for key in params.keys())[:20]},
+            metadata={
+                "acp_params_keys": sorted(str(key) for key in params.keys())[:20],
+                "execution_id": context.execution_id,
+                "mission_id": context.mission_id,
+                "route_id": context.route_id,
+                "conversation_id": context.conversation_id,
+                "provider": context.provider or "cursor",
+                "runtime": context.runtime or "cursor",
+                "provider_session_id": context.provider_session_id,
+                "capability_role": context.capability_role,
+                "repository_path": context.repository_path,
+                "action_name": details.get("kind"),
+                "action_category": details.get("kind"),
+                "headline": details.get("headline"),
+                "summary": summary,
+                "affected_path": details.get("affected_path"),
+                "command": details.get("command"),
+                "arguments": details.get("arguments") or {},
+                "expires_at": approval_expiry_iso(self.wait_seconds),
+                "policy_classification": (
+                    "auto_approved_green" if auto_approved else "pending_human"
+                ),
+            },
         )
-        auto_approved = risk == "green" and self.bridge.policy.auto_approve_green
         request.steps.append(
             ApprovalStep(
                 step_id=_uid("astp"),
                 request_id=request.request_id,
                 source_type="acp_permission",
                 source_id=request.source_id,
-                task=summary,
+                task=str(details.get("headline") or summary),
                 risk_level=risk,
                 permission_scope="read" if risk == "green" else "write",
                 approval_required=risk != "green",
                 approval_state="approved" if auto_approved else "pending",
-                metadata={"auto_approved": auto_approved, "blocked": risk == "black"},
+                metadata={
+                    "auto_approved": auto_approved,
+                    "blocked": risk == "black",
+                    "kind": details.get("kind"),
+                    "headline": details.get("headline"),
+                    "affected_path": details.get("affected_path"),
+                    "command": details.get("command"),
+                    "arguments": details.get("arguments") or {},
+                },
             )
         )
         request.refresh_state()
@@ -429,7 +670,14 @@ class AcpClient:
             return None
         if method == "session/request_permission":
             params = message.get("params") if isinstance(message.get("params"), Mapping) else {}
-            response = self.permission_gate.decide(params)
+            response = self.permission_gate.decide(
+                params,
+                is_alive=lambda: getattr(self.session, "alive", True) is not False,
+                cancelled=lambda: bool(
+                    (self.cancellation is not None and self.cancellation.cancelled)
+                    or self.session.cancelled
+                ),
+            )
             self._respond(message.get("id"), response)
             self.events.append(
                 {
@@ -575,6 +823,7 @@ class CursorACPProvider(EngineBackedChatProvider):
         *,
         permission_hook: Callable[[ApprovalStep], str] | None = None,
         approval_store: ApprovalStore | None = None,
+        coordinator: LiveApprovalCoordinator | None = None,
     ) -> None:
         cursor = adapter if isinstance(adapter, CursorAdapter) else CursorAdapter()
         runtime = CursorACPRuntimeAdapter(cursor)
@@ -589,6 +838,8 @@ class CursorACPProvider(EngineBackedChatProvider):
         self._cursor = cursor
         self.permission_hook = permission_hook
         self.approval_store = approval_store
+        self.coordinator = coordinator
+        self._approval_event_sink: Callable[[dict[str, Any]], None] | None = None
 
     def status(self) -> ProviderStatus:
         snapshot = self.adapter.discover_capabilities()
@@ -740,6 +991,19 @@ class CursorACPProvider(EngineBackedChatProvider):
                 status="blocked",
             )
         mode = "agent" if role == "coding_agent" else "ask"
+        context = LiveApprovalContext(
+            execution_id=str(request.metadata.get("execution_id") or "") or None,
+            mission_id=str(request.metadata.get("mission_id") or "") or None,
+            route_id=str(request.metadata.get("route_id") or "") or None,
+            conversation_id=request.conversation_id,
+            chat_request_id=request.request_id,
+            provider="cursor",
+            runtime="cursor",
+            provider_session_id=str(request.metadata.get("acp_session_id") or "") or None,
+            capability_role=role,
+            repository_path=str(repo),
+        )
+        event_sink = self._approval_event_sink
         gate = AcpPermissionGate(
             mode=mode,
             bridge=ApprovalBridge(
@@ -747,6 +1011,10 @@ class CursorACPProvider(EngineBackedChatProvider):
                 policy=ApprovalPolicy(auto_approve_green=True),
             ),
             decision_hook=self.permission_hook,
+            coordinator=self.coordinator,
+            context=context,
+            event_sink=event_sink,
+            repository=repo,
         )
 
         def handler(session: InteractiveSession) -> dict[str, Any]:
@@ -765,6 +1033,7 @@ class CursorACPProvider(EngineBackedChatProvider):
             )
             return client.run_turn()
 
+        before = snapshot_repository(repo)
         try:
             outcome = self.engine.run_task(
                 request.message,
@@ -772,7 +1041,7 @@ class CursorACPProvider(EngineBackedChatProvider):
                 model=request.model_id,
                 execute=True,
                 approved=False,
-                timeout_seconds=request.timeout_seconds,
+                timeout_seconds=max(request.timeout_seconds, 600),
                 cwd=str(repo),
                 unsafe_skip_permissions=False,
                 execution_context="general_task",
@@ -825,6 +1094,36 @@ class CursorACPProvider(EngineBackedChatProvider):
         ]
         if denied and role == "coding_agent" and result.status == "complete":
             result.limitations.append("one or more ACP permissions were denied")
+        after = snapshot_repository(repo)
+        mutated = changed_paths(before, after)
+        if mutated:
+            result.metadata = {**result.metadata, "files_changed": mutated}
+            allowed_writes = [
+                item
+                for item in permissions
+                if isinstance(item, Mapping) and str(item.get("option_id")) == "allow-once"
+                and str(item.get("risk_level") or "") != "green"
+            ]
+            if not allowed_writes:
+                result.limitations.append(
+                    "Cursor changed repository files without an ACP permission request"
+                )
+        if result.receipt_id and permissions:
+            store = getattr(self.engine, "store", None)
+            getter = getattr(store, "get_receipt", None)
+            saver = getattr(store, "save_receipt", None)
+            if callable(getter) and callable(saver):
+                receipt = getter(result.receipt_id)
+                if receipt is not None:
+                    extra = [
+                        f"approval:{item.get('approval_request_id')}"
+                        for item in permissions
+                        if isinstance(item.get("approval_request_id"), str)
+                    ]
+                    receipt.provenance_refs = list(
+                        dict.fromkeys([*list(receipt.provenance_refs or []), *extra])
+                    )
+                    saver(receipt)
         return result
 
     def stream(
@@ -832,7 +1131,61 @@ class CursorACPProvider(EngineBackedChatProvider):
         request: ProviderRequest,
         cancellation: CancellationToken | None = None,
     ) -> Iterator[ProviderEvent]:
-        result = self.execute(request, cancellation)
+        events: queue.Queue[ProviderEvent | None] = queue.Queue()
+        sequence = 1
+
+        def sink(payload: dict[str, Any]) -> None:
+            nonlocal sequence
+            event_type = payload.get("event_type")
+            if event_type not in {"approval_required", "approval_decided"}:
+                return
+            events.put(
+                ProviderEvent(
+                    request_id=request.request_id,
+                    provider_id=self.provider_id,
+                    sequence=sequence,
+                    event_type=event_type,
+                    metadata={"approval": payload.get("approval") or {}},
+                )
+            )
+            sequence += 1
+
+        holder: dict[str, Any] = {}
+
+        def run() -> None:
+            self._approval_event_sink = sink
+            try:
+                holder["result"] = self.execute(request, cancellation)
+            except Exception as exc:  # provider boundary must stay inspectable
+                holder["error"] = exc
+            finally:
+                self._approval_event_sink = None
+                events.put(None)
+
+        worker = threading.Thread(target=run, name="cursor-acp-execute", daemon=True)
+        worker.start()
+        while True:
+            item = events.get()
+            if item is None:
+                break
+            yield item
+        worker.join(timeout=5)
+        error = holder.get("error")
+        if isinstance(error, Exception):
+            raise error
+        result = holder.get("result")
+        if result is None:
+            yield ProviderEvent(
+                request_id=request.request_id,
+                provider_id=self.provider_id,
+                sequence=sequence,
+                event_type="error",
+                error=ProviderError(
+                    category="provider_error",
+                    message="Cursor ACP execution ended without a result",
+                ),
+            )
+            return
         yield from _events_from_result(result, cancellation, chunk_size=64)
 
 
@@ -878,3 +1231,29 @@ def _usage_from_acp(raw: Mapping[str, Any]) -> ProviderUsage:
 
 def looks_like_source_path(text: str) -> bool:
     return _SOURCE_PATH.search(text) is not None
+
+
+def snapshot_repository(root: Path, *, limit: int = 200) -> dict[str, str]:
+    """Bounded relative-path digest map for detecting unsolicited mutations."""
+    snapshot: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if len(snapshot) >= limit:
+            break
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root)
+        if any(part in {".git", "__pycache__", "node_modules", ".venv"} for part in relative.parts):
+            continue
+        try:
+            if path.stat().st_size > 256_000:
+                continue
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            continue
+        snapshot[str(relative)] = digest
+    return snapshot
+
+
+def changed_paths(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    paths = sorted(set(before) | set(after))
+    return [path for path in paths if before.get(path) != after.get(path)]
