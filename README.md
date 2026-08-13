@@ -34,7 +34,8 @@ the conversation, selects a route, and keeps the result in local SQLite.
 | Durable Chat, conversations, and personas | Implemented |
 | Inspectable capability routing | Implemented. Scores are heuristics, not probabilities. |
 | Ollama and Antigravity Chat execution | Implemented when local discovery proves the bounded invocation |
-| Research Missions with retrieved sources, evidence, and citation linkage | Implemented, with limited source acquisition |
+| Research Missions with retrieved sources, evidence, and citation linkage | Implemented. HTML, PDF, PubMed, DOI/Crossref, government hosts, and user uploads. |
+| Document attachments on Chat and Research | Implemented for PDF, Markdown, plain text, HTML, and CSV. Uploads are data, not instructions. |
 | Coding analysis and Cursor ACP coding Missions | Implemented. Mutations stay staged until explicit promotion. |
 | Memory, Skills, Ledger, Providers, Settings | Implemented |
 | Local-only request constraint | Implemented |
@@ -57,7 +58,7 @@ workspace; it is not OS-level sandboxing.
   execution.
 - Personas are interaction policies, not provider replicas.
 - Missions persist independently of any provider session.
-- Research retrieves public HTTPS sources and stores evidence locally.
+- Research retrieves public HTTPS sources, user documents, and stores evidence locally.
 - Coding-agent work produces a ChangeSet and requires explicit promotion into
   the authoritative repository.
 - Providers are interchangeable. OpenCobalt owns state, routing, policy, and

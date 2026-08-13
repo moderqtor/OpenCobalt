@@ -25,24 +25,43 @@ retrieval entirely.
 
 ## Source acquisition
 
-OpenCobalt retrieves sources itself. Current behavior:
+Research retrieval is a normalized `DocumentAcquisitionPipeline`
+(`src/opencobalt/personal_ai/retrieval.py`). Downstream evidence extraction
+does not depend on whether a document came from PubMed, a PDF, Crossref, a
+government host, or a user upload.
 
-- The planner emits candidate URLs.
-- PubMed eutils and CMS search are seeded as public lookup endpoints.
-- Follow-up fetches are limited to a preferred-host list (PubMed, CMS, CDC,
-  NIH, and similar public hosts).
-- Fetch goes through `ExecutionEngine` over HTTPS.
-- Caps: 8 primary sources plus 6 follow-ups; truncated excerpts.
-- Localhost, private, and non-HTTPS URLs are rejected.
+Current resolver behavior:
+
+- Generic public HTTPS HTML: redirects, canonical URL, title, and primary
+  content extraction. Navigation and search chrome are stripped when possible.
+- PDF: bounded download, `%PDF` verification, and text extraction with page
+  provenance when `pypdf` is installed.
+- PubMed / NCBI: structured eutils/efetch plus follow-up article URLs.
+- DOI / Crossref: bibliographic seed search and DOI target resolution.
+- Government / policy hosts: generic HTTPS retrieval for CMS, CDC, NIH,
+  govinfo, and similar public hosts. No paper-specific URLs are hardcoded.
+- User uploads: conversation attachments become `user_document` sources.
+
+Fetch goes through `ExecutionEngine` over HTTPS with SSRF rejection for
+localhost, private IPs, credentials, file URLs, and non-HTTPS schemes.
+Caps: 8 primary sources plus 6 follow-ups; truncated excerpts; 150 KB fetch
+bound. Search-index and asset URLs are excluded from document extraction.
+
+A later Research Mission in the same conversation can reuse previously
+retrieved sources when the question overlaps. Excluded sources are skipped.
 
 There is no general web-search engine, no authenticated paywall access, and
-no dedicated PDF/binary parser beyond HTML, text, and JSON. Search-index and
-asset URLs are excluded from document extraction.
+no browser fallback in the standard path.
 
 ## Evidence, synthesis, and citations
 
-Extraction and synthesis use structured schemas. If the extractor returns
-nothing, retrieved excerpts can still be stored as linked evidence.
+Extraction and synthesis use structured schemas. Evidence records can store
+study design, population, endpoint, effect direction, magnitude, and
+limitations when the source provides them. Uncertainty is folded into
+limitations. If the extractor returns nothing, retrieved excerpts can still
+be stored as linked evidence.
+
+Excluded sources are omitted from later reuse and from synthesis input.
 
 A citation is marked `verified_link` only when it points at evidence whose
 source was retrieved for this Mission. Otherwise it is `unverified`.
