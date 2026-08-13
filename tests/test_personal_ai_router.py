@@ -671,6 +671,88 @@ def test_coding_agent_without_repository_path_is_not_classified_as_agent_work():
     assert role != "coding_agent"
 
 
+def test_english_and_symbolic_arithmetic_stay_cheap_under_deep_analysis():
+    prompts = (
+        "What is 17 times 23",
+        "What is 8 plus 9?",
+        "12 divided by 4",
+        "6 multiplied by 7",
+        "9 * 4",
+    )
+    for prompt in prompts:
+        plan = PersonalAIRouter().route(
+            _request(prompt, cognitive_policy="deep_analysis", reasoning_effort="medium"),
+            [_strong_cloud(), _cheap_local()],
+        )
+        assert plan.task_class == "general_reasoning", prompt
+        assert plan.task_complexity == "simple", prompt
+        assert plan.capability_role == "cheap_local", prompt
+        assert plan.requirements.reasoning_quality == "low", prompt
+        assert plan.requirements.factual_sensitivity == "low", prompt
+        assert plan.requirements.domain == "general", prompt
+        assert plan.record.selected_provider == "ollama", prompt
+
+
+def test_trivial_calculations_and_conversions_stay_cheap_under_deep_analysis():
+    prompts = (
+        "Convert 32 fahrenheit to celsius",
+        "Convert 100 km to miles",
+        "Calculate 15 percent of 80",
+        "Compute 2 plus 2",
+    )
+    for prompt in prompts:
+        plan = PersonalAIRouter().route(
+            _request(prompt, cognitive_policy="deep_analysis"),
+            [_strong_cloud(), _cheap_local()],
+        )
+        assert plan.task_complexity == "simple", prompt
+        assert plan.capability_role == "cheap_local", prompt
+        assert plan.requirements.reasoning_quality == "low", prompt
+        assert plan.requirements.factual_sensitivity == "low", prompt
+        assert plan.record.selected_provider == "ollama", prompt
+
+
+def test_difficult_reasoning_stays_high_quality_under_deep_analysis():
+    prompt = (
+        "Walk through a careful argument for why first-past-the-post voting "
+        "concentrates parties, then identify the strongest counterarguments and "
+        "when that conclusion would fail."
+    )
+    plan = PersonalAIRouter().route(
+        _request(prompt, cognitive_policy="deep_analysis"),
+        [_strong_cloud(), _cheap_local()],
+    )
+    assert plan.task_complexity != "simple"
+    assert plan.requirements.reasoning_quality == "high"
+    assert plan.capability_role == "strong_reasoning"
+    assert plan.record.selected_provider == "antigravity"
+
+
+def test_scientific_and_medical_prompts_keep_strong_requirements_under_deep_analysis():
+    medical = (
+        "What acetaminophen dosage and contraindications apply for an adult patient "
+        "with fever and possible liver disease?"
+    )
+    scientific = PersonalAIRouter().route(
+        _request(KETAMINE_PROMPT, cognitive_policy="deep_analysis"),
+        [_strong_cloud(), _cheap_local()],
+    )
+    medical_plan = PersonalAIRouter().route(
+        _request(medical, cognitive_policy="deep_analysis"),
+        [_strong_cloud(), _cheap_local()],
+    )
+    assert scientific.requirements.domain == "scientific"
+    assert scientific.requirements.factual_sensitivity == "high"
+    assert scientific.requirements.reasoning_quality == "high"
+    assert scientific.capability_role == "strong_reasoning"
+    assert scientific.record.selected_provider == "antigravity"
+    assert medical_plan.requirements.domain == "medical"
+    assert medical_plan.requirements.factual_sensitivity == "high"
+    assert medical_plan.requirements.reasoning_quality == "high"
+    assert medical_plan.capability_role == "strong_reasoning"
+    assert medical_plan.record.selected_provider == "antigravity"
+
+
 def test_evidence_questions_classify_as_research():
     assert classify_task("What evidence supports and weakens a screening checkpoint?") == "research"
 

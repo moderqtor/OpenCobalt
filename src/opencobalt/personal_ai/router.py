@@ -869,17 +869,46 @@ def _has_term(text: str, term: str) -> bool:
     return re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", text) is not None
 
 
+_ARITHMETIC_OPERATOR = (
+    r"(?:[*x×÷/+\-]|times|plus|minus|multiplied(?:\s+by)?|divided(?:\s+by)?|"
+    r"percent(?:\s+of)?|%)"
+)
+
+
 def _is_lightweight_task(prompt: str) -> bool:
+    """True for short calculations, conversions, and extractive transforms.
+
+    Cognitive policy is not consulted here. A default thoroughness policy must
+    not turn arithmetic into strong-reasoning work.
+    """
     text = prompt.strip().lower()
     if not text:
         return False
-    if re.fullmatch(r"[\d\s.+\-*/x×÷()]+", text) and re.search(r"\d", text):
+    if re.fullmatch(r"[\d\s.+\-*/x×÷()%]+", text) and re.search(r"\d", text):
         return True
-    if len(text.split()) <= 12 and re.search(r"\d+\s*[*x×/+\-]\s*\d+", text):
+    word_count = len(text.split())
+    if word_count <= 16 and re.search(
+        rf"\d+(?:[.,]\d+)?\s*{_ARITHMETIC_OPERATOR}\s*\d+(?:[.,]\d+)?",
+        text,
+    ):
         return True
-    if _contains(text, "extract", "extraction") and len(text.split()) <= 40:
+    if (
+        word_count <= 16
+        and re.search(r"\d", text)
+        and _contains(text, "convert", "calculate", "compute")
+        and not _contains(
+            text,
+            "hypothesis",
+            "evidence",
+            "mechanism",
+            "architecture",
+            "policy",
+        )
+    ):
         return True
-    if _contains(text, "summarize", "summary") and len(text.split()) <= 25:
+    if _contains(text, "extract", "extraction") and word_count <= 40:
+        return True
+    if _contains(text, "summarize", "summary") and word_count <= 25:
         return True
     return False
 
@@ -957,11 +986,13 @@ def _classify_factual_sensitivity(
     cognitive_policy: str,
     citations_required: bool,
 ) -> SensitivityLevel:
+    if _is_lightweight_task(text):
+        return "low"
     if task_class in {"research", "consequential_decision", "security_review"} or citations_required:
         return "high"
     if domain in {"scientific", "medical", "legal", "financial"}:
         return "high"
-    if cognitive_policy in {"research", "research_synthesis", "skeptical_review", "deep_analysis"}:
+    if cognitive_policy in {"research", "research_synthesis"}:
         return "high"
     if _contains(text, "evidence", "established", "speculative", "distinguish", "cite"):
         return "high"
@@ -981,18 +1012,21 @@ def _classify_reasoning_quality(
 ) -> QualityNeed:
     if _is_lightweight_task(prompt):
         return "low"
-    if complexity == "simple" and domain == "general" and factual == "low":
+    if complexity == "simple" and domain == "general" and factual != "high":
         return "low"
     if (
         complexity == "complex"
         or factual == "high"
         or domain in {"scientific", "medical", "philosophical"}
-        or cognitive_policy in {
-            "deep_analysis",
-            "skeptical_review",
-            "research",
-            "research_synthesis",
-        }
+        or (
+            cognitive_policy in {
+                "deep_analysis",
+                "skeptical_review",
+                "research",
+                "research_synthesis",
+            }
+            and complexity != "simple"
+        )
         or task_class in {"research", "security_review", "consequential_decision"}
         or _contains(text, "distinguish", "hypothesis", "speculative", "nuance", "tradeoff")
     ):

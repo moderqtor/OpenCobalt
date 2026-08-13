@@ -14,6 +14,7 @@ from opencobalt.personal_ai.antigravity import (
     infer_antigravity_model_profile,
     parse_antigravity_models_payload,
     parse_antigravity_payload,
+    resolve_print_effort,
 )
 from opencobalt.personal_ai.models import AISettings
 from opencobalt.personal_ai.providers import (
@@ -297,19 +298,23 @@ class IsolatedAgyAdapter(FakeAdapter):
 
 
 def _catalog_stdout(*model_ids: str) -> str:
+    return _catalog_stdout_records(*[{"id": model_id, "label": model_id} for model_id in model_ids])
+
+
+def _catalog_stdout_records(*models: dict) -> str:
     return json.dumps(
         {
             "status": "SUCCESS",
             "command": {
                 "name": "models",
-                "data": {
-                    "models": [
-                        {"id": model_id, "label": model_id} for model_id in model_ids
-                    ]
-                },
+                "data": {"models": list(models)},
             },
         }
     )
+
+
+def _print_argv(engine: FakeEngine) -> list[str]:
+    return engine.calls[-1][1]["adapter"].build_command("hello")
 
 
 def _print_stdout(response: str) -> str:
@@ -491,6 +496,187 @@ def test_local_only_research_is_blocked_without_fetch(tmp_path):
     assert events[-1]["step"] == "blocked"
     assert engine.calls == []
     assert store.list_research_missions()[0]["status"] == "blocked"
+
+
+def test_models_payload_does_not_infer_explicit_effort_from_reasoning_capable_ids():
+    payload = json.dumps(
+        {
+            "status": "SUCCESS",
+            "command": {
+                "name": "models",
+                "data": {
+                    "models": [
+                        {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6"},
+                        {"id": "gemini-3.6-flash-medium", "label": "Gemini 3.6 Flash (Medium)"},
+                        {
+                            "id": "gemini-3-pro",
+                            "label": "Gemini 3 Pro",
+                            "supportsEffort": True,
+                            "effortLevels": ["low", "medium", "high"],
+                        },
+                    ]
+                },
+            },
+        }
+    )
+    models, _limitations = parse_antigravity_models_payload(payload)
+    by_id = {model.model_id: model for model in models}
+    assert list(by_id) == [
+        "claude-sonnet-4-6",
+        "gemini-3.6-flash-medium",
+        "gemini-3-pro",
+    ]
+    assert by_id["claude-sonnet-4-6"].reasoning_support is True
+    assert by_id["claude-sonnet-4-6"].explicit_effort_supported is False
+    assert by_id["gemini-3.6-flash-medium"].effort_levels == ["medium"]
+    assert by_id["gemini-3.6-flash-medium"].explicit_effort_supported is False
+    assert by_id["gemini-3-pro"].explicit_effort_supported is True
+    assert by_id["gemini-3-pro"].effort_levels == ["low", "medium", "high"]
+
+
+def test_resolve_print_effort_requires_model_evidence_not_global_help():
+    assert (
+        resolve_print_effort(
+            "medium",
+            model_id="claude-sonnet-4-6",
+            explicit_effort_supported=False,
+        )
+        is None
+    )
+    assert (
+        resolve_print_effort(
+            "medium",
+            model_id="gemini-3.6-flash-medium",
+            explicit_effort_supported=True,
+            effort_levels=["medium"],
+        )
+        is None
+    )
+    assert (
+        resolve_print_effort(
+            "medium",
+            model_id="gemini-3-pro",
+            explicit_effort_supported=True,
+            effort_levels=["low", "medium", "high"],
+        )
+        == "medium"
+    )
+    assert (
+        resolve_print_effort(
+            "high",
+            model_id="gemini-3-pro",
+            explicit_effort_supported=True,
+            effort_levels=["low", "medium"],
+        )
+        is None
+    )
+
+
+def test_print_adapter_omits_effort_unless_the_selected_model_accepts_it():
+    unsupported = _AntigravityPrintAdapter(
+        capabilities=_agy_caps(),
+        model_id="claude-sonnet-4-6",
+        effort="medium",
+    ).build_command("hello")
+    encoded = _AntigravityPrintAdapter(
+        capabilities=_agy_caps(),
+        model_id="gemini-3.6-flash-medium",
+        effort="low",
+        explicit_effort_supported=True,
+        effort_levels=["low", "medium", "high"],
+    ).build_command("hello")
+    proven = _AntigravityPrintAdapter(
+        capabilities=_agy_caps(),
+        model_id="gemini-3-pro",
+        effort="medium",
+        explicit_effort_supported=True,
+        effort_levels=["low", "medium", "high"],
+    ).build_command("hello")
+    research = _AntigravityPrintAdapter(
+        capabilities=_agy_caps(),
+        model_id="claude-sonnet-4-6",
+        effort="medium",
+        output_format="stream-json",
+        research=True,
+    ).build_command("hello")
+
+    assert "--model" in unsupported
+    assert unsupported[unsupported.index("--model") + 1] == "claude-sonnet-4-6"
+    assert "--effort" not in unsupported
+    assert encoded[encoded.index("--model") + 1] == "gemini-3.6-flash-medium"
+    assert "--effort" not in encoded
+    assert proven[proven.index("--model") + 1] == "gemini-3-pro"
+    assert proven[proven.index("--effort") + 1] == "medium"
+    assert research[research.index("--model") + 1] == "claude-sonnet-4-6"
+    assert "--effort" not in research
+
+
+def test_execute_and_research_print_omit_unsupported_effort_flags():
+    engine = FakeEngine(
+        _outcome(stdout=_catalog_stdout("claude-sonnet-4-6")),
+        _outcome(stdout=_print_stdout("391")),
+        _outcome(stdout=_catalog_stdout("claude-sonnet-4-6")),
+        _outcome(stdout=_print_stdout("research answer")),
+        _outcome(
+            stdout=_catalog_stdout_records(
+                {
+                    "id": "gemini-3-pro",
+                    "label": "Gemini 3 Pro",
+                    "supportsEffort": True,
+                    "effortLevels": ["low", "medium", "high"],
+                }
+            )
+        ),
+        _outcome(stdout=_print_stdout("ok")),
+        _outcome(stdout=_catalog_stdout("gemini-3.6-flash-medium")),
+        _outcome(stdout=_print_stdout("ok")),
+    )
+    provider = AntigravityChatProvider(engine, IsolatedAgyAdapter())
+    first = provider.execute(
+        ProviderRequest(
+            message="hello",
+            model_id="claude-sonnet-4-6",
+            metadata={"reasoning_effort": "medium"},
+        )
+    )
+    assert first.status == "complete"
+    assert "--effort" not in _print_argv(engine)
+
+    research = provider.execute(
+        ProviderRequest(
+            message="hello",
+            model_id="claude-sonnet-4-6",
+            metadata={"research": True, "reasoning_effort": "medium"},
+        )
+    )
+    assert research.status == "complete"
+    research_argv = _print_argv(engine)
+    assert "--effort" not in research_argv
+    assert research_argv[research_argv.index("--model") + 1] == "claude-sonnet-4-6"
+
+    proven = provider.execute(
+        ProviderRequest(
+            message="hello",
+            model_id="gemini-3-pro",
+            metadata={"reasoning_effort": "medium"},
+        )
+    )
+    assert proven.status == "complete"
+    proven_argv = _print_argv(engine)
+    assert proven_argv[proven_argv.index("--effort") + 1] == "medium"
+    assert proven_argv[proven_argv.index("--model") + 1] == "gemini-3-pro"
+
+    encoded = provider.execute(
+        ProviderRequest(
+            message="hello",
+            model_id="gemini-3.6-flash-medium",
+            metadata={"reasoning_effort": "low"},
+        )
+    )
+    assert encoded.status == "complete"
+    encoded_argv = _print_argv(engine)
+    assert encoded_argv[encoded_argv.index("--model") + 1] == "gemini-3.6-flash-medium"
+    assert "--effort" not in encoded_argv
 
 
 def test_https_fetch_command_is_bounded_and_https_only():
