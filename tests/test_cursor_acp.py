@@ -40,6 +40,7 @@ class ScriptedSession:
         self.script = list(script)
         self.written: list[dict] = []
         self.cancelled = False
+        self.alive = True
 
     def write_message(self, payload: dict) -> None:
         self.written.append(payload)
