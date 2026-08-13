@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -960,6 +960,13 @@ def _validate_chat_request(context: APIContext, request: ChatRequest) -> ChatReq
         requested_tools=request.requested_tools,
         requested_skills=request.requested_skills,
     )
+    if request.attachment_ids:
+        for attachment_id in request.attachment_ids:
+            record = context.store.get_attachment(attachment_id)
+            if record is None:
+                raise _not_found("attachment", attachment_id)
+            if record.get("conversation_id") not in {None, request.conversation_id}:
+                raise _unprocessable("attachment does not belong to this conversation")
     if not request.metadata:
         return request
     return request.model_copy(update={"metadata": {"user_metadata": request.metadata}})
@@ -2007,6 +2014,96 @@ def get_research(research_id: str) -> dict[str, Any]:
     if bundle is None:
         raise _not_found("research mission", research_id)
     return bundle
+
+
+@router.post("/research/{research_id}/sources/{source_id}/exclude")
+def exclude_research_source(research_id: str, source_id: str) -> dict[str, Any]:
+    context = _api_context()
+    bundle = context.store.research_bundle(research_id)
+    if bundle is None:
+        raise _not_found("research mission", research_id)
+    if not any(item.get("source_id") == source_id for item in bundle.get("sources") or []):
+        raise _not_found("research source", source_id)
+    updated = context.store.set_source_excluded(source_id, True)
+    return {"source": updated, "excluded": True}
+
+
+@router.post("/research/{research_id}/sources/{source_id}/retry")
+def retry_research_source(research_id: str, source_id: str) -> dict[str, Any]:
+    from opencobalt.personal_ai.retrieval import DocumentAcquisitionPipeline
+
+    context = _api_context()
+    bundle = context.store.research_bundle(research_id)
+    if bundle is None:
+        raise _not_found("research mission", research_id)
+    source = next(
+        (item for item in bundle.get("sources") or [] if item.get("source_id") == source_id),
+        None,
+    )
+    if source is None:
+        raise _not_found("research source", source_id)
+    pipeline = DocumentAcquisitionPipeline(context.engine)
+    document = pipeline.acquire_url(str(source.get("url") or ""))
+    refreshed = document.to_source_record(
+        source_id=source_id,
+        research_id=research_id,
+        created_at=source.get("created_at") or _now().isoformat(),
+    )
+    context.store.save_research_source(refreshed)
+    return {"source": refreshed}
+
+
+@router.get("/conversations/{conversation_id}/attachments")
+def list_attachments(conversation_id: str) -> dict[str, Any]:
+    from opencobalt.personal_ai.documents import DocumentStore
+
+    context = _api_context()
+    if context.store.get_conversation(conversation_id) is None:
+        raise _not_found("conversation", conversation_id)
+    store = DocumentStore(context.store)
+    records = [
+        store.public_record(item)
+        for item in context.store.list_attachments(conversation_id)
+    ]
+    return {"attachments": records}
+
+
+@router.post("/conversations/{conversation_id}/attachments", status_code=201)
+async def upload_attachment(
+    conversation_id: str,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    from opencobalt.personal_ai.documents import MAX_ATTACHMENT_BYTES, DocumentStore
+
+    context = _api_context()
+    if context.store.get_conversation(conversation_id) is None:
+        raise _not_found("conversation", conversation_id)
+    payload = await file.read(MAX_ATTACHMENT_BYTES + 1)
+    try:
+        record = DocumentStore(context.store).ingest(
+            conversation_id=conversation_id,
+            filename=file.filename or "document",
+            payload=payload,
+            mime_type=file.content_type or "",
+        )
+    except ValueError as exc:
+        raise _unprocessable(str(exc)) from exc
+    return record
+
+
+@router.delete("/conversations/{conversation_id}/attachments/{attachment_id}")
+def delete_attachment(conversation_id: str, attachment_id: str) -> dict[str, Any]:
+    from opencobalt.personal_ai.documents import DocumentStore
+
+    context = _api_context()
+    if context.store.get_conversation(conversation_id) is None:
+        raise _not_found("conversation", conversation_id)
+    deleted = DocumentStore(context.store).delete(
+        attachment_id, conversation_id=conversation_id
+    )
+    if not deleted:
+        raise _not_found("attachment", attachment_id)
+    return {"deleted": True, "attachment_id": attachment_id}
 
 
 def _redacted_receipt(receipt: WorkReceipt) -> RedactedReceipt:

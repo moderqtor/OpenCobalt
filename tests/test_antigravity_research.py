@@ -24,6 +24,8 @@ from opencobalt.personal_ai.providers import (
 from opencobalt.personal_ai.research import (
     ResearchOrchestrator,
     assign_research_roles,
+)
+from opencobalt.personal_ai.retrieval import (
     classify_source_type,
     followup_urls_from_payload,
     html_to_text,
@@ -498,7 +500,8 @@ def test_https_fetch_command_is_bounded_and_https_only():
     assert command[0].endswith("curl") or command[0] == "curl"
     assert "--proto" in command and command[command.index("--proto") + 1] == "=https"
     assert "--compressed" in command
-    assert "--max-filesize" not in command
+    assert "--max-filesize" in command
+    assert command[command.index("--max-filesize") + 1] == "150000"
     assert "--dangerously-skip-permissions" not in command
     assert command[-1] == "https://www.cms.gov/"
     assert classify_source_type("https://pubmed.ncbi.nlm.nih.gov/?term=x") == "primary_literature"

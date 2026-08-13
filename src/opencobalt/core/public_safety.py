@@ -76,6 +76,7 @@ _SKIP_DIRS = {
     "__pycache__",
     ".pytest_cache",
     ".opencobalt",
+    "attachments",
     # Test source files legitimately embed pattern strings as test inputs.
     "tests",
 }

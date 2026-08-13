@@ -459,7 +459,7 @@ def classify_task(prompt: str, cognitive_policy: str = "fast_answer") -> TaskCla
         return "tool_operation"
     if _contains(text, "implement", "code", "bug", "parser", "test", "refactor"):
         return "coding"
-    if _contains(text, "research", "sources", "literature", "compare evidence"):
+    if _contains(text, "research", "sources", "literature", "compare evidence", "what evidence", "evidence supports", "evidence against", "evidence weakens", "cite sources"):
         return "research"
     if _contains(text, "edit", "revise", "proofread"):
         return "editing"
@@ -469,7 +469,7 @@ def classify_task(prompt: str, cognitive_policy: str = "fast_answer") -> TaskCla
         return "planning"
     if _contains(text, "brainstorm", "creative", "story", "ideas"):
         return "creative_ideation"
-    if _contains(text, "reflect", "emotion", "feel", "relationship"):
+    if _contains(text, "reflect", "emotion", "feel", "relationship", "i miss", "lonely", "loneliness", "grief"):
         return "personal_reflection"
     return {
         "implementation": "coding",

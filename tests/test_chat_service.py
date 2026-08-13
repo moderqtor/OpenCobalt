@@ -135,7 +135,7 @@ def test_chat_request_rejects_ambiguous_or_unsafe_override_identifiers():
             message="hello",
             model_override="model-v1",
         )
-    with pytest.raises(ValueError, match="tool and skill identifiers"):
+    with pytest.raises(ValueError, match="identifiers must be bounded"):
         ChatRequest(
             conversation_id="conv-test",
             message="hello",

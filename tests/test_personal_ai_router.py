@@ -669,3 +669,11 @@ def test_coding_agent_without_repository_path_is_not_classified_as_agent_work():
         project_path=None,
     )
     assert role != "coding_agent"
+
+
+def test_evidence_questions_classify_as_research():
+    assert classify_task("What evidence supports and weakens a screening checkpoint?") == "research"
+
+
+def test_reflective_prompts_classify_as_personal_reflection():
+    assert classify_task("I miss someone, and I am unsure why.") == "personal_reflection"
