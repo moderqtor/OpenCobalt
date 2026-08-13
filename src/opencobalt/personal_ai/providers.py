@@ -25,6 +25,7 @@ from opencobalt.execution.adapters import (
     AntigravityAdapter,
     ClaudeCodeAdapter,
     CodexCliAdapter,
+    CursorAdapter,
     NoopAdapter,
     OllamaAdapter,
 )
@@ -59,6 +60,9 @@ class ProviderCapabilities(BaseModel):
     local_only_eligible: bool = False
     requires_network: bool = True
     answer_only_isolation: bool = False
+    acp: bool = False
+    coding_analysis: bool = False
+    coding_agent: bool = False
 
 
 class ProviderRoutingProfile(BaseModel):
@@ -75,6 +79,7 @@ class ProviderRoutingProfile(BaseModel):
     quality_tier: Literal["weak", "standard", "strong"] = "standard"
     latency_category: Literal["low", "standard", "high"] = "standard"
     task_capabilities: list[str] = Field(default_factory=list)
+    capability_roles: list[str] = Field(default_factory=list)
     tool_names: list[str] = Field(default_factory=list)
     evidence: Literal["opencobalt_adapter_contract"] = "opencobalt_adapter_contract"
     statistically_calibrated: bool = False
@@ -214,6 +219,7 @@ class ProviderResult(BaseModel):
     limitations: list[str] = Field(default_factory=list)
     tool_events: list[ProviderToolEvent] = Field(default_factory=list)
     session_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProviderEvent(BaseModel):
@@ -235,6 +241,8 @@ class ProviderEvent(BaseModel):
     error: ProviderError | None = None
     tool_event: ProviderToolEvent | None = None
     receipt_id: str | None = None
+    session_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=_now)
 
 
@@ -246,7 +254,7 @@ class ProviderModelCatalog(BaseModel):
     limitations: list[str] = Field(default_factory=list)
 
 
-_BROAD_READ_ONLY_CAPABILITIES = [
+_BROAD_READ_ONLY_CAPABILITIES = (
     "chat",
     "coding",
     "creative",
@@ -260,9 +268,9 @@ _BROAD_READ_ONLY_CAPABILITIES = [
     "security",
     "tools",
     "writing",
-]
+)
 
-_LOCAL_TEXT_CAPABILITIES = [
+_LOCAL_TEXT_CAPABILITIES = (
     "chat",
     "coding",
     "creative",
@@ -273,7 +281,7 @@ _LOCAL_TEXT_CAPABILITIES = [
     "reflection",
     "research",
     "writing",
-]
+)
 
 _ROUTING_PROFILES = {
     "mock": ProviderRoutingProfile(
@@ -284,6 +292,7 @@ _ROUTING_PROFILES = {
         quality_tier="weak",
         latency_category="low",
         task_capabilities=_BROAD_READ_ONLY_CAPABILITIES,
+        capability_roles=["cheap_local", "fast_general"],
     ),
     "codex": ProviderRoutingProfile(
         provider_family="openai",
@@ -291,6 +300,7 @@ _ROUTING_PROFILES = {
         billing_classification="subscription_backed",
         quality_tier="strong",
         task_capabilities=_BROAD_READ_ONLY_CAPABILITIES,
+        capability_roles=["strong_reasoning"],
     ),
     "antigravity": ProviderRoutingProfile(
         provider_family="google",
@@ -298,6 +308,7 @@ _ROUTING_PROFILES = {
         billing_classification="subscription_backed",
         quality_tier="strong",
         task_capabilities=_BROAD_READ_ONLY_CAPABILITIES,
+        capability_roles=["fast_general", "strong_reasoning", "research", "coding_analysis"],
     ),
     "claude": ProviderRoutingProfile(
         provider_family="anthropic",
@@ -305,6 +316,7 @@ _ROUTING_PROFILES = {
         billing_classification="subscription_backed",
         quality_tier="strong",
         task_capabilities=_BROAD_READ_ONLY_CAPABILITIES,
+        capability_roles=["strong_reasoning"],
     ),
     "ollama": ProviderRoutingProfile(
         provider_family="local",
@@ -314,6 +326,7 @@ _ROUTING_PROFILES = {
         quality_tier="weak",
         latency_category="low",
         task_capabilities=_LOCAL_TEXT_CAPABILITIES,
+        capability_roles=["cheap_local", "fast_general"],
     ),
     "gemini": ProviderRoutingProfile(
         provider_family="google",
@@ -321,8 +334,25 @@ _ROUTING_PROFILES = {
         billing_classification="subscription_backed",
         quality_tier="strong",
         task_capabilities=_LOCAL_TEXT_CAPABILITIES,
+        capability_roles=["strong_reasoning"],
+    ),
+    "cursor": ProviderRoutingProfile(
+        provider_family="cursor",
+        adapter_type="cli",
+        billing_classification="subscription_backed",
+        quality_tier="strong",
+        cost_category="standard",
+        latency_category="standard",
+        task_capabilities=["coding", "file_analysis", "planning", "repository"],
+        capability_roles=["coding_analysis", "coding_agent"],
+        tool_names=["read", "edit", "terminal"],
     ),
 }
+
+
+def _routing_profile(name: str) -> ProviderRoutingProfile:
+    """Return an isolated copy so provider instances cannot mutate shared templates."""
+    return _ROUTING_PROFILES[name].model_copy(deep=True)
 
 
 class CancellationToken:
@@ -557,7 +587,7 @@ class MockChatProvider(EngineBackedChatProvider):
             display_name="Mock (deterministic local)",
             engine=engine,
             adapter=NoopAdapter(),
-            routing_profile=_ROUTING_PROFILES["mock"],
+            routing_profile=_routing_profile("mock"),
         )
         if chunk_size < 1:
             raise ValueError("chunk_size must be positive")
@@ -807,7 +837,7 @@ class OllamaChatProvider(EngineBackedChatProvider):
             engine=engine,
             adapter=adapter,
             supports_model_discovery=True,
-            routing_profile=_ROUTING_PROFILES["ollama"],
+            routing_profile=_routing_profile("ollama"),
         )
 
     @property
@@ -1059,6 +1089,7 @@ class ProviderRegistry:
             "google-antigravity": AntigravityAdapter(),
             "claude-code": ClaudeCodeAdapter(),
             "ollama": OllamaAdapter(),
+            "cursor": CursorAdapter(),
         }
         required = {"claude-code", "codex-cli", "google-antigravity", "ollama"}
         missing = sorted(required.difference(runtime_adapters))
@@ -1072,7 +1103,7 @@ class ProviderRegistry:
                 display_name="Codex CLI",
                 engine=engine,
                 adapter=runtime_adapters["codex-cli"],
-                routing_profile=_ROUTING_PROFILES["codex"],
+                routing_profile=_routing_profile("codex"),
             ),
             _antigravity_chat_provider(engine, runtime_adapters["google-antigravity"]),
             EngineBackedChatProvider(
@@ -1080,7 +1111,7 @@ class ProviderRegistry:
                 display_name="Claude Code",
                 engine=engine,
                 adapter=runtime_adapters["claude-code"],
-                routing_profile=_ROUTING_PROFILES["claude"],
+                routing_profile=_routing_profile("claude"),
             ),
             OllamaChatProvider(
                 engine,
@@ -1092,9 +1123,13 @@ class ProviderRegistry:
                 display_name="Gemini CLI",
                 executable="gemini",
                 executable_finder=executable_finder,
-                routing_profile=_ROUTING_PROFILES["gemini"],
+                routing_profile=_routing_profile("gemini"),
             ),
         ]
+        if "cursor" in runtime_adapters:
+            providers.append(
+                _cursor_chat_provider(engine, runtime_adapters["cursor"])
+            )
         self._providers = {provider.provider_id: provider for provider in providers}
 
     def discover(self) -> list[ProviderStatus]:
@@ -1204,6 +1239,8 @@ def _events_from_result(
         sequence=sequence,
         event_type="completed",
         receipt_id=result.receipt_id,
+        session_id=result.session_id,
+        metadata=dict(result.metadata),
     )
 
 
@@ -1341,6 +1378,12 @@ def _antigravity_chat_provider(engine: _EngineLike, adapter: _AdapterLike) -> Ch
     from opencobalt.personal_ai.antigravity import AntigravityChatProvider
 
     return AntigravityChatProvider(engine, adapter)
+
+
+def _cursor_chat_provider(engine: _EngineLike, adapter: _AdapterLike) -> ChatProvider:
+    from opencobalt.personal_ai.cursor_acp import CursorACPProvider
+
+    return CursorACPProvider(engine, adapter)
 
 
 def _antigravity_envelope_error(provider_id: str, raw_content: str) -> str | None:

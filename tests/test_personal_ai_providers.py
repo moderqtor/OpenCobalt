@@ -212,6 +212,22 @@ def test_registry_discovery_keeps_installation_authentication_and_readiness_dist
     assert engine.calls == []
 
 
+def test_mock_provider_routing_profile_is_not_shared_module_state():
+    from opencobalt.personal_ai.providers import _ROUTING_PROFILES, MockChatProvider
+
+    engine = FakeEngine()
+    first = MockChatProvider(engine)
+    first.routing_profile.capability_roles.append("coding_agent")
+    first.routing_profile.task_capabilities.append("stolen_capability")
+
+    second = MockChatProvider(engine)
+
+    assert "coding_agent" not in second.routing_profile.capability_roles
+    assert "stolen_capability" not in second.routing_profile.task_capabilities
+    assert "coding_agent" not in _ROUTING_PROFILES["mock"].capability_roles
+    assert "stolen_capability" not in _ROUTING_PROFILES["mock"].task_capabilities
+
+
 def test_unavailable_executable_does_not_claim_provider_readiness():
     adapters = _adapters()
     adapters["codex-cli"] = FakeAdapter("codex-cli", available=False)

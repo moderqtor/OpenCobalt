@@ -43,8 +43,10 @@ from .router import (
     ProviderSnapshot,
     RoutingRequest,
     approval_requirements,
+    classify_capability_role,
     classify_complexity,
     classify_privacy,
+    classify_requirements,
     classify_risk,
     classify_task,
     resolve_persona_for_provider,
@@ -210,6 +212,7 @@ class ChatService:
             model_override=request.model_override,
             requested_tools=tuple(request.requested_tools),
             requested_skills=tuple(request.requested_skills),
+            project_path=conversation.project_path,
         )
         snapshots = self._provider_snapshots(routing_request, persona_version)
 
@@ -542,12 +545,46 @@ class ChatService:
             )
             return
 
+        if route.metadata.get("capability_role") == "coding_agent" and conversation.project_path:
+            from opencobalt.core.mission_engine import MissionStore
+            from opencobalt.personal_ai.coding import CodingMissionStore
+
+            missions = self.missions or MissionStore(self.store.db_path)
+            coding_store = CodingMissionStore(self.store, missions)
+            existing = self.store.get_coding_mission_for_route(route.route_id)
+            coding = existing or coding_store.create(
+                objective=request.message,
+                repository_path=conversation.project_path,
+                conversation_id=conversation.conversation_id,
+                route_id=route.route_id,
+                capability_role="coding_agent",
+                provider_id=route.selected_provider,
+                acp_session_id=conversation.metadata.get("acp_session_id"),
+            )
+            route = route.model_copy(
+                update={
+                    "metadata": {
+                        **route.metadata,
+                        "coding_mission_id": coding["coding_id"],
+                        "coding_mission": coding["mission_id"],
+                    },
+                    "updated_at": _now(),
+                }
+            )
+            self.store.save_route(route)
+
         current: ChatExecution | None = None
         final_content = ""
         final_usage = ProviderUsage()
         final_receipt_id: str | None = None
         final_error: ProviderError | None = None
         attempt_index = 0
+        captured_session_id: str | None = None
+        captured_files: list[str] = []
+        captured_terminals: list[str] = []
+        captured_tests: list[str] = []
+        captured_approvals: list[dict[str, Any]] = []
+        captured_limitations: list[str] = []
 
         while attempt_index < len(ordered):
             candidate = ordered[attempt_index]
@@ -645,6 +682,14 @@ class ChatService:
                     "persona_version_id": persona_version.persona_version_id,
                     "reasoning_effort": request.reasoning_effort,
                     "cognitive_policy": cognitive_policy,
+                    "capability_role": route.metadata.get("capability_role"),
+                    "chat_surface": (
+                        "coding_mission"
+                        if route.metadata.get("coding_mission_id")
+                        else "general_chat"
+                    ),
+                    "acp_session_id": conversation.metadata.get("acp_session_id"),
+                    "mission_id": route.metadata.get("coding_mission_id"),
                 },
             )
             attempt_content = ""
@@ -673,17 +718,42 @@ class ChatService:
                         payload = {"usage": attempt_usage.model_dump(mode="json")}
                     elif provider_event.event_type == "tool_completed":
                         normalized_type = "tool_completed"
-                        payload = {
-                            "tool_event": (
-                                provider_event.tool_event.model_dump(mode="json")
-                                if provider_event.tool_event
-                                else {"status": "unknown"}
-                            )
-                        }
+                        tool_payload = (
+                            provider_event.tool_event.model_dump(mode="json")
+                            if provider_event.tool_event
+                            else {"status": "unknown"}
+                        )
+                        payload = {"tool_event": tool_payload}
+                        tool_name = str(tool_payload.get("tool_name") or "").casefold()
+                        summary = str(tool_payload.get("summary") or tool_payload.get("tool_name") or "")[:200]
+                        if summary and any(token in tool_name for token in ("edit", "write", "apply")):
+                            captured_files.append(summary)
+                        elif summary and any(token in tool_name for token in ("terminal", "bash", "shell")):
+                            captured_terminals.append(summary)
+                            if "test" in tool_name or "pytest" in summary.casefold():
+                                captured_tests.append(summary)
                     elif provider_event.event_type == "completed":
                         terminal_type = "completed"
                         normalized_type = "provider_completed"
                         payload = {"receipt_id": provider_event.receipt_id}
+                        if provider_event.session_id:
+                            captured_session_id = provider_event.session_id
+                        permissions = provider_event.metadata.get("acp_permissions")
+                        if isinstance(permissions, list):
+                            captured_approvals = [
+                                item for item in permissions if isinstance(item, dict)
+                            ]
+                            if captured_approvals:
+                                route = route.model_copy(
+                                    update={
+                                        "metadata": {
+                                            **route.metadata,
+                                            "acp_permissions": captured_approvals,
+                                        },
+                                        "updated_at": _now(),
+                                    }
+                                )
+                                self.store.save_route(route)
                     else:
                         terminal_type = provider_event.event_type
                         raw_error = provider_event.error or ProviderError(
@@ -898,6 +968,36 @@ class ChatService:
                 receipt_id=final_receipt_id,
             ),
         )
+        if captured_session_id:
+            conversation.metadata = {
+                **conversation.metadata,
+                "acp_session_id": captured_session_id,
+            }
+            self.store.update_conversation_metadata(
+                conversation.conversation_id, conversation.metadata
+            )
+        coding_id = route.metadata.get("coding_mission_id")
+        if coding_id:
+            from opencobalt.core.mission_engine import MissionStore
+            from opencobalt.personal_ai.coding import CodingMissionStore
+
+            record = self.store.get_coding_mission(str(coding_id))
+            if record is not None:
+                CodingMissionStore(
+                    self.store, self.missions or MissionStore(self.store.db_path)
+                ).complete(
+                    record,
+                    status="complete",
+                    outcome=final_content[:4000],
+                    receipt_id=final_receipt_id,
+                    acp_session_id=captured_session_id,
+                    model_id=current.model_id,
+                    files_changed=captured_files,
+                    terminal_operations=captured_terminals,
+                    tests=captured_tests,
+                    approvals=captured_approvals,
+                    limitations=captured_limitations,
+                )
         memory = self._propose_explicit_memory(request, user_message)
         completed = lifecycle(
             "completed",
@@ -1170,11 +1270,12 @@ class ChatService:
             profile = status.routing_profile
             preference = preferences.get(status.provider_id)
             chat_isolated = status.capabilities.answer_only_isolation
-            available = status.execution_supported and chat_isolated
+            coding_runtime = "coding_agent" in getattr(profile, "capability_roles", [])
+            available = status.execution_supported and (chat_isolated or coding_runtime)
             unavailable_reason = None
             if not status.execution_supported:
                 unavailable_reason = "provider has no discovered executable completion boundary"
-            elif not chat_isolated:
+            elif not chat_isolated and not coding_runtime:
                 unavailable_reason = (
                     "provider lacks a proven answer-only isolation boundary and Chat "
                     "approval-and-resume is unavailable"
@@ -1273,6 +1374,7 @@ class ChatService:
                             getattr(record, "quality_tier", None) or profile.quality_tier
                         ),
                         capabilities=frozenset(profile.task_capabilities),
+                        capability_roles=frozenset(getattr(profile, "capability_roles", []) or []),
                         tool_names=frozenset(
                             list(profile.tool_names) + list(getattr(record, "tool_names", []) or [])
                         ),
@@ -1393,6 +1495,15 @@ class ChatService:
             outcome_status="policy_denied",
             metadata={
                 "routing": "deterministic_snapshot_v1",
+                "capability_role": classify_capability_role(
+                    request.prompt,
+                    task_class,
+                    complexity,
+                    classify_requirements(
+                        request.prompt, task_class, complexity, request.cognitive_policy
+                    ),
+                    project_path=request.project_path,
+                ),
                 "risk_classification": risk,
                 "local_only": (
                     request.settings.local_only_default

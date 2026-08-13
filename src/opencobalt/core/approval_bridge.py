@@ -47,7 +47,13 @@ APPROVAL_STATES = (
     "superseded",
 )
 
-SOURCE_TYPES = ("opportunity_track", "opportunity_plan", "delegation_node", "auto_route")
+SOURCE_TYPES = (
+    "opportunity_track",
+    "opportunity_plan",
+    "delegation_node",
+    "auto_route",
+    "acp_permission",
+)
 
 EVENT_REQUEST_CREATED = "approval.request_created"
 EVENT_REQUEST_SUPERSEDED = "approval.request_superseded"

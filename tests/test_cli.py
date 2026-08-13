@@ -89,7 +89,7 @@ class TestStatus:
 
 
 class TestDoctorAntigravity:
-    def test_antigravity_doctor_reports_missing_cleanly(self, monkeypatch, tmp_path):
+    def test_antigravity_doctor_reports_missing_cleanly(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(
             "opencobalt.integrations.antigravity_integration.discover_antigravity_runtime",
@@ -113,7 +113,7 @@ class TestDoctorAntigravity:
         assert "Google Antigravity CLI" in plain
         assert "agy not on PATH" in plain
 
-    def test_antigravity_doctor_reports_discovered_capabilities(self, monkeypatch, tmp_path):
+    def test_antigravity_doctor_reports_discovered_capabilities(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(
             "opencobalt.integrations.antigravity_integration.discover_antigravity_runtime",

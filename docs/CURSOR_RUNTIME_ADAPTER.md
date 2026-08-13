@@ -96,7 +96,20 @@ verifiability level.
 `opencobalt integrations check` can report the Cursor editor as installed. That
 is not a runtime execution claim. Runtime execution requires adapter evidence.
 
-## Limits
+## Personal AI coding runtime
+
+Cursor ACP is the Personal AI coding-agent runtime. It is separate from this
+plan-mode inspect path:
+
+```
+agent acp
+```
+
+OpenCobalt speaks newline-delimited JSON-RPC 2.0 over stdio, authenticates with
+`cursor_login`, and maps permission requests into the Approval Bridge. It does
+not treat an ACP session as source of truth for missions, receipts, or
+approvals.
+
 
 - Cursor may require a signed-in account or API credential outside OpenCobalt.
 - Cursor may use networked model services.

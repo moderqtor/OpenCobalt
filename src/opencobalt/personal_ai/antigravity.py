@@ -19,7 +19,6 @@ from opencobalt.integrations.antigravity_integration import (
     build_antigravity_models_command,
 )
 from opencobalt.personal_ai.providers import (
-    _ROUTING_PROFILES,
     AuthenticationState,
     CancellationToken,
     EngineBackedChatProvider,
@@ -39,6 +38,7 @@ from opencobalt.personal_ai.providers import (
     _pre_execution_error,
     _public_error_text,
     _public_output_text,
+    _routing_profile,
     _safe_model_identifier,
 )
 
@@ -386,7 +386,7 @@ class AntigravityChatProvider(EngineBackedChatProvider):
             engine=engine,
             adapter=adapter,
             supports_model_discovery=True,
-            routing_profile=_ROUTING_PROFILES["antigravity"],
+            routing_profile=_routing_profile("antigravity"),
         )
         self._catalog_cache: ProviderModelCatalog | None = None
 

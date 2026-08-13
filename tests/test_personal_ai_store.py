@@ -122,8 +122,9 @@ def test_store_adds_versioned_schema_without_disturbing_legacy_ledger(tmp_path):
         "research_sources",
         "research_evidence",
         "research_citations",
+        "coding_missions",
     }.issubset(tables)
-    assert versions == [(1,), (2,), (3,)]
+    assert versions == [(1,), (2,), (3,), (4,)]
     assert foreign_keys == {
         "personas": {("active_version_id", "persona_versions", "persona_version_id")},
         "persona_versions": {("persona_id", "personas", "persona_id")},
@@ -323,7 +324,7 @@ def test_v2_migration_rebuilds_pre_fix_tables_without_losing_records(tmp_path):
     with sqlite3.connect(db_path) as conn:
         assert conn.execute(
             "SELECT version FROM personal_ai_schema_versions ORDER BY version"
-        ).fetchall() == [(1,), (2,), (3,)]
+        ).fetchall() == [(1,), (2,), (3,), (4,)]
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert {
             (row[3], row[2], row[4])
