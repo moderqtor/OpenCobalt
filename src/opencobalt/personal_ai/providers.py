@@ -235,6 +235,8 @@ class ProviderEvent(BaseModel):
         "completed",
         "error",
         "cancelled",
+        "approval_required",
+        "approval_decided",
     ]
     text_delta: str | None = None
     usage: ProviderUsage | None = None
@@ -1083,6 +1085,8 @@ class ProviderRegistry:
         adapters: Mapping[str, _AdapterLike] | None = None,
         executable_finder: Callable[[str], str | None] = shutil.which,
         ollama_endpoint: str = "http://127.0.0.1:11434",
+        approval_store: Any | None = None,
+        approval_coordinator: Any | None = None,
     ) -> None:
         runtime_adapters: Mapping[str, _AdapterLike] = adapters or {
             "codex-cli": CodexCliAdapter(),
@@ -1128,7 +1132,12 @@ class ProviderRegistry:
         ]
         if "cursor" in runtime_adapters:
             providers.append(
-                _cursor_chat_provider(engine, runtime_adapters["cursor"])
+                _cursor_chat_provider(
+                    engine,
+                    runtime_adapters["cursor"],
+                    approval_store=approval_store,
+                    approval_coordinator=approval_coordinator,
+                )
             )
         self._providers = {provider.provider_id: provider for provider in providers}
 
@@ -1380,10 +1389,21 @@ def _antigravity_chat_provider(engine: _EngineLike, adapter: _AdapterLike) -> Ch
     return AntigravityChatProvider(engine, adapter)
 
 
-def _cursor_chat_provider(engine: _EngineLike, adapter: _AdapterLike) -> ChatProvider:
+def _cursor_chat_provider(
+    engine: _EngineLike,
+    adapter: _AdapterLike,
+    *,
+    approval_store: Any | None = None,
+    approval_coordinator: Any | None = None,
+) -> ChatProvider:
     from opencobalt.personal_ai.cursor_acp import CursorACPProvider
 
-    return CursorACPProvider(engine, adapter)
+    return CursorACPProvider(
+        engine,
+        adapter,
+        approval_store=approval_store,
+        coordinator=approval_coordinator,
+    )
 
 
 def _antigravity_envelope_error(provider_id: str, raw_content: str) -> str | None:

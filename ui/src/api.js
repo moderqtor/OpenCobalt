@@ -146,6 +146,17 @@ export const api = {
   rerunRoute: (routeId, input = {}) => request(`/routes/${encodeURIComponent(routeId)}/rerun`, jsonOptions("POST", input)).then((value) => recordOf(value, "route rerun")),
   promoteRoute: (routeId) => request(`/routes/${encodeURIComponent(routeId)}/promote`, jsonOptions("POST")).then((value) => recordOf(value, "route promotion")),
   cancelExecution: (executionId) => request(`/executions/${encodeURIComponent(executionId)}/cancel`, jsonOptions("POST")).then((value) => recordOf(value, "cancellation")),
+  approvals: (query = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(query).forEach(([key, value]) => {
+      if (value != null && value !== "") params.set(key, String(value));
+    });
+    const suffix = params.toString() ? `?${params}` : "";
+    return request(`/approvals${suffix}`).then((value) => listOf(value, ["approvals", "items", "data", "results"]));
+  },
+  approval: (requestId) => request(`/approvals/${encodeURIComponent(requestId)}`).then((value) => recordOf(value, "approval")),
+  allowApprovalOnce: (requestId, reason = "") => request(`/approvals/${encodeURIComponent(requestId)}/allow-once`, jsonOptions("POST", { reason })).then((value) => recordOf(value, "approval decision")),
+  denyApproval: (requestId, reason = "") => request(`/approvals/${encodeURIComponent(requestId)}/deny`, jsonOptions("POST", { reason })).then((value) => recordOf(value, "approval decision")),
   personas: () => request("/personas").then((value) => listOf(value, ["personas", "items", "data", "results"])),
   duplicatePersona: (personaId, input) => request(`/personas/${encodeURIComponent(personaId)}/duplicate`, jsonOptions("POST", input)).then((value) => recordOf(value, "persona")),
   updatePersona: (personaId, input) => request(`/personas/${encodeURIComponent(personaId)}`, jsonOptions("PATCH", input)).then((value) => recordOf(value, "persona")),

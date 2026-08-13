@@ -64,6 +64,10 @@ class InteractiveSession:
         self._rx = b""
 
     @property
+    def alive(self) -> bool:
+        return self._proc.poll() is None
+
+    @property
     def cancelled(self) -> bool:
         return bool(self._cancel_check and self._cancel_check())
 

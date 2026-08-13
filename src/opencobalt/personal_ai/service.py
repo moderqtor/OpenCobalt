@@ -158,6 +158,7 @@ class ChatService:
         enable_mock: bool = False,
         missions: Any | None = None,
         engine: Any | None = None,
+        approval_coordinator: Any | None = None,
     ) -> None:
         self.store = store
         self.providers = providers
@@ -165,6 +166,7 @@ class ChatService:
         self.enable_mock = enable_mock
         self.missions = missions
         self.engine = engine
+        self.approval_coordinator = approval_coordinator
         self._cancellations: dict[str, CancellationToken] = {}
         self._cancellation_lock = threading.Lock()
         ensure_builtin_personas(self.store)
@@ -297,6 +299,10 @@ class ChatService:
             snapshots=snapshots,
         )
 
+    def has_live_pending_approval(self, execution_id: str) -> bool:
+        coordinator = self.approval_coordinator
+        return bool(coordinator is not None and coordinator.has_live_pending(execution_id))
+
     def cancel(self, execution_id: str) -> bool:
         """Request cooperative cancellation and persist the request state."""
         with self._cancellation_lock:
@@ -304,6 +310,8 @@ class ChatService:
         if cancellation is None:
             return False
         cancellation.cancel()
+        if self.approval_coordinator is not None:
+            self.approval_coordinator.cancel_execution(execution_id)
         execution = self.store.get_execution(execution_id)
         if execution is not None and execution.status in {"queued", "running"}:
             now = _now()
@@ -322,6 +330,8 @@ class ChatService:
         stream cannot resume reliably, so abandonment owns the durable transition
         immediately and is deliberately idempotent.
         """
+        if self.has_live_pending_approval(execution_id):
+            return False
         with self._cancellation_lock:
             cancellation = self._cancellations.pop(execution_id, None)
         if cancellation is not None:
@@ -679,6 +689,8 @@ class ChatService:
                 cwd=conversation.project_path,
                 metadata={
                     "route_id": route.route_id,
+                    "execution_id": current.execution_id,
+                    "conversation_id": conversation.conversation_id,
                     "persona_version_id": persona_version.persona_version_id,
                     "reasoning_effort": request.reasoning_effort,
                     "cognitive_policy": cognitive_policy,
@@ -689,7 +701,8 @@ class ChatService:
                         else "general_chat"
                     ),
                     "acp_session_id": conversation.metadata.get("acp_session_id"),
-                    "mission_id": route.metadata.get("coding_mission_id"),
+                    "mission_id": route.metadata.get("coding_mission")
+                    or route.metadata.get("coding_mission_id"),
                 },
             )
             attempt_content = ""
@@ -732,6 +745,38 @@ class ChatService:
                             captured_terminals.append(summary)
                             if "test" in tool_name or "pytest" in summary.casefold():
                                 captured_tests.append(summary)
+                    elif provider_event.event_type in {"approval_required", "approval_decided"}:
+                        normalized_type = provider_event.event_type
+                        payload = {
+                            "approval": provider_event.metadata.get("approval") or {}
+                        }
+                        approval = payload["approval"]
+                        if isinstance(approval, dict) and approval:
+                            captured_approvals = [
+                                *[
+                                    item
+                                    for item in captured_approvals
+                                    if item.get("request_id") != approval.get("request_id")
+                                ],
+                                approval,
+                            ]
+                            route = route.model_copy(
+                                update={
+                                    "metadata": {
+                                        **route.metadata,
+                                        "acp_permissions": captured_approvals,
+                                    },
+                                    "updated_at": _now(),
+                                }
+                            )
+                            self.store.save_route(route)
+                            coding_id = route.metadata.get("coding_mission_id")
+                            if coding_id:
+                                record = self.store.get_coding_mission(str(coding_id))
+                                if record is not None:
+                                    record["approvals"] = captured_approvals
+                                    record["updated_at"] = _now().isoformat()
+                                    self.store.save_coding_mission(record)
                     elif provider_event.event_type == "completed":
                         terminal_type = "completed"
                         normalized_type = "provider_completed"
@@ -754,6 +799,11 @@ class ChatService:
                                     }
                                 )
                                 self.store.save_route(route)
+                        files_changed = provider_event.metadata.get("files_changed")
+                        if isinstance(files_changed, list):
+                            captured_files.extend(
+                                str(item)[:200] for item in files_changed if item
+                            )
                     else:
                         terminal_type = provider_event.event_type
                         raw_error = provider_event.error or ProviderError(
@@ -851,6 +901,19 @@ class ChatService:
                     payload={"error": final_error.model_dump(mode="json")},
                 )
                 self._persist_lifecycle_event(current, cancelled)
+                self._finalize_coding_mission(
+                    route,
+                    status="cancelled",
+                    outcome="Execution cancelled.",
+                    receipt_id=attempt_receipt,
+                    acp_session_id=captured_session_id,
+                    model_id=current.model_id,
+                    files_changed=captured_files,
+                    terminal_operations=captured_terminals,
+                    tests=captured_tests,
+                    approvals=captured_approvals,
+                    limitations=captured_limitations,
+                )
                 yield cancelled
                 return
 
@@ -905,6 +968,19 @@ class ChatService:
                     },
                 )
                 self._persist_lifecycle_event(current, error_event)
+                self._finalize_coding_mission(
+                    route,
+                    status="failed",
+                    outcome=final_error.message,
+                    receipt_id=attempt_receipt,
+                    acp_session_id=captured_session_id,
+                    model_id=current.model_id,
+                    files_changed=captured_files,
+                    terminal_operations=captured_terminals,
+                    tests=captured_tests,
+                    approvals=captured_approvals,
+                    limitations=captured_limitations,
+                )
                 yield error_event
                 return
 
@@ -998,6 +1074,22 @@ class ChatService:
                     approvals=captured_approvals,
                     limitations=captured_limitations,
                 )
+        if final_receipt_id and captured_approvals and self.engine is not None:
+            getter = getattr(getattr(self.engine, "store", None), "get_receipt", None)
+            saver = getattr(getattr(self.engine, "store", None), "save_receipt", None)
+            if callable(getter) and callable(saver):
+                receipt = getter(final_receipt_id)
+                if receipt is not None:
+                    extra = [
+                        f"approval:{item.get('request_id') or item.get('approval_request_id')}"
+                        for item in captured_approvals
+                        if isinstance(item, dict)
+                        and (item.get("request_id") or item.get("approval_request_id"))
+                    ]
+                    receipt.provenance_refs = list(
+                        dict.fromkeys([*list(receipt.provenance_refs or []), *extra])
+                    )
+                    saver(receipt)
         memory = self._propose_explicit_memory(request, user_message)
         completed = lifecycle(
             "completed",
@@ -1011,6 +1103,46 @@ class ChatService:
         )
         self._persist_lifecycle_event(current, completed)
         yield completed
+
+    def _finalize_coding_mission(
+        self,
+        route: RouteRecord,
+        *,
+        status: str,
+        outcome: str,
+        receipt_id: str | None,
+        acp_session_id: str | None,
+        model_id: str | None,
+        files_changed: list[str],
+        terminal_operations: list[str],
+        tests: list[str],
+        approvals: list[dict[str, Any]],
+        limitations: list[str],
+    ) -> None:
+        coding_id = route.metadata.get("coding_mission_id")
+        if not coding_id:
+            return
+        from opencobalt.core.mission_engine import MissionStore
+        from opencobalt.personal_ai.coding import CodingMissionStore
+
+        record = self.store.get_coding_mission(str(coding_id))
+        if record is None:
+            return
+        CodingMissionStore(
+            self.store, self.missions or MissionStore(self.store.db_path)
+        ).complete(
+            record,
+            status=status,
+            outcome=outcome[:4000],
+            receipt_id=receipt_id,
+            acp_session_id=acp_session_id,
+            model_id=model_id,
+            files_changed=files_changed,
+            terminal_operations=terminal_operations,
+            tests=tests,
+            approvals=approvals,
+            limitations=limitations,
+        )
 
     def _persist_terminal_assistant_message(
         self,

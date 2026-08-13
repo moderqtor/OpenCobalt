@@ -18,6 +18,8 @@ Approval states:
   executed    handed to the execution engine and the run succeeded
   failed      handed to the execution engine and the run failed
   superseded  replaced by a newer approval request for the same source
+  expired     wait bound elapsed without a decision
+  stale       live provider session is gone (restart, crash, or cancellation)
 """
 
 from __future__ import annotations
@@ -45,6 +47,8 @@ APPROVAL_STATES = (
     "executed",
     "failed",
     "superseded",
+    "expired",
+    "stale",
 )
 
 SOURCE_TYPES = (
@@ -61,6 +65,8 @@ EVENT_STEP_APPROVED = "approval.step_approved"
 EVENT_STEP_REJECTED = "approval.step_rejected"
 EVENT_STEP_EXECUTED = "approval.step_executed"
 EVENT_STEP_FAILED = "approval.step_failed"
+EVENT_STEP_EXPIRED = "approval.step_expired"
+EVENT_STEP_STALE = "approval.step_stale"
 
 _DEFAULT_DB = Path(".opencobalt") / "ledger.db"
 _DEFAULT_EVENTS_PATH = Path(".opencobalt") / "events" / "approval.jsonl"
@@ -87,6 +93,14 @@ class BlockedStepError(ApprovalError):
 
 class NotApprovedError(ApprovalError):
     """A step must be approved before it can be handed to execution."""
+
+
+class InvalidApprovalTransitionError(ApprovalError):
+    """The requested decision is not valid for the current approval state."""
+
+
+class StaleApprovalError(ApprovalError):
+    """The live provider session that owned this approval is gone."""
 
 
 @dataclass
@@ -183,6 +197,10 @@ class ApprovalRequest:
             self.state = "failed"
         elif "executed" in states:
             self.state = "executed"
+        elif "stale" in states:
+            self.state = "stale"
+        elif "expired" in states:
+            self.state = "expired"
         else:
             self.state = "rejected"
         self.updated_at = _now_iso()
@@ -304,13 +322,23 @@ class ApprovalStore:
         return ApprovalRequest.from_dict(json.loads(row["request_json"])) if row else None
 
     def list_requests(
-        self, *, state: str | None = None, limit: int = 50
+        self,
+        *,
+        state: str | None = None,
+        source_type: str | None = None,
+        limit: int = 50,
     ) -> list[ApprovalRequest]:
         sql = "SELECT request_json FROM approval_requests"
+        clauses: list[str] = []
         params: list[Any] = []
         if state:
-            sql += " WHERE state = ?"
+            clauses.append("state = ?")
             params.append(state)
+        if source_type:
+            clauses.append("source_type = ?")
+            params.append(source_type)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         with self._connect() as conn:
@@ -745,6 +773,121 @@ class ApprovalBridge:
         request.refresh_state()
         self.store.save_request(request)
         return rejected
+
+    def decide_pending(
+        self,
+        request_id: str,
+        *,
+        decision: str,
+        step_id: str | None = None,
+        decided_by: str = "human",
+        reason: str = "",
+        decision_kind: str | None = None,
+    ) -> list[ApprovalStep]:
+        """Apply one strict pending-only decision. Duplicate or terminal states fail."""
+        if decision not in {"approved", "rejected"}:
+            raise InvalidApprovalTransitionError(f"unsupported decision: {decision}")
+        request = self._require_request(request_id)
+        if request.state in {"superseded", "stale", "expired"}:
+            raise StaleApprovalError(
+                f"approval {request.request_id} is {request.state} and cannot be decided"
+            )
+        targets = self._target_steps(request, step_id)
+        decided: list[ApprovalStep] = []
+        for step in targets:
+            if step.blocked and decision == "approved":
+                raise BlockedStepError(
+                    f"step {step.step_id} is black-risk and cannot be approved"
+                )
+            if step.approval_state in {"stale", "expired", "superseded"}:
+                raise StaleApprovalError(
+                    f"step {step.step_id} is {step.approval_state} and cannot be decided"
+                )
+            if step.approval_state != "pending":
+                raise InvalidApprovalTransitionError(
+                    f"step {step.step_id} is {step.approval_state}, not pending"
+                )
+            if decision == "approved":
+                step.approval_state = "approved"
+                step.metadata = {
+                    **step.metadata,
+                    "decision_kind": decision_kind or "allow_once",
+                    "decision_source": decided_by,
+                }
+                event = EVENT_STEP_APPROVED
+                message = f"step approved ({step.risk_level}): {step.task[:80]}"
+            else:
+                step.approval_state = "rejected"
+                step.metadata = {
+                    **step.metadata,
+                    "decision_kind": "deny",
+                    "decision_source": decided_by,
+                }
+                event = EVENT_STEP_REJECTED
+                message = f"step rejected: {step.task[:80]}"
+            step.touch()
+            decided.append(step)
+            self.store.record_decision(
+                ApprovalDecision(
+                    decision_id=_uid("adec"),
+                    request_id=request.request_id,
+                    step_id=step.step_id,
+                    decision=decision,
+                    reason=reason,
+                    decided_by=decided_by,
+                )
+            )
+            self._emit(
+                event,
+                step.step_id,
+                message,
+                request_id=request.request_id,
+                decided_by=decided_by,
+                decision_kind=step.metadata.get("decision_kind"),
+            )
+        if not decided:
+            raise InvalidApprovalTransitionError("no pending step could be decided")
+        request.refresh_state()
+        self.store.save_request(request)
+        return decided
+
+    def mark_terminal(
+        self,
+        request_id: str,
+        *,
+        state: str,
+        step_id: str | None = None,
+        reason: str = "",
+        decided_by: str = "runtime",
+    ) -> list[ApprovalStep]:
+        """Move pending steps to expired or stale. Already-terminal steps are skipped."""
+        if state not in {"expired", "stale"}:
+            raise InvalidApprovalTransitionError(f"unsupported terminal state: {state}")
+        request = self._require_request(request_id)
+        changed: list[ApprovalStep] = []
+        for step in self._target_steps(request, step_id):
+            if step.approval_state != "pending":
+                continue
+            step.approval_state = state
+            step.metadata = {
+                **step.metadata,
+                "terminal_reason": reason,
+                "decision_source": decided_by,
+            }
+            step.touch()
+            changed.append(step)
+            event = EVENT_STEP_EXPIRED if state == "expired" else EVENT_STEP_STALE
+            self._emit(
+                event,
+                step.step_id,
+                f"step {state}: {step.task[:80]}",
+                request_id=request.request_id,
+                reason=reason,
+                decided_by=decided_by,
+            )
+        request.refresh_state()
+        self.store.save_request(request)
+        return changed
 
     # --- Execution handoff ---
 

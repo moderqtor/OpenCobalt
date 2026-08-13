@@ -83,6 +83,36 @@ def test_ndjson_disconnect_tracks_execution_before_execution_started() -> None:
     assert service.abandoned == ["chatx-1"]
 
 
+def test_ndjson_disconnect_does_not_abandon_live_pending_approval() -> None:
+    class FakeService:
+        def __init__(self) -> None:
+            self.abandoned = []
+
+        def stream_request(self, _request):
+            yield ChatLifecycleEvent(
+                event_type="approval_required",
+                request_id="req-1",
+                conversation_id="conv-1",
+                route_id="route-1",
+                execution_id="chatx-1",
+                sequence=1,
+                payload={"approval": {"request_id": "areq-1", "state": "pending"}},
+            )
+
+        def has_live_pending_approval(self, execution_id):
+            return execution_id == "chatx-1"
+
+        def abandon(self, execution_id):
+            self.abandoned.append(execution_id)
+            return True
+
+    service = FakeService()
+    stream = _stream_ndjson(service, object())
+    assert "approval_required" in next(stream)
+    stream.close()
+    assert service.abandoned == []
+
+
 def test_context_is_keyed_by_resolved_ledger_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -139,7 +169,7 @@ def test_api_context_does_not_reuse_deleted_or_recreated_workspace(
     ]
 
 
-def test_conversation_project_path_is_canonical_and_workspace_bounded(
+def test_conversation_project_path_is_canonical_and_rejects_traversal(
     client: TestClient,
     tmp_path: Path,
 ) -> None:
@@ -154,12 +184,18 @@ def test_conversation_project_path_is_canonical_and_workspace_bounded(
 
     outside = tmp_path.parent / f"{tmp_path.name}-outside"
     outside.mkdir()
+    attached = client.post(
+        "/api/v1/conversations",
+        json={"title": "Attached", "project_path": str(outside)},
+    )
+    assert attached.status_code == 201
+    assert attached.json()["project_path"] == str(outside.resolve())
+
     escaped = client.post(
         "/api/v1/conversations",
-        json={"title": "Escaped", "project_path": str(outside)},
+        json={"title": "Escaped", "project_path": "../nope"},
     )
     assert escaped.status_code == 422
-    assert "workspace root" in escaped.json()["detail"].lower()
 
 
 def test_mock_stream_persists_messages_route_execution_and_redacted_receipt(
