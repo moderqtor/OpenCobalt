@@ -6,8 +6,6 @@ adapter only; trace building itself is read-only.
 
 from __future__ import annotations
 
-import re
-
 import pytest
 from typer.testing import CliRunner
 
@@ -22,6 +20,7 @@ from opencobalt.core.provenance import (
 )
 from opencobalt.execution.engine import ExecutionEngine
 from opencobalt.execution.store import ExecutionStore
+from tests.cli_output import first_match
 
 runner = CliRunner()
 
@@ -195,12 +194,12 @@ class TestBuilder:
 class TestWhyCommand:
     def _setup_loop(self) -> dict:
         result = _invoke("opportunities", "brainstorm", "improve code quality")
-        track_id = re.search(r"(otrk-[0-9a-f]{6,})\s+test gaps", result.output).group(1)
+        track_id = first_match(r"(otrk-[0-9a-f]{6,})\s+test gaps", result.output)
         promoted = _invoke("opportunities", "approve", track_id)
-        request_id = re.search(r"(areq-[0-9a-f]{6,})", promoted.output).group(1)
+        request_id = first_match(r"(areq-[0-9a-f]{6,})", promoted.output)
         _invoke("approvals", "approve", request_id)
         ran = _invoke("approvals", "run", request_id, "--runtime", "noop", "--execute")
-        receipt_id = re.search(r"receipt: ([0-9a-f-]{12,})", ran.output).group(1)
+        receipt_id = first_match(r"receipt: ([0-9a-f-]{12,})", ran.output)
         return {"track_id": track_id, "request_id": request_id, "receipt_id": receipt_id}
 
     def test_why_track(self, tmp_path, monkeypatch):

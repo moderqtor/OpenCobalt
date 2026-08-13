@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import socket
 import subprocess
 from pathlib import Path
@@ -20,6 +19,7 @@ from opencobalt.core.mission_extractor import (
     MissionExtraction,
 )
 from opencobalt.core.mission_verifier import DeterministicMissionExtractionVerifier
+from tests.cli_output import assert_contains, first_match
 
 runner = CliRunner()
 
@@ -31,9 +31,7 @@ def _invoke(*args: str, **kwargs):
 
 
 def _first(pattern: str, output: str) -> str:
-    match = re.search(pattern, output)
-    assert match, f"no match for {pattern} in output: {output}"
-    return match.group(1)
+    return first_match(pattern, output)
 
 
 def _section_between(output: str, heading: str, next_heading: str) -> str:
@@ -767,10 +765,11 @@ sk-ant-api03-FAKE_TEST_TOKEN_SHOULD_NOT_PERSIST_123456789
 
         continued = _invoke("continue", mission_id)
         assert continued.exit_code == 0, continued.output
-        assert "Verification: warnings" in continued.output
-        assert "Verifier warnings:" in continued.output
-        assert "heuristic parser; no two-pass verifier; no live LLM extraction." in (
-            continued.output
+        assert_contains(continued.output, "Verification: warnings")
+        assert_contains(continued.output, "Verifier warnings:")
+        assert_contains(
+            continued.output,
+            "heuristic parser; no two-pass verifier; no live LLM extraction.",
         )
         assert "1094 passed, 1 warning" in continued.output
         assert "d08267a59ec0c08b7d28ba3de393df9c2c27e586" in continued.output
@@ -831,8 +830,9 @@ Finding: A log line contained OPENAI_API_KEY={secret}.
         assert "OPENCOBALT MISSION CONTEXT" in continued.output
         assert "Status: completed" in continued.output
         assert "pytest: 1087 passed, 1 warning" in continued.output
-        assert "v0 deterministic extractor is line-oriented and single-pass" in (
-            continued.output
+        assert_contains(
+            continued.output,
+            "v0 deterministic extractor is line-oriented and single-pass",
         )
         assert "add mission-extraction-verifier-v0." in continued.output
         assert "status: medium" in continued.output
@@ -951,7 +951,7 @@ Risk: Bad extraction can create false confidence.
             "Continuation instruction:",
             "Treat this context as the source of continuity",
         ):
-            assert marker in continued.output
+            assert_contains(continued.output, marker)
         assert "Implement v0 as single-pass extraction before verifier." in (
             continued.output
         )
@@ -1515,10 +1515,11 @@ class TestMissionHandoffCli:
 
         assert result.exit_code == 0, result.output
         assert result.output.startswith("Colin, COBALT-SENTINEL: receipts-first.")
-        assert (
+        assert_contains(
+            result.output,
             f"You are resuming OpenCobalt mission {mission_id} from durable "
-            "mission memory."
-        ) in result.output
+            "mission memory.",
+        )
         assert "Agents come and go. Models change. Sessions die. OpenCobalt remembers." in (
             result.output
         )
@@ -1585,8 +1586,9 @@ class TestMissionHandoffCli:
         assert "Do not mutate overlapping files unless Colin asks for that scope." in (
             result.output
         )
-        assert "Treat mission state as continuity context, then verify it against repo evidence." in (
-            result.output
+        assert_contains(
+            result.output,
+            "Treat mission state as continuity context, then verify it against repo evidence.",
         )
 
     def test_cursor_handoff_includes_editor_planning_language(

@@ -6,7 +6,6 @@ throwaway directory. Execution uses the noop adapter only.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -20,6 +19,7 @@ from opencobalt.core.opportunity_engine import (
     OpportunityTrack,
 )
 from opencobalt.core.opportunity_store import OpportunityStore
+from tests.cli_output import first_match
 
 runner = CliRunner()
 
@@ -32,9 +32,7 @@ def _invoke(*args: str, **kwargs):
 
 
 def _first(pattern: str, output: str) -> str:
-    match = re.search(pattern, output)
-    assert match, f"no match for {pattern} in output: {output}"
-    return match.group(1)
+    return first_match(pattern, output)
 
 
 def _seed_yellow_mission(tmp_path: Path) -> str:
