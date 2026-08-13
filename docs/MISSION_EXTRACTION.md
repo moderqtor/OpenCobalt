@@ -1,17 +1,20 @@
-# Mission Extraction and Cold Resume v0
+# Mission Extraction
 
-Agents come and go. Models change. Sessions die. OpenCobalt remembers.
+Historical note: this CLI path was previously presented as the product wedge.
+It remains implemented. It is not the primary OpenCobalt surface. Chat,
+Research Missions, and coding Missions are.
 
 Mission extraction turns a completed agent/session artifact into durable
-mission intelligence attached to a mission in the shared SQLite ledger. The
-immediate demo target is cold resume:
+mission intelligence attached to a mission in the shared SQLite ledger.
+Continue and handoff packets can reconstruct continuity context without the
+original chat history:
 
 ```
 session output -> mission extraction -> structured mission state -> SQLite
                -> opencobalt missions close-session MISSION_ID --file report.txt
                -> opencobalt continue MISSION_ID -> next session resumes
-               -> opencobalt handoff MISSION_ID --to codex-cli -> cold agent resumes
-               -> opencobalt demo cold-resume -> local wedge demo
+               -> opencobalt handoff MISSION_ID --to codex-cli -> continuation packet
+               -> opencobalt demo cold-resume -> local deterministic demo
 ```
 
 ## What v0 ships
@@ -114,7 +117,7 @@ calls, no runtime execution, no adapter invocation, and no authority grants.
 The sample report includes an injected instruction line and token-shaped
 fixture content to demonstrate that report text is data, token-shaped content
 is not emitted, raw report text is not persisted, and verifier warnings remain
-visible. See `docs/COLD_RESUME_DEMO.md` for the 60-second script.
+visible. Demo recording notes live in `docs/history/COLD_RESUME_DEMO.md`.
 
 ## Schema
 

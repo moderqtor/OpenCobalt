@@ -9,6 +9,13 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Documentation and product copy now describe OpenCobalt as a personal control
+  layer for allocating intelligence and capability. Chat is the canonical
+  user surface. Cold resume, Daily Operator, and receipts-first slogans are
+  no longer the public product identity.
+
 ### Added
 
 - Plan replay: `opencobalt plans list/inspect/execute` replays a stored command plan through the same policy gate as `opencobalt run` and writes a new receipt with re-verified artifact hashes

@@ -1,5 +1,7 @@
 # Phase 0 Audit: Initial Snapshot
 
+> Historical audit. Not current product documentation.
+
 **Date:** 2026-05-28
 **Auditor:** Claude Code (Sonnet 4.6)
 **Repo:** ~/dev/OpenCobalt

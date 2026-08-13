@@ -1,66 +1,62 @@
 # Security
 
-## Scope
+OpenCobalt is a single-user local control layer. It is not a multi-user
+service and does not claim complete sandboxing.
 
-OpenCobalt is a local-first tool intended for single-user, local development environments. It does not operate servers, handle multi-user access, or process untrusted external input in production.
+## Trust boundaries
 
-## What OpenCobalt Does Not Do
+| Boundary | Current truth |
+|---|---|
+| Local state | Conversations, Missions, memory, routes, approvals, and receipts live in `.opencobalt/ledger.db` relative to the working directory. |
+| Local-only requests | Providers that require network access are excluded. Absence of an eligible local route is a recorded failure, not a silent fallback. |
+| Provider boundary | External CLIs keep their own credentials, account state, and network behavior. OpenCobalt does not store provider login state or turn a subscription into an API key. |
+| Execution boundary | Runtime task execution goes through `ExecutionEngine`. Discovery-only subprocesses may run help, version, or install checks. |
+| Approval lifecycle | Yellow and red work waits for explicit approval where policy requires it. Black risk is blocked. Chat is currently answer-only; tool and skill execution is denied there. |
+| Coding staging | `coding_agent` mutations run in a staged workspace. Promotion into the authoritative repository is explicit. This is repository containment, not host OS sandboxing. |
+| Secret redaction | Receipt views and exports redact execution receipt fields. `public-check` scans for `.env` files, secret-shaped strings, private path references, and oversized artifacts. |
+| Skills | Listing or inspecting a skill does not execute imported code. Imported skills are untrusted until an approved local workflow uses them. |
 
-- Does not make outbound network calls by default
-- Does not store credentials (API keys are read from environment variables only)
-- Does not write to the Obsidian vault unless explicitly configured
-- Does not push, deploy, or publish anything automatically
-- Does not execute agent commands autonomously
+## What OpenCobalt does not claim
 
-## Credential Handling
+- Complete OS-level containment of provider processes
+- Multi-user access control
+- Hosted credential brokerage
+- Factual proof from citation linkage or receipt integrity
+- Automatic push, deploy, publish, spend, or external messaging
 
-- API keys (Anthropic, OpenAI, Google) are read from environment variables only
-- No default values for API keys are hardcoded in source
-- The `.env` file is gitignored and must never be committed
-- The `.env.example` file contains only placeholder comments
+Provider CLIs with terminal, browser, or file access remain powerful. OpenCobalt
+adds visibility, receipts, policy metadata, and approval boundaries around them.
+It does not replace the provider's own permission model.
 
-## Public Repo Safety
+## Credential handling
 
-The `public-check` command scans for common hygiene issues before any push:
+- API keys are read from environment variables only when a path explicitly
+  uses them.
+- No default API keys are hardcoded.
+- `.env` is gitignored and must never be committed.
+- Do not paste credentials into Chat.
+
+## Public repo safety
 
 ```bash
 opencobalt public-check
 ```
 
-Detects:
-- `.env` files present in the repo tree
-- Hardcoded secret patterns (passwords, API keys, tokens)
-- References to private vault paths
-- Oversized files (over 10 MB)
-- `node_modules/` or `.venv/` accidentally included
+Detects `.env` files, hardcoded secret patterns, private vault paths, oversized
+files, and accidental `node_modules/` or `.venv/` inclusion.
 
-## Autonomy Lanes
+## Autonomy lanes
 
-**Green lane** (safe to proceed):
-- Read repo files
-- Create local artifacts
-- Run tests
-- Write docs
-- Create local SQLite records
-- Build context packs
-- Inspect public docs
+**Green:** read repo files, create local artifacts, run tests, write docs,
+create local SQLite records, inspect public docs.
 
-**Yellow lane** (proceed with care):
-- Copy code from other repos after auditing
-- Install dependencies
-- Launch local CLIs
-- Write to configured export paths
+**Yellow:** copy audited code, install dependencies, launch local CLIs, write
+to configured export paths.
 
-**Red lane** (requires explicit user instruction):
-- Push to GitHub
-- Publish packages
-- Deploy
-- Delete folders
-- Read `.env` contents
-- Submit forms or send messages
-- Automate logged-in web accounts
-- Access billing or account settings
+**Red (explicit instruction):** push, publish, deploy, delete folders, read
+`.env`, send messages, automate logged-in accounts, access billing.
 
-## Reporting Issues
+## Reporting issues
 
-Open an issue at the project repository. Do not include credentials or private paths in issue reports.
+Open an issue at the project repository. Do not include credentials or private
+paths in issue reports.

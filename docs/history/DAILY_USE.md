@@ -1,6 +1,9 @@
-# OpenCobalt Daily Operator -- User Guide & Workflow Manual
+# OpenCobalt Daily Operator -- User Guide
 
-OpenCobalt's **Daily Operator** turns OpenCobalt into a durable, local-first daily operating system for personal execution and efficiency.
+> Historical. Daily Operator CLI commands still exist. They are not the
+> current product identity. See [README.md](../../README.md).
+
+OpenCobalt's Daily Operator is a local CLI loop for personal execution.
 
 ---
 
@@ -105,7 +108,7 @@ opencobalt done cmt-a1b2c3d4e5f6 --summary "Finished" --json
 
 - **Data Location**: Single local SQLite database at `.opencobalt/ledger.db`.
 - **Backup**: Stop OpenCobalt, then use SQLite's `.backup` command so committed
-  WAL state is included. See [Personal AI Router](PERSONAL_AI_ROUTER.md#export-backup-and-reset).
+  WAL state is included. See [workspace export notes](../PERSONAL_AI_ROUTER.md#export-backup-and-reset).
 - **Privacy**: No telemetry or capture content leaves your local machine.
 
 ---

@@ -1,9 +1,21 @@
-# Mission State Machine v1
+# Missions
 
-Missions are the durable spine that connects every supervised subsystem
-OpenCobalt already has. A mission does not replace the Opportunity Engine,
-the Approval Bridge, the execution layer, or Evolve Mode; it links them
-into one auditable object with one lifecycle:
+A Mission is durable work that outlives a provider session. Research and
+coding-agent flows in the web workspace create Missions. The CLI mission
+state machine also links opportunity discovery, approvals, execution,
+receipts, and outcomes.
+
+Research: [research.md](research.md). Coding: [coding.md](coding.md).
+Session extraction and continue/handoff packets are implemented CLI
+continuity features, not the product identity. See
+[MISSION_EXTRACTION.md](MISSION_EXTRACTION.md).
+
+## Mission State Machine v1
+
+Missions are the durable spine that connects supervised subsystems.
+A mission does not replace the Opportunity Engine, the Approval Bridge, the
+execution layer, or Evolve Mode; it links them into one auditable object
+with one lifecycle:
 
 ```
 goal
@@ -17,8 +29,6 @@ goal
   -> provenance (why trace)
   -> outcome feedback (bounded, explainable scoring signal)
 ```
-
-Agents come and go. Models change. Sessions die. OpenCobalt remembers.
 
 Nothing in the mission layer executes work directly. The Approval Bridge
 remains the only approval authority and the execution policy gate remains
@@ -244,8 +254,8 @@ calls, no runtime or adapter execution, no network calls, and no authority
 grants. The demo fixture includes injected instruction text and token-shaped
 content so the output can demonstrate that source reports are data, suspicious
 content is not emitted, raw report text is not persisted in the mission store,
-and verifier warnings stay visible. See `docs/COLD_RESUME_DEMO.md` for the
-60-second demo script.
+and verifier warnings stay visible. Demo recording notes live in
+`docs/history/COLD_RESUME_DEMO.md`.
 
 `missions show`, `missions why`, and generic `why` expose extraction records
 and their confidence plus verifier records and warnings. Generic `why`

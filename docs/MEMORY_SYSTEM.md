@@ -1,5 +1,13 @@
 # Memory System
 
+The user-facing Memory page in the web workspace stores explicit,
+attributable, scoped records in the shared ledger. That is the current
+product memory surface.
+
+The layers below include older CLI and optional sidecar stores. Khoj is not
+required and is not part of the default workspace. Do not treat optional
+sidecars as shipped product memory.
+
 ## Overview: three-layer memory architecture
 
 OpenCobalt uses three layers of memory, each with different scope and persistence:
@@ -88,7 +96,8 @@ memory commands work without it. Check its status with:
 opencobalt khoj status
 ```
 
-See `docs/KHOJ_INTEGRATION.md` for full setup, agent personas, and sync instructions.
+Khoj setup notes, if needed, live in git history and `docs/history/`. It is
+not part of the default OpenCobalt workspace.
 
 ---
 

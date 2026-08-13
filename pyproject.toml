@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "opencobalt"
 version = "0.1.0"
-description = "Local-first AI orchestration and memory control plane"
+description = "Personal control layer for allocating intelligence and capability"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"

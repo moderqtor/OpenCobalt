@@ -1,15 +1,14 @@
 # Cold Resume Video Script v0
 
-Agents come and go. Models change. Sessions die. OpenCobalt remembers.
+> Historical. Recording notes for an implemented CLI demo. Not current product
+> identity. See [README.md](../../README.md).
 
-OpenCobalt converts ephemeral agent work into durable mission intelligence.
-
-This demo does not call a live model, launch an agent, or grant authority. It demonstrates local durable memory, verification, and handoff.
+This demo does not call a live model, launch an agent, or grant authority.
 
 Use this script for a 60 to 120 second screen recording of the deterministic
-local cold-resume demo. The recording should show the product wedge without
-claiming live model execution, agent launch, or training-time model
-improvements.
+local cold-resume demo. The recording should not claim live model execution,
+agent launch, or training-time model improvements.
+
 
 Companion assets:
 

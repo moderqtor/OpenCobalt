@@ -2777,7 +2777,7 @@ def design_brief(
 ) -> None:
     """Show the DesignLab brief for this project (placeholder)."""
     console.print(f"\n  [bold {_COBALT}]DesignLab[/bold {_COBALT}]  [dim]design intelligence module[/dim]\n")
-    console.print("  Status: [dim]planned -- see docs/DESIGNLAB.md[/dim]\n")
+    console.print("  Status: [dim]planned, not implemented[/dim]\n")
     console.print("  Future capabilities:")
     for item in [
         "Generate design tokens from a project brief",

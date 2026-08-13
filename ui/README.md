@@ -1,6 +1,8 @@
 # OpenCobalt UI
 
-A web dashboard for OpenCobalt. Built with React, Tailwind CSS, and a FastAPI backend.
+Local React workspace for OpenCobalt. The web UI started with `opencobalt ui`
+is the canonical user surface. The Tauri wrapper (`opencobalt desktop`) is
+optional development packaging.
 
 ## Run
 
@@ -10,9 +12,10 @@ From the project root:
 opencobalt ui
 ```
 
-This starts the FastAPI backend on port 8000 and the Vite dev server on port 5173. Both stop when the command exits.
+This starts the FastAPI backend on port 8000 and the Vite dev server on port
+5173. Both stop when the command exits.
 
-To run the frontend alone (development):
+Frontend only:
 
 ```bash
 cd ui
@@ -20,24 +23,31 @@ npm install
 npm run dev
 ```
 
-Then open http://localhost:5173.
+Then open http://localhost:5173. The UI still needs the local API.
 
-## Panels
+## Pages
 
-| Panel | Description |
-|-------|-------------|
-| Command Center | Common CLI commands with copy-friendly display |
-| Context Pack Viewer | Live view of the compiled context pack |
-| Session Ledger | Live event feed from SQLite |
-| Agent Router | Shows routing tiers and tool assignments |
-| Verification Receipts | Live test and public-check results |
-| DesignLab | Planned: design token engine (see docs/DESIGNLAB.md) |
+| Page | Purpose |
+|---|---|
+| Chat | Durable conversations and the default goal surface |
+| Routes | Inspectable routing history |
+| Missions | Research and coding Missions |
+| Skills | Local skill inventory |
+| Memory | Explicit memory records |
+| Ledger | Execution receipts |
+| Providers | Installation, health, and execution evidence |
+| Settings | Local defaults and persona editing |
+
+## Desktop
+
+`opencobalt desktop` requires `npm`, `cargo`, and `cargo tauri`. It runs the
+same FastAPI backend and launches `cargo tauri dev`. This is not a polished
+standalone installer.
 
 ## Tech
 
 - React 18
 - Tailwind CSS 3
 - Vite 5
-- FastAPI (Python backend, port 8000)
-
-No component libraries. No Next.js. Portable and minimal.
+- FastAPI on port 8000
+- Optional Tauri 2 wrapper in `src-tauri/`

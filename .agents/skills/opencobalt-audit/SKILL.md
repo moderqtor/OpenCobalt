@@ -5,10 +5,9 @@ description: Establish current OpenCobalt repository baseline, git state, and qu
 
 # /opencobalt-audit
 
-Execute baseline audit:
 1. Record `git status -sb` and HEAD SHA.
 2. Run quality gates:
-   - `.venv/bin/ruff check .`
-   - `.venv/bin/opencobalt public-check`
-   - `.venv/bin/pytest`
-3. Produce a receipts-first baseline summary.
+   - `uv run ruff check .`
+   - `uv run opencobalt public-check`
+   - `uv run pytest`
+3. Report branch, baseline, worktree, and failures without branding slogans.

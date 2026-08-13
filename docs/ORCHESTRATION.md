@@ -1,6 +1,8 @@
 # Orchestration
 
-OpenCobalt's intended main UX is a natural-language front door:
+The primary user surface is Chat in the local workspace. This document
+describes the CLI AutoOrchestrator, which remains the plan-only front door
+for shell and scripted use:
 
 ```
 opencobalt auto "GOAL"

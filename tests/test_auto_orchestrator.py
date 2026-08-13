@@ -24,7 +24,6 @@ def test_canonical_policy_docs_exist_and_reference_open_cobalt() -> None:
     content = policy.read_text()
 
     for phrase in (
-        "Context Sentinel",
         "not wrapperware",
         "Automatic orchestration goal",
         "Autonomy vs authority",

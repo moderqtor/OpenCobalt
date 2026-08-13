@@ -1,5 +1,8 @@
 # External Public Readiness Audit
 
+> Historical audit. Claims in this file describe an earlier README and are
+> not current product documentation.
+
 SECTION 1: WHAT THIS PROJECT CLAIMS TO BE
 Based on README.md (lines 3-15) and docs/PORTFOLIO_SUMMARY.md (lines 6-12), OpenCobalt claims to be a local-first AI orchestration control plane. It routes tasks to specific AI tools based on a deterministic scoring system, maintains a SQLite ledger of session events and decisions, builds context packs, and runs public safety checks before pushing. The code fully supports these claims. The CLI implementation in src/opencobalt/cli.py (lines 56-220) exposes these exact functions. The router in src/opencobalt/core/router.py (lines 65-110) implements the exact deterministic keyword scoring described. The safety scanner in src/opencobalt/core/public_safety.py (lines 79-114) correctly implements the promised hygiene checks.
 

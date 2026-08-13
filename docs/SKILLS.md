@@ -1,7 +1,8 @@
 # Skills
 
-OpenCobalt treats skills as bounded capabilities that help agents perform work.
-Skills do not grant authority and do not bypass the execution boundary.
+OpenCobalt treats skills as bounded capabilities. Skills do not grant
+authority and do not bypass the execution boundary. The Skills page lists
+installed skills; inspection does not execute imported code.
 
 ## Skill Invocation
 

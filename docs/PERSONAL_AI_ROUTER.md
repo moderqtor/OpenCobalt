@@ -1,6 +1,14 @@
-# Personal AI Router
+# Personal AI workspace
 
-OpenCobalt's Personal AI Router is a local React and FastAPI workspace over the existing deterministic router, `ExecutionEngine`, and shared SQLite ledger. It is an inspectable completion workflow, not a hosted account, credential broker, or unrestricted agent runtime.
+The local React and FastAPI workspace is the primary OpenCobalt surface. Give
+OpenCobalt a goal in Chat. Routing, provider selection, research, coding
+staging, memory, and receipts happen behind that interaction and remain
+inspectable.
+
+This is not a hosted account, credential broker, or unrestricted agent
+runtime. Product identity lives in [OPENCOBALT.md](../OPENCOBALT.md). Routing
+details are in [routing.md](routing.md). Research and coding paths are in
+[research.md](research.md) and [coding.md](coding.md).
 
 ## Start the local workspace
 
