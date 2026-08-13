@@ -824,6 +824,8 @@ class CursorACPProvider(EngineBackedChatProvider):
         permission_hook: Callable[[ApprovalStep], str] | None = None,
         approval_store: ApprovalStore | None = None,
         coordinator: LiveApprovalCoordinator | None = None,
+        store: Any | None = None,
+        staging_root: Path | None = None,
     ) -> None:
         cursor = adapter if isinstance(adapter, CursorAdapter) else CursorAdapter()
         runtime = CursorACPRuntimeAdapter(cursor)
@@ -839,6 +841,8 @@ class CursorACPProvider(EngineBackedChatProvider):
         self.permission_hook = permission_hook
         self.approval_store = approval_store
         self.coordinator = coordinator
+        self.store = store
+        self.staging_root = staging_root
         self._approval_event_sink: Callable[[dict[str, Any]], None] | None = None
 
     def status(self) -> ProviderStatus:
@@ -991,6 +995,33 @@ class CursorACPProvider(EngineBackedChatProvider):
                 status="blocked",
             )
         mode = "agent" if role == "coding_agent" else "ask"
+        workspace: dict[str, Any] | None = None
+        provider_cwd = repo
+        if role == "coding_agent":
+            from opencobalt.personal_ai.staging import StagingController, StagingError
+
+            controller = StagingController(
+                self._personal_store(),
+                staging_root=self._staging_root(),
+                approval_store=self.approval_store,
+            )
+            try:
+                workspace = controller.create_workspace(
+                    repo,
+                    coding_id=str(request.metadata.get("coding_mission_id") or "") or None,
+                    mission_id=str(request.metadata.get("mission_id") or "") or None,
+                    execution_id=str(request.metadata.get("execution_id") or "") or None,
+                    provider_id=self.provider_id,
+                )
+            except (StagingError, ValueError, OSError) as exc:
+                return _pre_execution_error(
+                    request,
+                    self.provider_id,
+                    category="invalid_request",
+                    message=_public_error_text(str(exc)),
+                    status="blocked",
+                )
+            provider_cwd = Path(workspace["staging_path"])
         context = LiveApprovalContext(
             execution_id=str(request.metadata.get("execution_id") or "") or None,
             mission_id=str(request.metadata.get("mission_id") or "") or None,
@@ -1014,13 +1045,13 @@ class CursorACPProvider(EngineBackedChatProvider):
             coordinator=self.coordinator,
             context=context,
             event_sink=event_sink,
-            repository=repo,
+            repository=provider_cwd,
         )
 
         def handler(session: InteractiveSession) -> dict[str, Any]:
             client = AcpClient(
                 session,
-                cwd=str(repo),
+                cwd=str(provider_cwd),
                 mode=mode,
                 prompt=request.message,
                 resume_session_id=(
@@ -1033,7 +1064,8 @@ class CursorACPProvider(EngineBackedChatProvider):
             )
             return client.run_turn()
 
-        before = snapshot_repository(repo)
+        auth_before = snapshot_repository(repo)
+        stage_before = snapshot_repository(provider_cwd)
         try:
             outcome = self.engine.run_task(
                 request.message,
@@ -1042,7 +1074,7 @@ class CursorACPProvider(EngineBackedChatProvider):
                 execute=True,
                 approved=False,
                 timeout_seconds=max(request.timeout_seconds, 600),
-                cwd=str(repo),
+                cwd=str(provider_cwd),
                 unsafe_skip_permissions=False,
                 execution_context="general_task",
                 adapter=self.adapter,
@@ -1094,10 +1126,59 @@ class CursorACPProvider(EngineBackedChatProvider):
         ]
         if denied and role == "coding_agent" and result.status == "complete":
             result.limitations.append("one or more ACP permissions were denied")
-        after = snapshot_repository(repo)
-        mutated = changed_paths(before, after)
-        if mutated:
-            result.metadata = {**result.metadata, "files_changed": mutated}
+        auth_after = snapshot_repository(repo)
+        auth_mutated = changed_paths(auth_before, auth_after)
+        stage_after = snapshot_repository(provider_cwd)
+        staged_mutated = changed_paths(stage_before, stage_after)
+        if role == "coding_agent" and workspace is not None:
+            from opencobalt.personal_ai.staging import CONTAINMENT_LIMITATION, StagingController
+
+            if auth_mutated:
+                result.limitations.append(
+                    "Provider mutated the authoritative repository despite staged execution"
+                )
+                result.metadata = {**result.metadata, "containment_escape": auth_mutated}
+            result.limitations.append(CONTAINMENT_LIMITATION)
+            controller = StagingController(
+                self._personal_store(),
+                staging_root=self._staging_root(),
+                approval_store=self.approval_store,
+            )
+            reported_tests = [
+                str(event.summary)
+                for event in result.tool_events
+                if "test" in str(event.summary).casefold() or "pytest" in str(event.summary).casefold()
+            ]
+            changeset = controller.generate_changeset(
+                workspace,
+                provider_id=self.provider_id,
+                runtime="cursor",
+                coding_id=str(request.metadata.get("coding_mission_id") or "") or None,
+                mission_id=str(request.metadata.get("mission_id") or "") or None,
+                execution_id=str(request.metadata.get("execution_id") or "") or None,
+                tests=reported_tests,
+                limitations=list(result.limitations),
+                run_verification=True,
+            )
+            if changeset.promotion_state == "pending":
+                controller.create_promotion_request(changeset)
+            result.metadata = {
+                **result.metadata,
+                "files_changed": [item.path for item in changeset.files],
+                "changeset": changeset.public_view(),
+                "workspace_id": workspace["workspace_id"],
+                "staged_files_changed": staged_mutated,
+            }
+            if staged_mutated and not any(
+                isinstance(item, Mapping) and str(item.get("option_id")) == "allow-once"
+                and str(item.get("risk_level") or "") != "green"
+                for item in permissions
+            ):
+                result.limitations.append(
+                    "Cursor changed staged files without an ACP permission request"
+                )
+        elif staged_mutated:
+            result.metadata = {**result.metadata, "files_changed": staged_mutated}
             allowed_writes = [
                 item
                 for item in permissions
@@ -1108,7 +1189,11 @@ class CursorACPProvider(EngineBackedChatProvider):
                 result.limitations.append(
                     "Cursor changed repository files without an ACP permission request"
                 )
-        if result.receipt_id and permissions:
+            if role == "coding_analysis":
+                result.limitations.append(
+                    "coding_analysis is non-mutating; unexpected repository writes were recorded and not promoted"
+                )
+        if result.receipt_id:
             store = getattr(self.engine, "store", None)
             getter = getattr(store, "get_receipt", None)
             saver = getattr(store, "save_receipt", None)
@@ -1120,11 +1205,46 @@ class CursorACPProvider(EngineBackedChatProvider):
                         for item in permissions
                         if isinstance(item.get("approval_request_id"), str)
                     ]
+                    changeset = result.metadata.get("changeset")
+                    if isinstance(changeset, Mapping):
+                        if changeset.get("changeset_id"):
+                            extra.append(f"changeset:{changeset['changeset_id']}")
+                        if changeset.get("workspace_id"):
+                            extra.append(f"workspace:{changeset['workspace_id']}")
+                        if changeset.get("starting_head"):
+                            extra.append(f"head:{changeset['starting_head']}")
+                        if changeset.get("promotion_request_id"):
+                            extra.append(f"promotion:{changeset['promotion_request_id']}")
+                        extra.append("containment:staged_workspace")
                     receipt.provenance_refs = list(
                         dict.fromkeys([*list(receipt.provenance_refs or []), *extra])
                     )
+                    limitations = list(receipt.limitations or [])
+                    for item in result.limitations:
+                        if item and item not in limitations:
+                            limitations.append(item)
+                    receipt.limitations = limitations
                     saver(receipt)
         return result
+
+    def _personal_store(self) -> Any | None:
+        if self.store is not None:
+            return self.store
+        db_path = getattr(getattr(self.engine, "store", None), "db_path", None)
+        if db_path is None:
+            return None
+        from opencobalt.personal_ai.store import PersonalAIStore
+
+        self.store = PersonalAIStore(Path(db_path))
+        return self.store
+
+    def _staging_root(self) -> Path:
+        if self.staging_root is not None:
+            return Path(self.staging_root)
+        db_path = getattr(getattr(self.engine, "store", None), "db_path", None)
+        if db_path is not None:
+            return Path(db_path).parent / "staging"
+        return Path(".opencobalt").resolve() / "staging"
 
     def stream(
         self,

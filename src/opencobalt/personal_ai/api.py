@@ -28,6 +28,13 @@ from opencobalt.execution.engine import ExecutionEngine
 from opencobalt.execution.models import WorkReceipt
 from opencobalt.execution.runner import ProcessRunner, redact_text
 from opencobalt.execution.store import ExecutionStore
+from opencobalt.personal_ai.staging import (
+    PromotionBlockedError,
+    PromotionConflictError,
+    PromotionStateError,
+    StagingController,
+    StagingError,
+)
 from opencobalt.skills.registry import list_skills as list_builtin_skills
 
 from .models import (
@@ -141,6 +148,8 @@ def _api_context() -> APIContext:
             engine,
             approval_store=approval_store,
             approval_coordinator=approvals,
+            personal_store=store,
+            staging_root=state_root / "staging",
         )
         missions = MissionStore(db_path)
         service = ChatService(
@@ -472,6 +481,8 @@ class ApprovalView(BaseModel):
     route_id: str | None = None
     conversation_id: str | None = None
     provider_session_id: str | None = None
+    source_type: str | None = None
+    changeset_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
     expires_at: str | None = None
@@ -1112,6 +1123,82 @@ def deny_approval(
         decision="rejected",
         reason=body.reason,
     )
+
+
+class PromotionDecisionRequest(BaseModel):
+    reason: str = Field(default="", max_length=1000)
+    coding_id: str | None = Field(default=None, max_length=200)
+    mission_id: str | None = Field(default=None, max_length=200)
+
+
+def _changeset_or_404(context: APIContext, changeset_id: str):
+    record = context.store.get_change_set(changeset_id)
+    if record is None:
+        raise _not_found("changeset", changeset_id)
+    return StagingController._from_record(record)
+
+
+@router.get("/changesets/{changeset_id}")
+def get_changeset(
+    changeset_id: str,
+    inspect: bool = Query(default=False),
+) -> dict[str, Any]:
+    changeset = _changeset_or_404(_api_context(), changeset_id)
+    return changeset.public_view(include_diff=False, technical=inspect)
+
+
+@router.get("/changesets/{changeset_id}/diff")
+def get_changeset_diff(changeset_id: str) -> dict[str, Any]:
+    changeset = _changeset_or_404(_api_context(), changeset_id)
+    return changeset.public_view(include_diff=True, technical=False)
+
+
+@router.post("/changesets/{changeset_id}/apply")
+def apply_changeset(
+    changeset_id: str,
+    request: PromotionDecisionRequest | None = None,
+) -> dict[str, Any]:
+    body = request or PromotionDecisionRequest()
+    context = _api_context()
+    try:
+        return context.service.apply_coding_promotion(
+            changeset_id,
+            reason=body.reason,
+            coding_id=body.coding_id,
+            mission_id=body.mission_id,
+        )
+    except KeyError as exc:
+        raise _not_found("changeset", changeset_id) from exc
+    except PromotionStateError as exc:
+        raise _conflict(str(exc)) from exc
+    except PromotionConflictError as exc:
+        raise _conflict(str(exc)) from exc
+    except PromotionBlockedError as exc:
+        raise _conflict(str(exc)) from exc
+    except StagingError as exc:
+        raise _conflict(str(exc)) from exc
+
+
+@router.post("/changesets/{changeset_id}/reject")
+def reject_changeset(
+    changeset_id: str,
+    request: PromotionDecisionRequest | None = None,
+) -> dict[str, Any]:
+    body = request or PromotionDecisionRequest()
+    context = _api_context()
+    try:
+        return context.service.reject_coding_promotion(
+            changeset_id,
+            reason=body.reason,
+            coding_id=body.coding_id,
+            mission_id=body.mission_id,
+        )
+    except KeyError as exc:
+        raise _not_found("changeset", changeset_id) from exc
+    except PromotionStateError as exc:
+        raise _conflict(str(exc)) from exc
+    except StagingError as exc:
+        raise _conflict(str(exc)) from exc
 
 
 def _route_detail(context: APIContext, route: RouteRecord) -> RouteDetail:
@@ -1893,6 +1980,14 @@ def list_missions(limit: int = Query(default=100, ge=1, le=500)) -> list[Mission
             if coding is not None:
                 route_id = coding.get("route_id") or route_id
                 conversation_id = coding.get("conversation_id") or conversation_id
+                changeset_id = (coding.get("metadata") or {}).get("changeset_id")
+                if changeset_id:
+                    raw = context.store.get_change_set(str(changeset_id))
+                    if raw is not None:
+                        coding = {
+                            **coding,
+                            "changeset": StagingController._from_record(raw).public_view(),
+                        }
         result.append(
             MissionListItem(
                 **asdict(mission),
