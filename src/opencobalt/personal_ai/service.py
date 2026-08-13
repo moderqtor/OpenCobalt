@@ -595,6 +595,7 @@ class ChatService:
         captured_tests: list[str] = []
         captured_approvals: list[dict[str, Any]] = []
         captured_limitations: list[str] = []
+        captured_changeset: dict[str, Any] | None = None
 
         while attempt_index < len(ordered):
             candidate = ordered[attempt_index]
@@ -703,6 +704,7 @@ class ChatService:
                     "acp_session_id": conversation.metadata.get("acp_session_id"),
                     "mission_id": route.metadata.get("coding_mission")
                     or route.metadata.get("coding_mission_id"),
+                    "coding_mission_id": route.metadata.get("coding_mission_id"),
                 },
             )
             attempt_content = ""
@@ -803,6 +805,14 @@ class ChatService:
                         if isinstance(files_changed, list):
                             captured_files.extend(
                                 str(item)[:200] for item in files_changed if item
+                            )
+                        changeset = provider_event.metadata.get("changeset")
+                        if isinstance(changeset, dict) and changeset.get("changeset_id"):
+                            captured_changeset = changeset
+                        limitations = provider_event.metadata.get("limitations")
+                        if isinstance(limitations, list):
+                            captured_limitations.extend(
+                                str(item)[:400] for item in limitations if item
                             )
                     else:
                         terminal_type = provider_event.event_type
@@ -913,6 +923,7 @@ class ChatService:
                     tests=captured_tests,
                     approvals=captured_approvals,
                     limitations=captured_limitations,
+                    changeset=captured_changeset,
                 )
                 yield cancelled
                 return
@@ -980,6 +991,7 @@ class ChatService:
                     tests=captured_tests,
                     approvals=captured_approvals,
                     limitations=captured_limitations,
+                    changeset=captured_changeset,
                 )
                 yield error_event
                 return
@@ -1020,6 +1032,11 @@ class ChatService:
                 "provider_id": current.provider_id,
                 "model_id": current.model_id,
                 "persona_provider_mismatch": route.persona_provider_mismatch,
+                **(
+                    {"changeset": captured_changeset}
+                    if captured_changeset
+                    else {}
+                ),
             },
         )
         current = self._finish_execution(
@@ -1054,26 +1071,20 @@ class ChatService:
             )
         coding_id = route.metadata.get("coding_mission_id")
         if coding_id:
-            from opencobalt.core.mission_engine import MissionStore
-            from opencobalt.personal_ai.coding import CodingMissionStore
-
-            record = self.store.get_coding_mission(str(coding_id))
-            if record is not None:
-                CodingMissionStore(
-                    self.store, self.missions or MissionStore(self.store.db_path)
-                ).complete(
-                    record,
-                    status="complete",
-                    outcome=final_content[:4000],
-                    receipt_id=final_receipt_id,
-                    acp_session_id=captured_session_id,
-                    model_id=current.model_id,
-                    files_changed=captured_files,
-                    terminal_operations=captured_terminals,
-                    tests=captured_tests,
-                    approvals=captured_approvals,
-                    limitations=captured_limitations,
-                )
+            self._finalize_coding_mission(
+                route,
+                status="complete",
+                outcome=final_content[:4000],
+                receipt_id=final_receipt_id,
+                acp_session_id=captured_session_id,
+                model_id=current.model_id,
+                files_changed=captured_files,
+                terminal_operations=captured_terminals,
+                tests=captured_tests,
+                approvals=captured_approvals,
+                limitations=captured_limitations,
+                changeset=captured_changeset,
+            )
         if final_receipt_id and captured_approvals and self.engine is not None:
             getter = getattr(getattr(self.engine, "store", None), "get_receipt", None)
             saver = getattr(getattr(self.engine, "store", None), "save_receipt", None)
@@ -1118,6 +1129,7 @@ class ChatService:
         tests: list[str],
         approvals: list[dict[str, Any]],
         limitations: list[str],
+        changeset: dict[str, Any] | None = None,
     ) -> None:
         coding_id = route.metadata.get("coding_mission_id")
         if not coding_id:
@@ -1128,20 +1140,170 @@ class ChatService:
         record = self.store.get_coding_mission(str(coding_id))
         if record is None:
             return
+        mission_status = status
+        mission_outcome = outcome
+        extra_limitations = list(limitations)
+        extra_tests = list(tests)
+        changed = list(files_changed)
+        if changeset:
+            record["metadata"] = {
+                **(record.get("metadata") or {}),
+                "changeset_id": changeset.get("changeset_id"),
+                "workspace_id": changeset.get("workspace_id"),
+                "promotion_state": changeset.get("promotion_state"),
+                "starting_head": changeset.get("starting_head"),
+                "verification": changeset.get("verification") or {},
+            }
+            extra_limitations.extend(str(item) for item in changeset.get("limitations") or [])
+            extra_tests.extend(str(item) for item in changeset.get("tests") or [])
+            if not changed:
+                for item in changeset.get("files") or []:
+                    if isinstance(item, dict) and item.get("path"):
+                        changed.append(str(item["path"]))
+            promotion_state = str(changeset.get("promotion_state") or "")
+            verification_status = str((changeset.get("verification") or {}).get("status") or "")
+            if status == "complete":
+                if promotion_state == "pending":
+                    mission_status = "awaiting_promotion"
+                    mission_outcome = "Changes ready. Authoritative repository was not modified."
+                elif promotion_state == "blocked":
+                    mission_status = "blocked"
+                    mission_outcome = "Staged changes were blocked by path policy."
+                elif promotion_state == "empty":
+                    mission_status = "complete"
+                elif verification_status == "failed":
+                    mission_status = "awaiting_promotion"
+                    extra_limitations.append("Verification failed")
+        CodingMissionStore(
+            self.store, self.missions or MissionStore(self.store.db_path)
+        ).complete(
+            record,
+            status=mission_status,
+            outcome=mission_outcome[:4000],
+            receipt_id=receipt_id,
+            acp_session_id=acp_session_id,
+            model_id=model_id,
+            files_changed=changed,
+            terminal_operations=terminal_operations,
+            tests=list(dict.fromkeys(extra_tests)),
+            approvals=approvals,
+            limitations=list(dict.fromkeys(extra_limitations)),
+        )
+        if receipt_id and changeset and self.engine is not None:
+            getter = getattr(getattr(self.engine, "store", None), "get_receipt", None)
+            saver = getattr(getattr(self.engine, "store", None), "save_receipt", None)
+            if callable(getter) and callable(saver):
+                receipt = getter(receipt_id)
+                if receipt is not None:
+                    extra = [
+                        f"changeset:{changeset.get('changeset_id')}",
+                        f"workspace:{changeset.get('workspace_id')}" if changeset.get("workspace_id") else "",
+                        f"head:{changeset.get('starting_head')}" if changeset.get("starting_head") else "",
+                    ]
+                    if changeset.get("promotion_request_id"):
+                        extra.append(f"promotion:{changeset.get('promotion_request_id')}")
+                    receipt.provenance_refs = list(
+                        dict.fromkeys(
+                            [
+                                *list(receipt.provenance_refs or []),
+                                *[item for item in extra if item],
+                            ]
+                        )
+                    )
+                    limitations = list(receipt.limitations or [])
+                    for item in extra_limitations:
+                        if item and item not in limitations:
+                            limitations.append(item)
+                    receipt.limitations = limitations
+                    saver(receipt)
+
+    def apply_coding_promotion(
+        self,
+        changeset_id: str,
+        *,
+        reason: str = "",
+        coding_id: str | None = None,
+        mission_id: str | None = None,
+    ) -> dict[str, Any]:
+        from opencobalt.personal_ai.staging import StagingController
+
+        bridge = getattr(self.approval_coordinator, "bridge", None)
+        controller = StagingController(
+            self.store,
+            staging_root=Path(self.store.db_path).parent / "staging",
+            approval_store=getattr(bridge, "store", None),
+        )
+        changeset = controller.apply_changeset(
+            changeset_id, reason=reason, coding_id=coding_id, mission_id=mission_id
+        )
+        self._record_promotion_outcome(
+            changeset,
+            status="promoted",
+            outcome="Staged changes were applied to the authoritative repository.",
+        )
+        return changeset.public_view(include_diff=False)
+
+    def reject_coding_promotion(
+        self,
+        changeset_id: str,
+        *,
+        reason: str = "",
+        coding_id: str | None = None,
+        mission_id: str | None = None,
+    ) -> dict[str, Any]:
+        from opencobalt.personal_ai.staging import StagingController
+
+        bridge = getattr(self.approval_coordinator, "bridge", None)
+        controller = StagingController(
+            self.store,
+            staging_root=Path(self.store.db_path).parent / "staging",
+            approval_store=getattr(bridge, "store", None),
+        )
+        changeset = controller.reject_changeset(
+            changeset_id, reason=reason, coding_id=coding_id, mission_id=mission_id
+        )
+        self._record_promotion_outcome(
+            changeset,
+            status="rejected",
+            outcome="Staged changes were rejected. The authoritative repository was not modified.",
+        )
+        return changeset.public_view(include_diff=False)
+
+    def _record_promotion_outcome(
+        self,
+        changeset,
+        *,
+        status: str,
+        outcome: str,
+    ) -> None:
+        if not changeset.coding_id:
+            return
+        from opencobalt.core.mission_engine import MissionStore
+        from opencobalt.personal_ai.coding import CodingMissionStore
+
+        record = self.store.get_coding_mission(changeset.coding_id)
+        if record is None:
+            return
+        record["metadata"] = {
+            **(record.get("metadata") or {}),
+            "changeset_id": changeset.changeset_id,
+            "promotion_state": changeset.promotion_state,
+            "apply_state": changeset.apply_state,
+        }
         CodingMissionStore(
             self.store, self.missions or MissionStore(self.store.db_path)
         ).complete(
             record,
             status=status,
-            outcome=outcome[:4000],
-            receipt_id=receipt_id,
-            acp_session_id=acp_session_id,
-            model_id=model_id,
-            files_changed=files_changed,
-            terminal_operations=terminal_operations,
-            tests=tests,
-            approvals=approvals,
-            limitations=limitations,
+            outcome=outcome,
+            receipt_id=record.get("receipt_id"),
+            acp_session_id=record.get("acp_session_id"),
+            model_id=record.get("model_id"),
+            files_changed=record.get("files_changed") or [item.path for item in changeset.files],
+            terminal_operations=record.get("terminal_operations") or [],
+            tests=record.get("tests") or list(changeset.tests),
+            approvals=record.get("approvals") or [],
+            limitations=record.get("limitations") or list(changeset.limitations),
         )
 
     def _persist_terminal_assistant_message(

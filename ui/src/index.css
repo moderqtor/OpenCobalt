@@ -192,7 +192,11 @@ h3 { margin-bottom: 10px; color: var(--muted); font: 10px var(--mono); letter-sp
 .approval-card pre { margin: 0 0 8px; padding: 8px 10px; overflow-x: auto; border-radius: 6px; background: color-mix(in srgb, var(--bg) 70%, transparent); }
 .approval-card code { font: 12px var(--mono); }
 .approval-path, .approval-meta { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
-.approval-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.approval-card.promotion { border-color: color-mix(in srgb, var(--cobalt) 45%, var(--line)); }
+.approval-card.promotion.pending { border-color: color-mix(in srgb, var(--cobalt) 70%, var(--amber)); }
+.promotion-review { display: grid; gap: 8px; margin-top: 8px; }
+.promotion-review ul { margin: 0; padding-left: 18px; }
+.promotion-review pre { max-height: 240px; overflow: auto; }
 @media (max-width: 720px) {
   .approval-stack { margin-right: 0; }
   .approval-actions { width: 100%; }

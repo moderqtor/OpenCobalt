@@ -584,6 +584,56 @@ CREATE TABLE IF NOT EXISTS coding_missions (
 );
 """
 
+_SCHEMA_V5 = """
+CREATE TABLE IF NOT EXISTS staged_workspaces (
+    workspace_id          TEXT PRIMARY KEY,
+    coding_id             TEXT,
+    mission_id            TEXT,
+    execution_id          TEXT,
+    authoritative_path    TEXT NOT NULL,
+    staging_path          TEXT NOT NULL,
+    kind                  TEXT NOT NULL,
+    status                TEXT NOT NULL,
+    head                  TEXT,
+    branch                TEXT,
+    dirty_paths_json      TEXT NOT NULL DEFAULT '[]',
+    baseline_json         TEXT NOT NULL DEFAULT '{}',
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    cleaned_at            TEXT,
+    metadata_json         TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS change_sets (
+    changeset_id            TEXT PRIMARY KEY,
+    workspace_id            TEXT NOT NULL,
+    coding_id               TEXT,
+    mission_id              TEXT,
+    execution_id            TEXT,
+    provider_id             TEXT,
+    runtime                 TEXT,
+    authoritative_path      TEXT NOT NULL,
+    starting_head           TEXT,
+    staging_path            TEXT NOT NULL,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL,
+    files_json              TEXT NOT NULL DEFAULT '[]',
+    diff_text               TEXT NOT NULL DEFAULT '',
+    diff_hash               TEXT,
+    binary_files_json       TEXT NOT NULL DEFAULT '[]',
+    verification_json       TEXT NOT NULL DEFAULT '{}',
+    promotion_state         TEXT NOT NULL,
+    apply_state             TEXT,
+    promotion_request_id    TEXT,
+    limitations_json        TEXT NOT NULL DEFAULT '[]',
+    tests_json              TEXT NOT NULL DEFAULT '[]',
+    suspicious_json         TEXT NOT NULL DEFAULT '[]',
+    summary_json            TEXT NOT NULL DEFAULT '{}',
+    metadata_json           TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (workspace_id) REFERENCES staged_workspaces(workspace_id)
+);
+"""
+
 
 def _dump(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -615,6 +665,7 @@ class PersonalAIStore:
             self._apply_v2(conn)
             self._apply_v3(conn)
             self._apply_v4(conn)
+            self._apply_v5(conn)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=5)
@@ -684,6 +735,22 @@ class PersonalAIStore:
             "INSERT OR IGNORE INTO personal_ai_schema_versions (version, applied_at) "
             "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             (4,),
+        )
+
+    def _apply_v5(self, conn: sqlite3.Connection) -> None:
+        versions = {
+            row[0]
+            for row in conn.execute("SELECT version FROM personal_ai_schema_versions")
+        }
+        if 4 not in versions:
+            return
+        conn.executescript(_SCHEMA_V5)
+        if 5 in versions:
+            return
+        conn.execute(
+            "INSERT OR IGNORE INTO personal_ai_schema_versions (version, applied_at) "
+            "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            (5,),
         )
 
     @staticmethod
@@ -1984,5 +2051,194 @@ class PersonalAIStore:
             "limitations": _load(row["limitations_json"], []),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+            "metadata": _load(row["metadata_json"], {}),
+        }
+
+    def save_staged_workspace(self, record: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO staged_workspaces ("
+                "workspace_id, coding_id, mission_id, execution_id, authoritative_path, "
+                "staging_path, kind, status, head, branch, dirty_paths_json, baseline_json, "
+                "created_at, updated_at, cleaned_at, metadata_json) VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(workspace_id) DO UPDATE SET "
+                "status=excluded.status, updated_at=excluded.updated_at, "
+                "cleaned_at=excluded.cleaned_at, metadata_json=excluded.metadata_json",
+                (
+                    record["workspace_id"],
+                    record.get("coding_id"),
+                    record.get("mission_id"),
+                    record.get("execution_id"),
+                    record["authoritative_path"],
+                    record["staging_path"],
+                    record["kind"],
+                    record["status"],
+                    record.get("head"),
+                    record.get("branch"),
+                    _dump(record.get("dirty_paths", [])),
+                    _dump(record.get("baseline", {})),
+                    record["created_at"],
+                    record["updated_at"],
+                    record.get("cleaned_at"),
+                    _dump(record.get("metadata", {})),
+                ),
+            )
+
+    def get_staged_workspace(self, workspace_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM staged_workspaces WHERE workspace_id = ?",
+                (workspace_id,),
+            ).fetchone()
+        return self._decode_staged_workspace(row) if row else None
+
+    def list_staged_workspaces(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM staged_workspaces ORDER BY updated_at DESC LIMIT ?",
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        return [self._decode_staged_workspace(row) for row in rows]
+
+    @staticmethod
+    def _decode_staged_workspace(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "workspace_id": row["workspace_id"],
+            "coding_id": row["coding_id"],
+            "mission_id": row["mission_id"],
+            "execution_id": row["execution_id"],
+            "authoritative_path": row["authoritative_path"],
+            "staging_path": row["staging_path"],
+            "kind": row["kind"],
+            "status": row["status"],
+            "head": row["head"],
+            "branch": row["branch"],
+            "dirty_paths": _load(row["dirty_paths_json"], []),
+            "baseline": _load(row["baseline_json"], {}),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "cleaned_at": row["cleaned_at"],
+            "metadata": _load(row["metadata_json"], {}),
+        }
+
+    def save_change_set(self, record: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO change_sets ("
+                "changeset_id, workspace_id, coding_id, mission_id, execution_id, "
+                "provider_id, runtime, authoritative_path, starting_head, staging_path, "
+                "created_at, updated_at, files_json, diff_text, diff_hash, "
+                "binary_files_json, verification_json, promotion_state, apply_state, "
+                "promotion_request_id, limitations_json, tests_json, suspicious_json, "
+                "summary_json, metadata_json) VALUES "
+                "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(changeset_id) DO UPDATE SET "
+                "updated_at=excluded.updated_at, files_json=excluded.files_json, "
+                "diff_text=excluded.diff_text, diff_hash=excluded.diff_hash, "
+                "binary_files_json=excluded.binary_files_json, "
+                "verification_json=excluded.verification_json, "
+                "promotion_state=excluded.promotion_state, apply_state=excluded.apply_state, "
+                "promotion_request_id=excluded.promotion_request_id, "
+                "limitations_json=excluded.limitations_json, tests_json=excluded.tests_json, "
+                "suspicious_json=excluded.suspicious_json, summary_json=excluded.summary_json, "
+                "metadata_json=excluded.metadata_json",
+                (
+                    record["changeset_id"],
+                    record["workspace_id"],
+                    record.get("coding_id"),
+                    record.get("mission_id"),
+                    record.get("execution_id"),
+                    record.get("provider_id"),
+                    record.get("runtime"),
+                    record["authoritative_path"],
+                    record.get("starting_head"),
+                    record["staging_path"],
+                    record["created_at"],
+                    record.get("updated_at") or record["created_at"],
+                    _dump(record.get("files", [])),
+                    record.get("diff_text") or "",
+                    record.get("diff_hash"),
+                    _dump(record.get("binary_files", [])),
+                    _dump(record.get("verification", {})),
+                    record["promotion_state"],
+                    record.get("apply_state"),
+                    record.get("promotion_request_id"),
+                    _dump(record.get("limitations", [])),
+                    _dump(record.get("tests", [])),
+                    _dump(record.get("suspicious", [])),
+                    _dump(record.get("summary", {})),
+                    _dump(record.get("metadata", {})),
+                ),
+            )
+
+    def get_change_set(self, changeset_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM change_sets WHERE changeset_id = ?",
+                (changeset_id,),
+            ).fetchone()
+        return self._decode_change_set(row) if row else None
+
+    def get_change_set_for_coding(self, coding_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM change_sets WHERE coding_id = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (coding_id,),
+            ).fetchone()
+        return self._decode_change_set(row) if row else None
+
+    def list_change_sets(
+        self,
+        *,
+        workspace_id: str | None = None,
+        coding_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses = []
+        params: list[Any] = []
+        if workspace_id:
+            clauses.append("workspace_id = ?")
+            params.append(workspace_id)
+        if coding_id:
+            clauses.append("coding_id = ?")
+            params.append(coding_id)
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        params.append(max(1, min(limit, 500)))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM change_sets {where}ORDER BY updated_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [self._decode_change_set(row) for row in rows]
+
+    @staticmethod
+    def _decode_change_set(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "changeset_id": row["changeset_id"],
+            "workspace_id": row["workspace_id"],
+            "coding_id": row["coding_id"],
+            "mission_id": row["mission_id"],
+            "execution_id": row["execution_id"],
+            "provider_id": row["provider_id"],
+            "runtime": row["runtime"],
+            "authoritative_path": row["authoritative_path"],
+            "starting_head": row["starting_head"],
+            "staging_path": row["staging_path"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "files": _load(row["files_json"], []),
+            "diff_text": row["diff_text"],
+            "diff_hash": row["diff_hash"],
+            "binary_files": _load(row["binary_files_json"], []),
+            "verification": _load(row["verification_json"], {}),
+            "promotion_state": row["promotion_state"],
+            "apply_state": row["apply_state"],
+            "promotion_request_id": row["promotion_request_id"],
+            "limitations": _load(row["limitations_json"], []),
+            "tests": _load(row["tests_json"], []),
+            "suspicious": _load(row["suspicious_json"], []),
+            "summary": _load(row["summary_json"], {}),
             "metadata": _load(row["metadata_json"], {}),
         }

@@ -1087,6 +1087,8 @@ class ProviderRegistry:
         ollama_endpoint: str = "http://127.0.0.1:11434",
         approval_store: Any | None = None,
         approval_coordinator: Any | None = None,
+        personal_store: Any | None = None,
+        staging_root: Path | None = None,
     ) -> None:
         runtime_adapters: Mapping[str, _AdapterLike] = adapters or {
             "codex-cli": CodexCliAdapter(),
@@ -1137,6 +1139,8 @@ class ProviderRegistry:
                     runtime_adapters["cursor"],
                     approval_store=approval_store,
                     approval_coordinator=approval_coordinator,
+                    personal_store=personal_store,
+                    staging_root=staging_root,
                 )
             )
         self._providers = {provider.provider_id: provider for provider in providers}
@@ -1395,6 +1399,8 @@ def _cursor_chat_provider(
     *,
     approval_store: Any | None = None,
     approval_coordinator: Any | None = None,
+    personal_store: Any | None = None,
+    staging_root: Path | None = None,
 ) -> ChatProvider:
     from opencobalt.personal_ai.cursor_acp import CursorACPProvider
 
@@ -1403,6 +1409,8 @@ def _cursor_chat_provider(
         adapter,
         approval_store=approval_store,
         coordinator=approval_coordinator,
+        store=personal_store,
+        staging_root=staging_root,
     )
 
 

@@ -221,37 +221,78 @@ const MESSAGE_STATUS = {
   cancel_requested: ["cancel requested", "pending"],
 };
 
-function ApprovalCard({ approval, onAllow, onDeny, busy = false }) {
+function ApprovalCard({ approval, onAllow, onDeny, onApply, onReject, busy = false }) {
   if (!approval) return null;
-  const pending = approval.state === "pending" && approval.actionable !== false;
+  const promotion = approval.source_type === "coding_promotion";
+  const pending = approval.state === "pending" && (promotion || approval.actionable !== false);
   const tone = approval.risk_level === "black" || approval.state === "rejected" || approval.state === "stale"
     ? "coral"
     : pending
       ? "amber"
       : "green";
-  return <article className={`approval-card ${pending ? "pending" : "resolved"}`} aria-live="polite">
+  return <article className={`approval-card ${pending ? "pending" : "resolved"} ${promotion ? "promotion" : ""}`} aria-live="polite">
     <div className="approval-card-top">
-      <Pill tone={tone}>{pending ? "Approval required" : label(approval.state)}</Pill>
+      <Pill tone={tone}>{promotion ? (pending ? "Apply to repository" : label(approval.state)) : pending ? "Approval required" : label(approval.state)}</Pill>
       {approval.provider && <span>{approval.provider}</span>}
       {approval.capability_role && <span>{label(approval.capability_role)}</span>}
       {approval.risk_level && <span>Risk {label(approval.risk_level)}</span>}
     </div>
-    <h3>{approval.headline || "Approval required"}</h3>
+    <h3>{approval.headline || (promotion ? "Changes ready" : "Approval required")}</h3>
     {approval.command && <pre><code>{approval.command}</code></pre>}
     {!approval.command && approval.path && <p className="approval-path"><code>{approval.path}</code></p>}
     {approval.repository && <p className="approval-meta">Repository {approval.repository}</p>}
     {approval.summary && approval.summary !== approval.headline && <p className="approval-meta">{approval.summary}</p>}
-    {pending && <div className="approval-actions">
+    {pending && !promotion && <div className="approval-actions">
       <button type="button" className="button primary" disabled={busy} onClick={() => onAllow(approval)}>{busy ? "Sending…" : "Allow once"}</button>
       <button type="button" className="button secondary" disabled={busy} onClick={() => onDeny(approval)}>Deny</button>
+    </div>}
+    {pending && promotion && <div className="approval-actions">
+      <button type="button" className="button primary" disabled={busy} onClick={() => onApply?.(approval)}>{busy ? "Applying…" : "Apply"}</button>
+      <button type="button" className="button secondary" disabled={busy} onClick={() => onReject?.(approval)}>Reject</button>
     </div>}
     {!pending && approval.decision && <p className="approval-meta">{label(approval.decision)}{approval.decision_source ? ` · ${label(approval.decision_source)}` : ""}</p>}
   </article>;
 }
 
-function MessageBubble({ message, route, onInspect, events = [], approvals = [], onAllowApproval, onDenyApproval, approvalBusy = false }) {
+function PromotionCard({ changeset, onApply, onReject, busy = false }) {
+  if (!changeset) return null;
+  const pending = changeset.promotion_state === "pending";
+  const summary = changeset.summary || {};
+  const verification = changeset.verification || {};
+  const files = Array.isArray(changeset.files) ? changeset.files : [];
+  const testLabel = verification.status === "passed"
+    ? (verification.summary || "passed")
+    : verification.status === "failed"
+      ? "Verification failed"
+      : verification.summary || "not run";
+  return <article className={`approval-card promotion ${pending ? "pending" : "resolved"}`} aria-live="polite">
+    <div className="approval-card-top">
+      <Pill tone={pending ? "amber" : changeset.promotion_state === "applied" ? "green" : "coral"}>{pending ? "Changes ready" : label(changeset.promotion_state)}</Pill>
+      {changeset.provider_id && <span>{changeset.provider_id}</span>}
+      {changeset.runtime && <span>{changeset.runtime}</span>}
+    </div>
+    <h3>Changes ready</h3>
+    <p className="approval-meta">{summary.files_changed || files.length || 0} files changed · {summary.additions || 0} additions · {summary.deletions || 0} deletions</p>
+    <p className="approval-meta">Tests: {testLabel}</p>
+    {pending && <div className="approval-actions">
+      <button type="button" className="button primary" disabled={busy} onClick={() => onApply(changeset)}>Apply</button>
+      <button type="button" className="button secondary" disabled={busy} onClick={() => onReject(changeset)}>Reject</button>
+    </div>}
+    <details>
+      <summary>Review</summary>
+      <div className="promotion-review">
+        {files.length > 0 && <ul>{files.map((file) => <li key={file.path || file}><code>{file.path || file}</code> {file.kind ? label(file.kind) : ""}</li>)}</ul>}
+        {changeset.diff && <pre><code>{changeset.diff}</code></pre>}
+        {Array.isArray(changeset.warnings) && changeset.warnings.length > 0 && <ul>{changeset.warnings.map((item) => <li key={item}>{item}</li>)}</ul>}
+      </div>
+    </details>
+  </article>;
+}
+
+function MessageBubble({ message, route, onInspect, events = [], approvals = [], onAllowApproval, onDenyApproval, onApplyChangeset, onRejectChangeset, approvalBusy = false }) {
   const assistant = message.role === "assistant";
   const status = MESSAGE_STATUS[message.status];
+  const changeset = message.metadata && typeof message.metadata === "object" ? message.metadata.changeset : null;
   return <article className={`message ${assistant ? "assistant" : "user"}`}>
     <div className="message-meta">
       <span>{assistant ? "OpenCobalt" : "You"}</span>
@@ -261,7 +302,8 @@ function MessageBubble({ message, route, onInspect, events = [], approvals = [],
     <Markdown content={message.content} />
     {assistant && route && <RouteSpine route={route} onInspect={onInspect} />}
     {events.length > 0 && <div className="event-strip" aria-label="Execution events">{events.map((event) => <Pill key={`${event.event_type}-${event.sequence}`} tone={event.event_type === "approval_required" ? "amber" : "neutral"}>{label(event.event_type)}</Pill>)}</div>}
-    {approvals.length > 0 && <div className="approval-stack">{approvals.map((approval) => <ApprovalCard key={approval.request_id || approval.step_id} approval={approval} onAllow={onAllowApproval} onDeny={onDenyApproval} busy={approvalBusy} />)}</div>}
+    {approvals.length > 0 && <div className="approval-stack">{approvals.map((approval) => <ApprovalCard key={approval.request_id || approval.step_id} approval={approval} onAllow={onAllowApproval} onDeny={onDenyApproval} onApply={onApplyChangeset} onReject={onRejectChangeset} busy={approvalBusy} />)}</div>}
+    {changeset && <div className="approval-stack"><PromotionCard changeset={changeset} onApply={onApplyChangeset} onReject={onRejectChangeset} busy={approvalBusy} /></div>}
   </article>;
 }
 
@@ -673,6 +715,31 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     }
   };
 
+  const decidePromotion = async (target, apply) => {
+    const changesetId = target?.changeset_id || target?.changesetId;
+    if (!changesetId || approvalBusyId) return;
+    setApprovalBusyId(changesetId);
+    try {
+      const next = apply
+        ? await api.applyChangeset(changesetId)
+        : await api.rejectChangeset(changesetId);
+      setPendingApprovals((current) => current.filter((item) => item.changeset_id !== changesetId && item.request_id !== target.request_id));
+      setMessages((current) => current.map((message) => {
+        const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
+        if (metadata.changeset?.changeset_id !== changesetId) return message;
+        return { ...message, metadata: { ...metadata, changeset: next } };
+      }));
+      if (selectedId && !busy) {
+        const fresh = await api.messages(selectedId);
+        setMessages(fresh);
+      }
+    } catch (error) {
+      setNotice({ tone: "error", text: error.message || "The promotion decision was not recorded." });
+    } finally {
+      setApprovalBusyId("");
+    }
+  };
+
   const compareLastTwo = async () => {
     const responses = messages.filter((message) => message.role === "assistant" && message.status === "complete").slice(-2);
     if (responses.length !== 2) return;
@@ -718,9 +785,9 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
           const matchingStreamRoute = message.route_id && streamRoute?.route_id === message.route_id ? streamRoute : null;
           const hydratedRoute = message.route_id ? routeCache[message.route_id] : null;
           const route = message.route_id ? { route_id: message.route_id, receipt_id: message.receipt_id || message.work_receipt_id, verification_status: message.verification_status, provenance_error: Boolean(routeHydrationErrors[message.route_id]), ...(hydratedRoute || {}), ...(matchingStreamRoute || {}) } : null;
-          return <MessageBubble key={messageId} message={message} route={route} events={messageId === "local-stream" ? executionEvents : []} onInspect={() => route && openRoute(route.route_id, route)} />;
+          return <MessageBubble key={messageId} message={message} route={route} events={messageId === "local-stream" ? executionEvents : []} onInspect={() => route && openRoute(route.route_id, route)} onAllowApproval={(item) => decideApproval(item, true)} onDenyApproval={(item) => decideApproval(item, false)} onApplyChangeset={(item) => decidePromotion(item, true)} onRejectChangeset={(item) => decidePromotion(item, false)} approvalBusy={Boolean(approvalBusyId)} />;
         })}
-        {pendingApprovals.length > 0 && <div className="approval-stack">{pendingApprovals.map((approval) => <ApprovalCard key={approval.request_id || approval.step_id} approval={approval} onAllow={(item) => decideApproval(item, true)} onDeny={(item) => decideApproval(item, false)} busy={Boolean(approvalBusyId)} />)}</div>}
+        {pendingApprovals.length > 0 && <div className="approval-stack">{pendingApprovals.map((approval) => <ApprovalCard key={approval.request_id || approval.step_id} approval={approval} onAllow={(item) => decideApproval(item, true)} onDeny={(item) => decideApproval(item, false)} onApply={(item) => decidePromotion(item, true)} onReject={(item) => decidePromotion(item, false)} busy={Boolean(approvalBusyId)} />)}</div>}
         {comparableResponses.length >= 2 && <div className="compare-action"><button type="button" className="button secondary" onClick={compareLastTwo} disabled={comparison.loading}>{comparison.loading ? "Comparing…" : "Compare last two responses"}</button><span>Uses each response’s stored message and independent route record.</span></div>}
         {comparison.error && <div className="compare-state"><ErrorState error={comparison.error} title="The responses could not be compared." /></div>}
         {comparison.data && <section className="comparison" aria-labelledby="comparison-title"><div className="comparison-heading"><h2 id="comparison-title">Stored response comparison</h2><button type="button" className="text-button" onClick={() => setComparison({ loading: false, error: null, data: null })}>Close</button></div><div className="comparison-grid">{comparison.data.map((entry, index) => {
@@ -760,7 +827,7 @@ function MissionsPage() {
     const citations = Array.isArray(research?.citations) ? research.citations : [];
     const disagreements = Array.isArray(research?.disagreements) ? research.disagreements : [];
     const roles = research?.model_roles && typeof research.model_roles === "object" ? Object.entries(research.model_roles) : [];
-    return <article className="record-card mission-card" key={missionIdOf(mission)}><div className="card-top"><div className="pill-row"><Pill tone={mission.status === "complete" || mission.status === "completed" ? "green" : mission.status === "blocked" ? "amber" : "neutral"}>{label(mission.status || "planned")}</Pill><Pill>{label(mission.mission_type || "mission")}</Pill>{research && <Pill>{sources.length} sources</Pill>}{research && <Pill>{evidence.length} evidence</Pill>}{coding && <Pill>{label(coding.capability_role || "coding")}</Pill>}</div><small className="mono">{mission.mission_id || mission.id}</small></div><h2>{mission.goal || mission.title || "Untitled mission"}</h2><p>{mission.current_state || mission.summary || research?.synthesis || coding?.outcome || "No current state has been recorded."}</p><details><summary>Inspect plan, checkpoints, and provenance</summary><div className="mission-detail"><dl><dt>Active plan</dt><dd>{mission.active_plan_id || "not recorded"}</dd><dt>Last receipt</dt><dd>{mission.last_receipt_id || "not recorded"}</dd><dt>Source route</dt><dd>{mission.route_id || research?.route_id || "not promoted from chat"}</dd><dt>Outcome</dt><dd>{mission.outcome || "not final"}</dd></dl>{steps.length ? <ol>{steps.map((step) => <li key={step.step_id}><b>{step.title}</b><span>{label(step.execution_state)} · approval {label(step.approval_state)} · risk {label(step.risk_level)}</span>{step.receipt_id && <code>{step.receipt_id}</code>}</li>)}</ol> : <p>No durable steps were returned for this mission.</p>}</div></details>{research && <details><summary>Inspect research sources, evidence, and citations</summary><div className="mission-detail research-detail"><p>{research.question}</p>{Array.isArray(research.limitations) && research.limitations.length > 0 && <ul>{research.limitations.map((item) => <li key={item}>{item}</li>)}</ul>}{roles.length > 0 && <section><h3>Model roles</h3><dl>{roles.map(([role, value]) => <React.Fragment key={role}><dt>{label(role)}</dt><dd>{value?.display_name || value?.model_id || value?.provider_id} · {value?.reason || "role assigned"}</dd></React.Fragment>)}</dl></section>}{sources.length > 0 && <section><h3>Sources</h3><ol>{sources.map((source) => <li key={source.source_id}><b>{source.title || source.url}</b><span>{label(source.source_type)} · {label(source.retrieval_status)}</span><code>{source.url}</code></li>)}</ol></section>}{evidence.length > 0 && <section><h3>Evidence</h3><ol>{evidence.map((item) => <li key={item.evidence_id}><b>{item.claim}</b><span>{label(item.causal_class)} · {label(item.relation)} · {label(item.verification_status)}</span>{item.limitations && <span>{item.limitations}</span>}<code>{item.evidence_id}</code></li>)}</ol></section>}{disagreements.length > 0 && <section><h3>Disagreements preserved</h3><ol>{disagreements.map((item) => <li key={item.disagreement_id}><b>{item.topic}</b><span>{(item.positions || []).join(" · ")}</span></li>)}</ol></section>}{citations.length > 0 && <section><h3>Citations</h3><ol>{citations.map((item) => <li key={item.citation_id}><b>{item.claim_span || "claim"}</b><span>{label(item.verification_status)} · {item.verification_note}</span><code>{item.evidence_id || "no evidence id"}</code></li>)}</ol></section>}{research.synthesis && <section><h3>Final synthesis</h3><p>{research.synthesis}</p></section>}</div></details>}{coding && <details open={["running", "pending"].includes(coding.status)}><summary>Coding execution</summary><div className="mission-detail"><dl><dt>Objective</dt><dd>{coding.objective || mission.goal || "not recorded"}</dd><dt>Status</dt><dd>{label(coding.status || mission.status)}</dd><dt>Repository</dt><dd><code>{coding.repository_path || "not recorded"}</code></dd><dt>Provider</dt><dd>{coding.provider_id || "not recorded"}{coding.model_id ? ` · ${coding.model_id}` : ""} · {label(coding.capability_role || "coding")}</dd><dt>ACP session</dt><dd><code>{coding.acp_session_id || "not reloadable across restart"}</code></dd><dt>Receipt</dt><dd><code>{coding.receipt_id || "not recorded"}</code></dd></dl>{Array.isArray(coding.approvals) && coding.approvals.length > 0 && <section><h3>Approvals</h3><ol>{coding.approvals.map((item, index) => <li key={item.request_id || item.approval_request_id || index}><b>{item.headline || item.tool || item.policy_decision || "permission"}</b><span>{label(item.state || item.policy_decision)} · {label(item.risk_level)}{item.command ? ` · ${item.command}` : item.path ? ` · ${item.path}` : ""}</span></li>)}</ol></section>}{Array.isArray(coding.files_changed) && coding.files_changed.length > 0 && <section><h3>Files changed</h3><ol>{coding.files_changed.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.terminal_operations) && coding.terminal_operations.length > 0 && <section><h3>Commands</h3><ol>{coding.terminal_operations.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.tests) && coding.tests.length > 0 && <section><h3>Verification</h3><ol>{coding.tests.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{coding.outcome && <section><h3>Outcome</h3><p>{coding.outcome}</p></section>}</div></details>}</article>;
+    return <article className="record-card mission-card" key={missionIdOf(mission)}><div className="card-top"><div className="pill-row"><Pill tone={mission.status === "complete" || mission.status === "completed" ? "green" : mission.status === "blocked" ? "amber" : "neutral"}>{label(mission.status || "planned")}</Pill><Pill>{label(mission.mission_type || "mission")}</Pill>{research && <Pill>{sources.length} sources</Pill>}{research && <Pill>{evidence.length} evidence</Pill>}{coding && <Pill>{label(coding.capability_role || "coding")}</Pill>}</div><small className="mono">{mission.mission_id || mission.id}</small></div><h2>{mission.goal || mission.title || "Untitled mission"}</h2><p>{mission.current_state || mission.summary || research?.synthesis || coding?.outcome || "No current state has been recorded."}</p><details><summary>Inspect plan, checkpoints, and provenance</summary><div className="mission-detail"><dl><dt>Active plan</dt><dd>{mission.active_plan_id || "not recorded"}</dd><dt>Last receipt</dt><dd>{mission.last_receipt_id || "not recorded"}</dd><dt>Source route</dt><dd>{mission.route_id || research?.route_id || "not promoted from chat"}</dd><dt>Outcome</dt><dd>{mission.outcome || "not final"}</dd></dl>{steps.length ? <ol>{steps.map((step) => <li key={step.step_id}><b>{step.title}</b><span>{label(step.execution_state)} · approval {label(step.approval_state)} · risk {label(step.risk_level)}</span>{step.receipt_id && <code>{step.receipt_id}</code>}</li>)}</ol> : <p>No durable steps were returned for this mission.</p>}</div></details>{research && <details><summary>Inspect research sources, evidence, and citations</summary><div className="mission-detail research-detail"><p>{research.question}</p>{Array.isArray(research.limitations) && research.limitations.length > 0 && <ul>{research.limitations.map((item) => <li key={item}>{item}</li>)}</ul>}{roles.length > 0 && <section><h3>Model roles</h3><dl>{roles.map(([role, value]) => <React.Fragment key={role}><dt>{label(role)}</dt><dd>{value?.display_name || value?.model_id || value?.provider_id} · {value?.reason || "role assigned"}</dd></React.Fragment>)}</dl></section>}{sources.length > 0 && <section><h3>Sources</h3><ol>{sources.map((source) => <li key={source.source_id}><b>{source.title || source.url}</b><span>{label(source.source_type)} · {label(source.retrieval_status)}</span><code>{source.url}</code></li>)}</ol></section>}{evidence.length > 0 && <section><h3>Evidence</h3><ol>{evidence.map((item) => <li key={item.evidence_id}><b>{item.claim}</b><span>{label(item.causal_class)} · {label(item.relation)} · {label(item.verification_status)}</span>{item.limitations && <span>{item.limitations}</span>}<code>{item.evidence_id}</code></li>)}</ol></section>}{disagreements.length > 0 && <section><h3>Disagreements preserved</h3><ol>{disagreements.map((item) => <li key={item.disagreement_id}><b>{item.topic}</b><span>{(item.positions || []).join(" · ")}</span></li>)}</ol></section>}{citations.length > 0 && <section><h3>Citations</h3><ol>{citations.map((item) => <li key={item.citation_id}><b>{item.claim_span || "claim"}</b><span>{label(item.verification_status)} · {item.verification_note}</span><code>{item.evidence_id || "no evidence id"}</code></li>)}</ol></section>}{research.synthesis && <section><h3>Final synthesis</h3><p>{research.synthesis}</p></section>}</div></details>}{coding && <details open={["running", "pending"].includes(coding.status)}><summary>Coding execution</summary><div className="mission-detail"><dl><dt>Objective</dt><dd>{coding.objective || mission.goal || "not recorded"}</dd><dt>Status</dt><dd>{label(coding.status || mission.status)}</dd><dt>Repository</dt><dd><code>{coding.repository_path || "not recorded"}</code></dd><dt>Provider</dt><dd>{coding.provider_id || "not recorded"}{coding.model_id ? ` · ${coding.model_id}` : ""} · {label(coding.capability_role || "coding")}</dd><dt>ACP session</dt><dd><code>{coding.acp_session_id || "not reloadable across restart"}</code></dd><dt>Receipt</dt><dd><code>{coding.receipt_id || "not recorded"}</code></dd></dl>{Array.isArray(coding.approvals) && coding.approvals.length > 0 && <section><h3>Approvals</h3><ol>{coding.approvals.map((item, index) => <li key={item.request_id || item.approval_request_id || index}><b>{item.headline || item.tool || item.policy_decision || "permission"}</b><span>{label(item.state || item.policy_decision)} · {label(item.risk_level)}{item.command ? ` · ${item.command}` : item.path ? ` · ${item.path}` : ""}</span></li>)}</ol></section>}{Array.isArray(coding.files_changed) && coding.files_changed.length > 0 && <section><h3>Files changed</h3><ol>{coding.files_changed.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.terminal_operations) && coding.terminal_operations.length > 0 && <section><h3>Commands</h3><ol>{coding.terminal_operations.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.tests) && coding.tests.length > 0 && <section><h3>Verification</h3><ol>{coding.tests.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{coding.changeset && <section><h3>ChangeSet</h3><p>{label(coding.changeset.promotion_state)} · {(coding.changeset.summary && coding.changeset.summary.files_changed) || 0} files</p><PromotionCard changeset={coding.changeset} onApply={async (item) => { await api.applyChangeset(item.changeset_id); window.location.reload(); }} onReject={async (item) => { await api.rejectChangeset(item.changeset_id); window.location.reload(); }} /></section>}{coding.outcome && <section><h3>Outcome</h3><p>{coding.outcome}</p></section>}</div></details>}</article>;
   }} />;
 }
 

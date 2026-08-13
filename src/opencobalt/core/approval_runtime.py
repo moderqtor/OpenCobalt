@@ -379,6 +379,8 @@ class LiveApprovalCoordinator:
             "route_id": metadata.get("route_id"),
             "conversation_id": metadata.get("conversation_id"),
             "provider_session_id": metadata.get("provider_session_id"),
+            "source_type": request.source_type,
+            "changeset_id": metadata.get("changeset_id"),
             "created_at": target.created_at,
             "updated_at": target.updated_at,
             "expires_at": metadata.get("expires_at"),
