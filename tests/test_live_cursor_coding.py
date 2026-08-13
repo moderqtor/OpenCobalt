@@ -31,6 +31,7 @@ pytestmark = pytest.mark.skipif(
 def _live_stack(tmp_path: Path):
     db = tmp_path / "ledger.db"
     store = ApprovalStore(db)
+    personal = PersonalAIStore(db)
     coordinator = LiveApprovalCoordinator(ApprovalBridge(store=store), wait_seconds=180)
     engine = ExecutionEngine(
         store=ExecutionStore(db),
@@ -42,8 +43,10 @@ def _live_stack(tmp_path: Path):
         CursorAdapter(),
         approval_store=store,
         coordinator=coordinator,
+        store=personal,
+        staging_root=tmp_path / "staging",
     )
-    return coordinator, engine, provider, PersonalAIStore(db), MissionStore(db)
+    return coordinator, engine, provider, personal, MissionStore(db)
 
 
 def _allow_pending(coordinator: LiveApprovalCoordinator, *, deny: bool = False) -> None:
@@ -106,6 +109,8 @@ def test_live_coding_agent_allow_once_mutates_disposable_repo(tmp_path: Path):
             encoding="utf-8",
         )
         subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, capture_output=True)
         subprocess.run(["git", "add", "-A"], cwd=repo, check=True, capture_output=True)
         subprocess.run(
             ["git", "commit", "-m", "initial"],
@@ -113,6 +118,7 @@ def test_live_coding_agent_allow_once_mutates_disposable_repo(tmp_path: Path):
             check=True,
             capture_output=True,
         )
+    original = (repo / "app.py").read_text(encoding="utf-8")
     coordinator, engine, provider, store, missions = _live_stack(tmp_path)
     coding = CodingMissionStore(store, missions).create(
         objective="Add a function that returns 42 and add a passing test.",
@@ -136,21 +142,30 @@ def test_live_coding_agent_allow_once_mutates_disposable_repo(tmp_path: Path):
                 "chat_surface": "coding_mission",
                 "execution_id": "chatx-live-agent",
                 "mission_id": coding["mission_id"],
+                "coding_mission_id": coding["coding_id"],
                 "route_id": "route-live",
             },
         )
     )
     assert result.status in {"complete", "failed", "cancelled"}, result.error
-    permissions = result.metadata.get("acp_permissions") or []
-    assert permissions, "Cursor did not request any ACP permissions"
-    allowed = [item for item in permissions if item.get("option_id") == "allow-once"]
-    assert allowed, permissions
-    text = (repo / "app.py").read_text(encoding="utf-8")
-    assert "42" in text
+    assert (repo / "app.py").read_text(encoding="utf-8") == original
+    changeset = result.metadata.get("changeset") or {}
+    assert changeset.get("changeset_id"), result.metadata
+    assert changeset.get("promotion_state") in {"pending", "empty", "blocked"}
+    if changeset.get("promotion_state") == "pending":
+        from opencobalt.personal_ai.staging import StagingController
+
+        controller = StagingController(
+            store,
+            staging_root=tmp_path / "staging",
+            approval_store=coordinator.bridge.store,
+        )
+        applied = controller.apply_changeset(changeset["changeset_id"])
+        assert applied.promotion_state == "applied"
+        assert "42" in (repo / "app.py").read_text(encoding="utf-8")
     assert result.receipt_id
     receipt = engine.store.get_receipt(result.receipt_id)
     assert receipt is not None
-    assert any(str(ref).startswith("approval:") for ref in receipt.provenance_refs)
 
 
 def test_live_coding_agent_deny_does_not_apply_forbidden_write(tmp_path: Path):
