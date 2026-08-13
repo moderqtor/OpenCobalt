@@ -1,8 +1,14 @@
-# Tool Routing
+# Tool Routing (legacy CLI)
+
+This document describes the legacy keyword router in
+`src/opencobalt/core/router.py`, used by `opencobalt route` and some CLI
+defaults. Chat and the web workspace use capability-role routing documented
+in [routing.md](routing.md). Do not treat the vendor tiers below as current
+product architecture.
 
 ## Doctrine
 
-OpenCobalt routes tasks to runtimes based on task type, risk level, context, and verification needs. The router is deterministic -- it uses keyword scoring, not LLM inference.
+OpenCobalt routes tasks to runtimes based on task type, risk level, context, and verification needs. The CLI router is deterministic: it uses keyword scoring, not LLM inference.
 
 The router never makes autonomous decisions about what to build or how to build it. It recommends. The human decides.
 

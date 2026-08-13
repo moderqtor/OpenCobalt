@@ -1,5 +1,8 @@
 # Contributing
 
+Read [OPENCOBALT.md](../OPENCOBALT.md) and [AGENTS.md](../AGENTS.md) first.
+The live implementation and tests are authoritative.
+
 ## Branch naming
 
 All changes must come in via feature branches, not directly to `main`.
@@ -19,7 +22,15 @@ Use the following prefixes:
 ## Running checks locally
 
 ```bash
-python3 -m pytest -q
-ruff check src/ tests/
-opencobalt public-check
+uv run ruff check .
+uv run opencobalt public-check
+uv run pytest
 ```
+
+If UI files changed:
+
+```bash
+npm run build --prefix ui
+```
+
+Do not push or merge unless the maintainer explicitly asks for it.

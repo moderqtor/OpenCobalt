@@ -1,5 +1,7 @@
 # OpenCobalt Daily Operator -- Illustrative Dogfooding Transcript
 
+> Historical. Illustrative CLI walkthrough, not current product identity.
+
 ## Executive Summary
 
 This document is a schematic walkthrough of the Daily Operator workflow. The

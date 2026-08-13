@@ -1,5 +1,9 @@
 # Design System
 
+Visual tokens for OpenCobalt surfaces. Product identity is in
+[OPENCOBALT.md](../OPENCOBALT.md). The web workspace is the canonical user
+surface; the CLI is a control plane over the same ledger.
+
 ## Principles
 
 1. Dark-native. The primary mode is dark. Not a toggle -- the product lives in dark.
@@ -7,7 +11,8 @@
 3. One accent color used sparingly: active state, CTA, system identity only.
 4. Breathing room. Generous padding. Content does not feel cramped.
 5. Status at a glance. The UI answers "what is running, what is healthy, what just happened" without interaction.
-6. Command-first. A command bar is always accessible. The GUI wraps the CLI -- it does not replace it.
+6. Progressive disclosure. Chat is the default surface. Routing, receipts, and
+   execution details appear when the user inspects them.
 
 ## Color Palette
 

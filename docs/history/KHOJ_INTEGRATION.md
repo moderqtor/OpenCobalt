@@ -1,5 +1,8 @@
 # Khoj Integration
 
+> Historical optional sidecar notes. Khoj is not part of the default
+> OpenCobalt workspace.
+
 ## What Khoj is
 
 Khoj is a self-hosted AI second brain. It indexes documents, notes, and web pages,

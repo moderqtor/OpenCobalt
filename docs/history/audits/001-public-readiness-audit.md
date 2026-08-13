@@ -1,5 +1,7 @@
 # Phase 1 Public Readiness Audit
 
+> Historical audit. Not current product documentation.
+
 **Date:** 2026-05-28
 **Status:** MVP complete. Ready for local commit. Not yet pushed.
 

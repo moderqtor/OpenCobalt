@@ -1,9 +1,10 @@
 # Cold Resume Demo v0
 
-Agents come and go. Models change. Sessions die. OpenCobalt remembers.
+> Historical. This documents an implemented CLI demo. It is not the current
+> product identity. See [README.md](../../README.md).
 
-`opencobalt demo cold-resume` is a deterministic local demo of the mission
-memory wedge:
+`opencobalt demo cold-resume` is a deterministic local demo of mission
+extraction, verification, and handoff packets:
 
 ```text
 old agent report

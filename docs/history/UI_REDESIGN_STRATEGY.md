@@ -1,5 +1,8 @@
 # OpenCobalt UI and CLI Redesign Strategy
 
+> Historical. The web workspace is now the canonical user surface. Do not
+> treat this file as current strategy.
+
 ## Recommendation
 
 Treat the CLI as the flagship interface and redesign it first. The desktop dashboard should follow the CLI visual language, not the other way around.

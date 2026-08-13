@@ -1,63 +1,88 @@
-# AGENTS.md -- AI Tool Overlay
+# AGENTS.md -- Coding Agent Instructions
 
-`OPENCOBALT.md` is the canonical OpenCobalt policy. Read it first and treat
-this file as a short overlay for AI coding tools that look for AGENTS.md.
+`OPENCOBALT.md` is the canonical product and engineering doctrine. Read it
+first. This file tells coding agents how to work in the repository.
 
-## Required Contract
+## Source of truth
 
-- Follow `OPENCOBALT.md` for project identity, safety, execution boundaries,
-  autonomy envelopes, cognitive budgets, receipts, approvals, MCP rules,
-  commit/push/merge rules, and final reports.
-- Manual commands remain available, but new orchestration work should move
-  toward `opencobalt auto "GOAL"` and `/auto GOAL` as the natural-language
-  front door.
+When sources conflict, use this precedence:
+
+1. Current implementation and tests
+2. `OPENCOBALT.md`
+3. Current architecture and feature documentation
+4. `README.md`
+5. Historical docs, old roadmaps, previous prompts, and stale assumptions
+
+Inspect the repository before relying on memory. Do not assume runtime CLI
+syntax from installation notes. Do not preserve old product positioning merely
+because it appears in many files. Do not describe planned functionality as
+implemented. Do not delete useful implemented functionality merely because the
+product direction changed.
+
+## Required contract
+
+- Follow `OPENCOBALT.md` for identity, capability routing, durable state,
+  authority, provenance, execution boundaries, autonomy envelopes, cognitive
+  budgets, receipts, approvals, MCP rules, and commit/push/merge rules.
 - All real or fake runtime execution must flow through `ExecutionEngine`.
   Do not add direct subprocess paths from CLI, shell, council, pipeline,
   mission, evolve, or auto surfaces.
-- Use local repo evidence before relying on memory.
-- Do not assume runtime CLI syntax from installation or old notes.
-- Do not push or merge unless Colin explicitly instructs it.
+- Preserve working behavior. Avoid unnecessary rewrites and feature
+  accumulation.
+- Never invent provider capability. Installation is not authentication, and
+  authentication is not successful invocation.
+- Avoid dangerous bypass flags. Do not enable `--force`, `--yolo`,
+  `--dangerously-skip-permissions`, or equivalent escape hatches.
+- Protect private and generated state: `.opencobalt/`, `.env`, credentials,
+  local databases, logs, and build output.
+- Distinguish implemented, limited, experimental, planned, and speculative.
+- Update docs when architecture or behavior changes. Do not leave
+  contradictory instructions behind.
 
-## Daily Operator Product Contract
+## Product surface
 
-- OpenCobalt is evolving into Colin's personal daily operating system for efficiency.
-- Core 5 questions answered:
-  1. What matters right now? (`opencobalt today` / `opencobalt next`)
-  2. Why does it matter? (`opencobalt why <id>`)
-  3. What is the smallest concrete next action? (`opencobalt next`)
-  4. What was I doing before I was interrupted? (`opencobalt focus` / `opencobalt continue`)
-  5. What happened after I acted? (`opencobalt done` / `opencobalt review`)
-- Principles: Local-first, CLI-first, deterministic core, transparent prioritization formula, receipts over claims, preserve human authority, zero productivity theater.
+The ordinary user surface is Chat in the local web workspace (`opencobalt ui`).
+Give OpenCobalt a goal; routing, memory, research, coding staging, approvals,
+and receipts happen behind that interaction and remain inspectable.
 
-## Guidelines for Coding Agents
+The CLI remains a full control plane, including `opencobalt auto "GOAL"` for
+plan-only orchestration. Manual commands are primitives, not the required
+front door.
 
-1. **Schema Changes**: Place new SQLite DDL in `src/opencobalt/core/ledger.py` or dedicated store module. Use `CREATE TABLE IF NOT EXISTS`, explicit `FOREIGN KEY` constraints, append-only triggers where required, and dynamic/idempotent column migration logic.
-2. **Execution Boundary**: All external process execution must route through `src/opencobalt/execution/engine.py` (`ExecutionEngine`).
-3. **Quality Gates**: Before reporting completion, always run:
-   ```bash
-   .venv/bin/ruff check .
-   .venv/bin/opencobalt public-check
-   .venv/bin/pytest
+## Working rules
+
+1. **Inspect first.** Read the relevant modules and tests before editing.
+2. **Schema changes.** Place new SQLite DDL in
+   `src/opencobalt/core/ledger.py` or a dedicated store module. Use
+   `CREATE TABLE IF NOT EXISTS`, explicit `FOREIGN KEY` constraints,
+   append-only triggers where required, and idempotent column migration.
+3. **Execution boundary.** External process execution routes through
+   `src/opencobalt/execution/engine.py`.
+4. **Coding authority.** Coding-agent mutations stay in a staged workspace
+   until explicit promotion. Do not let a provider write the authoritative
+   repository directly.
+5. **Quality gates.** Before reporting completion, run:
+
    ```
-4. **Receipts & Provenance**: Every task execution and commitment completion creates a receipt and attaches a provenance link in `.opencobalt/ledger.db`.
+   uv run ruff check .
+   uv run opencobalt public-check
+   uv run pytest
+   ```
 
-## Current Gate Baseline
+   If UI copy or frontend files changed, also run `npm run build --prefix ui`.
+6. **Receipts.** Task execution and commitment completion create a receipt and
+   attach provenance in `.opencobalt/ledger.db`.
 
-On branch `daily-operator-v0` branched from HEAD `a265ef1`:
-- `.venv/bin/ruff check .`: clean
-- `.venv/bin/opencobalt public-check`: clean
-- `.venv/bin/pytest`: 1126 passed, 1 warning
+## Commits and remotes
 
-Re-run gates before making current claims.
+- Local commits only unless Colin explicitly says to push.
+- Run `opencobalt public-check` before committing.
+- Do not push or merge unless Colin explicitly instructs it.
+- Preserve unrelated user changes.
+- Do not commit `uv.lock` unless repository policy explicitly requires it.
 
-## Context Sentinel
+## Reports
 
-Final reports for Colin must begin:
-
-```
-Colin, COBALT-SENTINEL: receipts-first.
-```
-
-Then report branch, base SHA, test baseline, worktree cleanliness, push/merge
-state, and local commit state. If a fact is unknown, say so.
-
+Final reports should be plain technical language: branch, base SHA, test
+baseline, worktree cleanliness, push/merge state, local commits, and remaining
+risk. Do not use branding slogans.

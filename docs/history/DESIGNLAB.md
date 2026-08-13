@@ -1,5 +1,7 @@
 # DesignLab
 
+> Historical. Planned, not implemented. Not current roadmap priority.
+
 **Status: planned. Interface documented, not yet implemented.**
 
 DesignLab is a design intelligence module that brings the same verification-and-memory approach to UI generation that OpenCobalt applies to code. It aims to prevent the generic AI-assisted UI pattern -- the same purple gradient, the same rounded cards, the same "unlock your productivity" copy -- from appearing in projects built with AI tools.

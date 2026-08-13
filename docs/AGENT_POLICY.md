@@ -3,6 +3,10 @@
 `OPENCOBALT.md` is the canonical policy. This document explains how agents,
 subagents, skills, and runtime adapters fit inside that policy.
 
+Chat routing uses capability roles, not these vendor tiers. See
+[routing.md](routing.md). The table below is the legacy CLI advisory tiering
+used by `opencobalt route` and some adapter metadata.
+
 ## Agent Roles
 
 OpenCobalt uses tiers to choose responsibility, not to grant authority:
@@ -14,6 +18,8 @@ OpenCobalt uses tiers to choose responsibility, not to grant authority:
 | worker | Local summarization, tagging, extraction, rough drafts | Ollama |
 
 The tier is advisory. The envelope and policy gate decide what can happen.
+Capability roles (`cheap_local`, `fast_general`, `strong_reasoning`,
+`research`, `coding_analysis`, `coding_agent`) are the Personal AI contract.
 
 ## Runtime Boundary
 

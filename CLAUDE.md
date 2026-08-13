@@ -1,7 +1,7 @@
 # CLAUDE.md -- Claude Code Overlay
 
-`OPENCOBALT.md` is the canonical OpenCobalt policy. Follow it first. This file
-contains only Claude Code-specific deltas.
+Follow `OPENCOBALT.md` and `AGENTS.md`. This file contains only Claude Code
+specific deltas.
 
 ## Response Style
 
@@ -23,13 +23,7 @@ contains only Claude Code-specific deltas.
 
 - New code needs tests.
 - Use `tmp_path` for SQLite isolation.
-- After code or docs changes, run:
-
-```
-.venv/bin/ruff check .
-.venv/bin/opencobalt public-check
-.venv/bin/pytest
-```
+- After code or docs changes, run the gates in `AGENTS.md`.
 
 ## Commits
 
@@ -40,12 +34,4 @@ contains only Claude Code-specific deltas.
 
 ```
 Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
-```
-
-## Context Sentinel
-
-Final reports for Colin must begin:
-
-```
-Colin, COBALT-SENTINEL: receipts-first.
 ```
