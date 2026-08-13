@@ -168,7 +168,7 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
       rows="2"
       aria-label="Message OpenCobalt"
       aria-describedby={validationMessage ? "composer-provider-validation" : undefined}
-      placeholder="Ask once. OpenCobalt records the route."
+      placeholder="Message OpenCobalt"
       onChange={(event) => setText(event.target.value)}
       onKeyDown={(event) => {
         if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) submit(event);
@@ -221,7 +221,35 @@ const MESSAGE_STATUS = {
   cancel_requested: ["cancel requested", "pending"],
 };
 
-function MessageBubble({ message, route, onInspect, events = [] }) {
+function ApprovalCard({ approval, onAllow, onDeny, busy = false }) {
+  if (!approval) return null;
+  const pending = approval.state === "pending" && approval.actionable !== false;
+  const tone = approval.risk_level === "black" || approval.state === "rejected" || approval.state === "stale"
+    ? "coral"
+    : pending
+      ? "amber"
+      : "green";
+  return <article className={`approval-card ${pending ? "pending" : "resolved"}`} aria-live="polite">
+    <div className="approval-card-top">
+      <Pill tone={tone}>{pending ? "Approval required" : label(approval.state)}</Pill>
+      {approval.provider && <span>{approval.provider}</span>}
+      {approval.capability_role && <span>{label(approval.capability_role)}</span>}
+      {approval.risk_level && <span>Risk {label(approval.risk_level)}</span>}
+    </div>
+    <h3>{approval.headline || "Approval required"}</h3>
+    {approval.command && <pre><code>{approval.command}</code></pre>}
+    {!approval.command && approval.path && <p className="approval-path"><code>{approval.path}</code></p>}
+    {approval.repository && <p className="approval-meta">Repository {approval.repository}</p>}
+    {approval.summary && approval.summary !== approval.headline && <p className="approval-meta">{approval.summary}</p>}
+    {pending && <div className="approval-actions">
+      <button type="button" className="button primary" disabled={busy} onClick={() => onAllow(approval)}>{busy ? "Sending…" : "Allow once"}</button>
+      <button type="button" className="button secondary" disabled={busy} onClick={() => onDeny(approval)}>Deny</button>
+    </div>}
+    {!pending && approval.decision && <p className="approval-meta">{label(approval.decision)}{approval.decision_source ? ` · ${label(approval.decision_source)}` : ""}</p>}
+  </article>;
+}
+
+function MessageBubble({ message, route, onInspect, events = [], approvals = [], onAllowApproval, onDenyApproval, approvalBusy = false }) {
   const assistant = message.role === "assistant";
   const status = MESSAGE_STATUS[message.status];
   return <article className={`message ${assistant ? "assistant" : "user"}`}>
@@ -233,6 +261,7 @@ function MessageBubble({ message, route, onInspect, events = [] }) {
     <Markdown content={message.content} />
     {assistant && route && <RouteSpine route={route} onInspect={onInspect} />}
     {events.length > 0 && <div className="event-strip" aria-label="Execution events">{events.map((event) => <Pill key={`${event.event_type}-${event.sequence}`} tone={event.event_type === "approval_required" ? "amber" : "neutral"}>{label(event.event_type)}</Pill>)}</div>}
+    {approvals.length > 0 && <div className="approval-stack">{approvals.map((approval) => <ApprovalCard key={approval.request_id || approval.step_id} approval={approval} onAllow={onAllowApproval} onDeny={onDenyApproval} busy={approvalBusy} />)}</div>}
   </article>;
 }
 
@@ -252,6 +281,8 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const [modelCatalog, setModelCatalog] = useState([]);
   const [modelError, setModelError] = useState(null);
   const [comparison, setComparison] = useState({ loading: false, error: null, data: null });
+  const [pendingApprovals, setPendingApprovals] = useState([]);
+  const [approvalBusyId, setApprovalBusyId] = useState("");
   const abortRef = useRef(null);
   const executionRef = useRef(null);
   const runRef = useRef(null);
@@ -330,8 +361,6 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
 
   useEffect(() => () => {
     abortRef.current?.abort();
-    const executionId = executionRef.current;
-    if (executionId) api.cancelExecution(executionId).catch(() => undefined);
     runRef.current = null;
   }, []);
 
@@ -350,6 +379,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     setNotice(null);
     setStreamEvents([]);
     setStreamRoute(null);
+    setPendingApprovals([]);
     setMessages([]);
     setRouteCache({});
     setRouteHydrationErrors({});
@@ -365,6 +395,19 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       });
     return () => { alive = false; };
   }, [selectedId, refreshSignal, interactionBusy]); // Active sends refresh their own authoritative message state.
+
+  useEffect(() => {
+    if (!selectedId) return undefined;
+    let alive = true;
+    api.approvals({ conversation_id: selectedId, state: "pending" })
+      .then((items) => {
+        if (alive) setPendingApprovals(Array.isArray(items) ? items.filter((item) => item.state === "pending") : []);
+      })
+      .catch(() => {
+        if (alive) setPendingApprovals([]);
+      });
+    return () => { alive = false; };
+  }, [selectedId, refreshSignal]);
 
   useEffect(() => {
     const generation = routeGenerationRef.current;
@@ -436,6 +479,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     setNotice(null);
     setStreamEvents([]);
     setStreamRoute(null);
+    setPendingApprovals([]);
     setMessageState({ loading: false, error: null });
     executionRef.current = null;
     try {
@@ -471,6 +515,16 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
 
         if (type === "text_delta" && typeof payload.text_delta === "string") {
           setMessages((current) => current.map((message) => message.message_id === "local-stream" ? { ...message, content: `${message.content}${payload.text_delta}`, status: "streaming", route_id: routeId || message.route_id } : message));
+        }
+        if (type === "approval_required" || type === "approval_decided") {
+          const approval = payload.approval;
+          if (approval && approval.request_id) {
+            setPendingApprovals((current) => {
+              const without = current.filter((item) => item.request_id !== approval.request_id);
+              if (type === "approval_required" && (approval.state === "pending" || approval.actionable)) return [...without, approval];
+              return without;
+            });
+          }
         }
         if (String(type).startsWith("research_")) {
           const step = payload.step || type.replace("research_", "");
@@ -596,6 +650,29 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     setCancelling(false);
   };
 
+  const decideApproval = async (approval, allow) => {
+    if (!approval?.request_id || approvalBusyId) return;
+    setApprovalBusyId(approval.request_id);
+    try {
+      const result = allow
+        ? await api.allowApprovalOnce(approval.request_id)
+        : await api.denyApproval(approval.request_id);
+      const next = result.approval || { ...approval, state: allow ? "approved" : "rejected", actionable: false };
+      setPendingApprovals((current) => current.filter((item) => item.request_id !== approval.request_id));
+      if (next.state === "pending" && next.actionable) {
+        setPendingApprovals((current) => [...current, next]);
+      }
+      if (selectedId && !busy) {
+        const fresh = await api.messages(selectedId);
+        setMessages(fresh);
+      }
+    } catch (error) {
+      setNotice({ tone: "error", text: error.message || "The approval decision was not recorded." });
+    } finally {
+      setApprovalBusyId("");
+    }
+  };
+
   const compareLastTwo = async () => {
     const responses = messages.filter((message) => message.role === "assistant" && message.status === "complete").slice(-2);
     if (responses.length !== 2) return;
@@ -613,7 +690,9 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const activePersona = personas.find((persona) => (persona.persona_id || persona.id) === controls.personaId);
   const comparableResponses = messages.filter((message) => message.role === "assistant" && message.status === "complete");
   const executionEvents = streamEvents.filter((event) => ["tool", "tool_event", "tool_started", "tool_completed", "approval_required", "fallback_started", "research_planning", "research_retrieving", "research_extracting", "research_reviewing", "research_synthesizing", "research_complete"].includes(event.event_type));
-  const liveStatus = interactionBusy
+  const liveStatus = pendingApprovals.length
+    ? "Approval required before Cursor can continue."
+    : interactionBusy
     ? cancelling
       ? "OpenCobalt is finalizing cancellation and refreshing the durable record."
       : `OpenCobalt is routing the current request${executionRef.current ? ` with execution ${executionRef.current}` : ""}.`
@@ -633,7 +712,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       }}>
         {messageState.loading && <Loading label="Opening conversation" />}
         {messageState.error && <ErrorState error={messageState.error} retry={selectedId ? () => api.messages(selectedId).then((data) => { setMessages(data); setMessageState({ loading: false, error: null }); }) : undefined} />}
-        {!messageState.loading && !messages.length && <EmptyState title="One request. An inspectable route.">Choose a persona if it matters, then write naturally. OpenCobalt keeps the decision, response, and any execution receipt with the conversation.</EmptyState>}
+        {!messageState.loading && !messages.length && <EmptyState title="No messages yet">Choose a persona if it matters, then write the request. OpenCobalt records the route and any approval with the conversation.</EmptyState>}
         {messages.map((message) => {
           const messageId = message.message_id || message.id;
           const matchingStreamRoute = message.route_id && streamRoute?.route_id === message.route_id ? streamRoute : null;
@@ -641,6 +720,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
           const route = message.route_id ? { route_id: message.route_id, receipt_id: message.receipt_id || message.work_receipt_id, verification_status: message.verification_status, provenance_error: Boolean(routeHydrationErrors[message.route_id]), ...(hydratedRoute || {}), ...(matchingStreamRoute || {}) } : null;
           return <MessageBubble key={messageId} message={message} route={route} events={messageId === "local-stream" ? executionEvents : []} onInspect={() => route && openRoute(route.route_id, route)} />;
         })}
+        {pendingApprovals.length > 0 && <div className="approval-stack">{pendingApprovals.map((approval) => <ApprovalCard key={approval.request_id || approval.step_id} approval={approval} onAllow={(item) => decideApproval(item, true)} onDeny={(item) => decideApproval(item, false)} busy={Boolean(approvalBusyId)} />)}</div>}
         {comparableResponses.length >= 2 && <div className="compare-action"><button type="button" className="button secondary" onClick={compareLastTwo} disabled={comparison.loading}>{comparison.loading ? "Comparing…" : "Compare last two responses"}</button><span>Uses each response’s stored message and independent route record.</span></div>}
         {comparison.error && <div className="compare-state"><ErrorState error={comparison.error} title="The responses could not be compared." /></div>}
         {comparison.data && <section className="comparison" aria-labelledby="comparison-title"><div className="comparison-heading"><h2 id="comparison-title">Stored response comparison</h2><button type="button" className="text-button" onClick={() => setComparison({ loading: false, error: null, data: null })}>Close</button></div><div className="comparison-grid">{comparison.data.map((entry, index) => {
@@ -680,7 +760,7 @@ function MissionsPage() {
     const citations = Array.isArray(research?.citations) ? research.citations : [];
     const disagreements = Array.isArray(research?.disagreements) ? research.disagreements : [];
     const roles = research?.model_roles && typeof research.model_roles === "object" ? Object.entries(research.model_roles) : [];
-    return <article className="record-card mission-card" key={missionIdOf(mission)}><div className="card-top"><div className="pill-row"><Pill tone={mission.status === "complete" || mission.status === "completed" ? "green" : mission.status === "blocked" ? "amber" : "neutral"}>{label(mission.status || "planned")}</Pill><Pill>{label(mission.mission_type || "mission")}</Pill>{research && <Pill>{sources.length} sources</Pill>}{research && <Pill>{evidence.length} evidence</Pill>}{coding && <Pill>{label(coding.capability_role || "coding")}</Pill>}</div><small className="mono">{mission.mission_id || mission.id}</small></div><h2>{mission.goal || mission.title || "Untitled mission"}</h2><p>{mission.current_state || mission.summary || research?.synthesis || coding?.outcome || "No current state has been recorded."}</p><details><summary>Inspect plan, checkpoints, and provenance</summary><div className="mission-detail"><dl><dt>Active plan</dt><dd>{mission.active_plan_id || "not recorded"}</dd><dt>Last receipt</dt><dd>{mission.last_receipt_id || "not recorded"}</dd><dt>Source route</dt><dd>{mission.route_id || research?.route_id || "not promoted from chat"}</dd><dt>Outcome</dt><dd>{mission.outcome || "not final"}</dd></dl>{steps.length ? <ol>{steps.map((step) => <li key={step.step_id}><b>{step.title}</b><span>{label(step.execution_state)} · approval {label(step.approval_state)} · risk {label(step.risk_level)}</span>{step.receipt_id && <code>{step.receipt_id}</code>}</li>)}</ol> : <p>No durable steps were returned for this mission.</p>}</div></details>{research && <details><summary>Inspect research sources, evidence, and citations</summary><div className="mission-detail research-detail"><p>{research.question}</p>{Array.isArray(research.limitations) && research.limitations.length > 0 && <ul>{research.limitations.map((item) => <li key={item}>{item}</li>)}</ul>}{roles.length > 0 && <section><h3>Model roles</h3><dl>{roles.map(([role, value]) => <React.Fragment key={role}><dt>{label(role)}</dt><dd>{value?.display_name || value?.model_id || value?.provider_id} · {value?.reason || "role assigned"}</dd></React.Fragment>)}</dl></section>}{sources.length > 0 && <section><h3>Sources</h3><ol>{sources.map((source) => <li key={source.source_id}><b>{source.title || source.url}</b><span>{label(source.source_type)} · {label(source.retrieval_status)}</span><code>{source.url}</code></li>)}</ol></section>}{evidence.length > 0 && <section><h3>Evidence</h3><ol>{evidence.map((item) => <li key={item.evidence_id}><b>{item.claim}</b><span>{label(item.causal_class)} · {label(item.relation)} · {label(item.verification_status)}</span>{item.limitations && <span>{item.limitations}</span>}<code>{item.evidence_id}</code></li>)}</ol></section>}{disagreements.length > 0 && <section><h3>Disagreements preserved</h3><ol>{disagreements.map((item) => <li key={item.disagreement_id}><b>{item.topic}</b><span>{(item.positions || []).join(" · ")}</span></li>)}</ol></section>}{citations.length > 0 && <section><h3>Citations</h3><ol>{citations.map((item) => <li key={item.citation_id}><b>{item.claim_span || "claim"}</b><span>{label(item.verification_status)} · {item.verification_note}</span><code>{item.evidence_id || "no evidence id"}</code></li>)}</ol></section>}{research.synthesis && <section><h3>Final synthesis</h3><p>{research.synthesis}</p></section>}</div></details>}{coding && <details><summary>Inspect coding mission, ACP session, and approvals</summary><div className="mission-detail"><dl><dt>Repository</dt><dd><code>{coding.repository_path || "not recorded"}</code></dd><dt>ACP session</dt><dd><code>{coding.acp_session_id || "not recorded"}</code></dd><dt>Provider</dt><dd>{coding.provider_id || "not recorded"}{coding.model_id ? ` · ${coding.model_id}` : ""}</dd><dt>Receipt</dt><dd><code>{coding.receipt_id || "not recorded"}</code></dd></dl>{Array.isArray(coding.approvals) && coding.approvals.length > 0 && <section><h3>Approvals</h3><ol>{coding.approvals.map((item, index) => <li key={item.approval_request_id || index}><b>{item.tool || item.policy_decision || "permission"}</b><span>{label(item.risk_level)} · {label(item.policy_decision)}</span></li>)}</ol></section>}</div></details>}</article>;
+    return <article className="record-card mission-card" key={missionIdOf(mission)}><div className="card-top"><div className="pill-row"><Pill tone={mission.status === "complete" || mission.status === "completed" ? "green" : mission.status === "blocked" ? "amber" : "neutral"}>{label(mission.status || "planned")}</Pill><Pill>{label(mission.mission_type || "mission")}</Pill>{research && <Pill>{sources.length} sources</Pill>}{research && <Pill>{evidence.length} evidence</Pill>}{coding && <Pill>{label(coding.capability_role || "coding")}</Pill>}</div><small className="mono">{mission.mission_id || mission.id}</small></div><h2>{mission.goal || mission.title || "Untitled mission"}</h2><p>{mission.current_state || mission.summary || research?.synthesis || coding?.outcome || "No current state has been recorded."}</p><details><summary>Inspect plan, checkpoints, and provenance</summary><div className="mission-detail"><dl><dt>Active plan</dt><dd>{mission.active_plan_id || "not recorded"}</dd><dt>Last receipt</dt><dd>{mission.last_receipt_id || "not recorded"}</dd><dt>Source route</dt><dd>{mission.route_id || research?.route_id || "not promoted from chat"}</dd><dt>Outcome</dt><dd>{mission.outcome || "not final"}</dd></dl>{steps.length ? <ol>{steps.map((step) => <li key={step.step_id}><b>{step.title}</b><span>{label(step.execution_state)} · approval {label(step.approval_state)} · risk {label(step.risk_level)}</span>{step.receipt_id && <code>{step.receipt_id}</code>}</li>)}</ol> : <p>No durable steps were returned for this mission.</p>}</div></details>{research && <details><summary>Inspect research sources, evidence, and citations</summary><div className="mission-detail research-detail"><p>{research.question}</p>{Array.isArray(research.limitations) && research.limitations.length > 0 && <ul>{research.limitations.map((item) => <li key={item}>{item}</li>)}</ul>}{roles.length > 0 && <section><h3>Model roles</h3><dl>{roles.map(([role, value]) => <React.Fragment key={role}><dt>{label(role)}</dt><dd>{value?.display_name || value?.model_id || value?.provider_id} · {value?.reason || "role assigned"}</dd></React.Fragment>)}</dl></section>}{sources.length > 0 && <section><h3>Sources</h3><ol>{sources.map((source) => <li key={source.source_id}><b>{source.title || source.url}</b><span>{label(source.source_type)} · {label(source.retrieval_status)}</span><code>{source.url}</code></li>)}</ol></section>}{evidence.length > 0 && <section><h3>Evidence</h3><ol>{evidence.map((item) => <li key={item.evidence_id}><b>{item.claim}</b><span>{label(item.causal_class)} · {label(item.relation)} · {label(item.verification_status)}</span>{item.limitations && <span>{item.limitations}</span>}<code>{item.evidence_id}</code></li>)}</ol></section>}{disagreements.length > 0 && <section><h3>Disagreements preserved</h3><ol>{disagreements.map((item) => <li key={item.disagreement_id}><b>{item.topic}</b><span>{(item.positions || []).join(" · ")}</span></li>)}</ol></section>}{citations.length > 0 && <section><h3>Citations</h3><ol>{citations.map((item) => <li key={item.citation_id}><b>{item.claim_span || "claim"}</b><span>{label(item.verification_status)} · {item.verification_note}</span><code>{item.evidence_id || "no evidence id"}</code></li>)}</ol></section>}{research.synthesis && <section><h3>Final synthesis</h3><p>{research.synthesis}</p></section>}</div></details>}{coding && <details open={["running", "pending"].includes(coding.status)}><summary>Coding execution</summary><div className="mission-detail"><dl><dt>Objective</dt><dd>{coding.objective || mission.goal || "not recorded"}</dd><dt>Status</dt><dd>{label(coding.status || mission.status)}</dd><dt>Repository</dt><dd><code>{coding.repository_path || "not recorded"}</code></dd><dt>Provider</dt><dd>{coding.provider_id || "not recorded"}{coding.model_id ? ` · ${coding.model_id}` : ""} · {label(coding.capability_role || "coding")}</dd><dt>ACP session</dt><dd><code>{coding.acp_session_id || "not reloadable across restart"}</code></dd><dt>Receipt</dt><dd><code>{coding.receipt_id || "not recorded"}</code></dd></dl>{Array.isArray(coding.approvals) && coding.approvals.length > 0 && <section><h3>Approvals</h3><ol>{coding.approvals.map((item, index) => <li key={item.request_id || item.approval_request_id || index}><b>{item.headline || item.tool || item.policy_decision || "permission"}</b><span>{label(item.state || item.policy_decision)} · {label(item.risk_level)}{item.command ? ` · ${item.command}` : item.path ? ` · ${item.path}` : ""}</span></li>)}</ol></section>}{Array.isArray(coding.files_changed) && coding.files_changed.length > 0 && <section><h3>Files changed</h3><ol>{coding.files_changed.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.terminal_operations) && coding.terminal_operations.length > 0 && <section><h3>Commands</h3><ol>{coding.terminal_operations.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.tests) && coding.tests.length > 0 && <section><h3>Verification</h3><ol>{coding.tests.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{coding.outcome && <section><h3>Outcome</h3><p>{coding.outcome}</p></section>}</div></details>}</article>;
   }} />;
 }
 
