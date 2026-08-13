@@ -284,8 +284,10 @@ class ProcessRunner:
             if proc is not None:
                 _terminate_process(proc)
         finally:
-            if proc is not None and proc.poll() is None:
-                _terminate_process(proc)
+            if proc is not None:
+                if proc.poll() is None:
+                    _terminate_process(proc)
+                _close_stdio(proc)
 
         envelope = payload if isinstance(payload, dict) else {}
         stdout_path.write_text(
@@ -335,6 +337,17 @@ def redact_text(text: str) -> str:
 
 def redact_argv(argv: list[str]) -> list[str]:
     return [redact_text(part) for part in argv]
+
+
+def _close_stdio(proc: subprocess.Popen[bytes]) -> None:
+    for stream in (proc.stdin, proc.stdout, proc.stderr):
+        if stream is None:
+            continue
+        try:
+            if not stream.closed:
+                stream.close()
+        except OSError:
+            pass
 
 
 def _terminate_process(proc: subprocess.Popen[bytes]) -> None:

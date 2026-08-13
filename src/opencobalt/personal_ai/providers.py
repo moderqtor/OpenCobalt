@@ -254,7 +254,7 @@ class ProviderModelCatalog(BaseModel):
     limitations: list[str] = Field(default_factory=list)
 
 
-_BROAD_READ_ONLY_CAPABILITIES = [
+_BROAD_READ_ONLY_CAPABILITIES = (
     "chat",
     "coding",
     "creative",
@@ -268,9 +268,9 @@ _BROAD_READ_ONLY_CAPABILITIES = [
     "security",
     "tools",
     "writing",
-]
+)
 
-_LOCAL_TEXT_CAPABILITIES = [
+_LOCAL_TEXT_CAPABILITIES = (
     "chat",
     "coding",
     "creative",
@@ -281,7 +281,7 @@ _LOCAL_TEXT_CAPABILITIES = [
     "reflection",
     "research",
     "writing",
-]
+)
 
 _ROUTING_PROFILES = {
     "mock": ProviderRoutingProfile(
@@ -348,6 +348,11 @@ _ROUTING_PROFILES = {
         tool_names=["read", "edit", "terminal"],
     ),
 }
+
+
+def _routing_profile(name: str) -> ProviderRoutingProfile:
+    """Return an isolated copy so provider instances cannot mutate shared templates."""
+    return _ROUTING_PROFILES[name].model_copy(deep=True)
 
 
 class CancellationToken:
@@ -582,7 +587,7 @@ class MockChatProvider(EngineBackedChatProvider):
             display_name="Mock (deterministic local)",
             engine=engine,
             adapter=NoopAdapter(),
-            routing_profile=_ROUTING_PROFILES["mock"],
+            routing_profile=_routing_profile("mock"),
         )
         if chunk_size < 1:
             raise ValueError("chunk_size must be positive")
@@ -832,7 +837,7 @@ class OllamaChatProvider(EngineBackedChatProvider):
             engine=engine,
             adapter=adapter,
             supports_model_discovery=True,
-            routing_profile=_ROUTING_PROFILES["ollama"],
+            routing_profile=_routing_profile("ollama"),
         )
 
     @property
@@ -1098,7 +1103,7 @@ class ProviderRegistry:
                 display_name="Codex CLI",
                 engine=engine,
                 adapter=runtime_adapters["codex-cli"],
-                routing_profile=_ROUTING_PROFILES["codex"],
+                routing_profile=_routing_profile("codex"),
             ),
             _antigravity_chat_provider(engine, runtime_adapters["google-antigravity"]),
             EngineBackedChatProvider(
@@ -1106,7 +1111,7 @@ class ProviderRegistry:
                 display_name="Claude Code",
                 engine=engine,
                 adapter=runtime_adapters["claude-code"],
-                routing_profile=_ROUTING_PROFILES["claude"],
+                routing_profile=_routing_profile("claude"),
             ),
             OllamaChatProvider(
                 engine,
@@ -1118,7 +1123,7 @@ class ProviderRegistry:
                 display_name="Gemini CLI",
                 executable="gemini",
                 executable_finder=executable_finder,
-                routing_profile=_ROUTING_PROFILES["gemini"],
+                routing_profile=_routing_profile("gemini"),
             ),
         ]
         if "cursor" in runtime_adapters:

@@ -105,6 +105,40 @@ def test_context_is_keyed_by_resolved_ledger_path(
     assert [item["conversation_id"] for item in conversations] == [created["conversation_id"]]
 
 
+def test_api_context_does_not_reuse_deleted_or_recreated_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import shutil
+
+    from opencobalt.personal_ai.api import _CONTEXTS, _api_context
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    original = _api_context()
+    original.store.create_conversation(title="Original workspace")
+    original_key = original.db_path
+    assert original_key.parent.is_dir()
+
+    monkeypatch.chdir(tmp_path)
+    shutil.rmtree(workspace)
+    assert original_key not in _CONTEXTS or not original_key.parent.is_dir()
+
+    replacement = tmp_path / "workspace"
+    replacement.mkdir()
+    monkeypatch.chdir(replacement)
+    refreshed = _api_context()
+
+    assert refreshed is not original
+    conversations = refreshed.store.list_conversations()
+    assert conversations == []
+    refreshed.store.create_conversation(title="Replacement workspace")
+    assert [item.title for item in refreshed.store.list_conversations()] == [
+        "Replacement workspace"
+    ]
+
+
 def test_conversation_project_path_is_canonical_and_workspace_bounded(
     client: TestClient,
     tmp_path: Path,

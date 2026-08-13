@@ -241,7 +241,12 @@ def test_provider_policy_context_is_bounded_before_execution(tmp_path):
         )
     )
 
-    assert events[-1].event_type == "completed"
+    assert events[-1].event_type == "completed", (
+        f"expected completed, got {events[-1].event_type}: {events[-1].payload}"
+    )
+    route = store.list_routes(conversation_id=conversation.conversation_id)[0]
+    assert route.selected_provider == "mock"
+    assert route.metadata.get("capability_role") == "cheap_local"
 
 
 def test_task_specific_verifier_is_not_claimed_when_only_integrity_was_checked(tmp_path):

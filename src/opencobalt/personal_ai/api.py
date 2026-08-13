@@ -78,17 +78,39 @@ class APIContext:
     skill_import: SkillImportService
 
 
-_CONTEXTS: dict[Path, APIContext] = {}
+_CONTEXTS: dict[Path, tuple[tuple[int | None, int | None], APIContext]] = {}
 _CONTEXT_LOCK = threading.RLock()
+
+
+def _workspace_token(db_path: Path) -> tuple[int | None, int | None]:
+    """Identify a ledger by parent and file inodes so deleted dirs cannot be reused."""
+    try:
+        parent_inode = db_path.parent.stat().st_ino
+    except OSError:
+        return (None, None)
+    try:
+        return (parent_inode, db_path.stat().st_ino)
+    except OSError:
+        return (parent_inode, None)
+
+
+def _evict_invalid_contexts() -> None:
+    stale: list[Path] = []
+    for db_path, (token, _context) in _CONTEXTS.items():
+        if token != _workspace_token(db_path) or not db_path.parent.is_dir():
+            stale.append(db_path)
+    for db_path in stale:
+        _CONTEXTS.pop(db_path, None)
 
 
 def _api_context() -> APIContext:
     """Resolve context at request time so changed working directories stay isolated."""
     db_path = (Path.cwd() / ".opencobalt" / "ledger.db").resolve()
     with _CONTEXT_LOCK:
-        existing = _CONTEXTS.get(db_path)
-        if existing is not None:
-            return existing
+        _evict_invalid_contexts()
+        cached = _CONTEXTS.get(db_path)
+        if cached is not None:
+            return cached[1]
         store = PersonalAIStore(db_path)
         ledger = Ledger(db_path)
         execution_store = ExecutionStore(db_path)
@@ -122,7 +144,7 @@ def _api_context() -> APIContext:
                 install_root=state_root / "skills" / "imported",
             ),
         )
-        _CONTEXTS[db_path] = context
+        _CONTEXTS[db_path] = (_workspace_token(db_path), context)
         return context
 
 

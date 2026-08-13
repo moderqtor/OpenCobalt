@@ -24,7 +24,6 @@ from opencobalt.execution.adapters import CommandOptions, CursorAdapter
 from opencobalt.execution.models import RuntimeCapabilitySnapshot
 from opencobalt.execution.runner import InteractiveSession, redact_text
 from opencobalt.personal_ai.providers import (
-    _ROUTING_PROFILES,
     AuthenticationState,
     CancellationToken,
     EngineBackedChatProvider,
@@ -46,6 +45,7 @@ from opencobalt.personal_ai.providers import (
     _normalize_outcome,
     _pre_execution_error,
     _public_error_text,
+    _routing_profile,
     _uid,
 )
 
@@ -584,7 +584,7 @@ class CursorACPProvider(EngineBackedChatProvider):
             engine=engine,
             adapter=runtime,
             supports_model_discovery=False,
-            routing_profile=_ROUTING_PROFILES["cursor"],
+            routing_profile=_routing_profile("cursor"),
         )
         self._cursor = cursor
         self.permission_hook = permission_hook
