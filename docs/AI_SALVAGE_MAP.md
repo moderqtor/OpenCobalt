@@ -28,7 +28,7 @@ Hard archive (do not port):
 - ChromaDB vault index as a second knowledge plane
 - khoj / PostgreSQL
 - launchd memory/ideation daemons
-- Obsidian vault path coupling (`~/cobaltos-vault`)
+- Obsidian vault path coupling (historical local vault layout)
 - Any second durable state besides SQLite
 
 If a later pass needs more than this table, inspect `automation/lib/` and
