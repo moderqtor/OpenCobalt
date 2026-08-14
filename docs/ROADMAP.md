@@ -7,8 +7,10 @@ git and [history/](history/README.md).
 
 1. Use the product. Dogfood Chat, Research Missions, and Cursor coding
    Missions on real work.
-2. Improve research source acquisition quality without pretending the current
-   retriever is a commercial deep-research product.
+2. Improve research source quality and citation usefulness on real questions.
+   Retrieval now covers HTML, PDF, PubMed, DOI/Crossref, government hosts,
+   and user uploads; remaining work is evidence ranking and live-provider
+   synthesis quality.
 3. Keep coding staging and promotion honest: repository containment is
    implemented; host sandboxing is not.
 

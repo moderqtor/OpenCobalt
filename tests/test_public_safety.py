@@ -55,6 +55,14 @@ def test_nested_tauri_target_directory_is_skipped(tmp_path):
     assert result.is_clean
 
 
+def test_attachments_directory_is_skipped(tmp_path):
+    folder = tmp_path / "attachments" / "att-1"
+    folder.mkdir(parents=True)
+    (folder / "notes.txt").write_text('password = "uploadedsecret"')
+    result = scan_directory(tmp_path)
+    assert result.is_clean
+
+
 def test_secret_pattern_in_python_file(tmp_path):
     # Construct the credential line dynamically so the test file itself
     # does not trigger the scanner when the repo is scanned.

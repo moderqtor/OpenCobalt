@@ -26,6 +26,7 @@ htmlcov/
 .opencobalt/
 *.db
 *.jsonl
+attachments/
 
 # Secrets -- never commit these
 .env

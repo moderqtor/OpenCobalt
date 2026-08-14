@@ -7,25 +7,22 @@ directory. No live agent runtimes are invoked.
 
 from __future__ import annotations
 
-import re
-
 from typer.testing import CliRunner
 
 from opencobalt.cli import app
+from tests.cli_output import assert_contains, first_match
 
 runner = CliRunner()
 
 
 def _invoke(*args: str, **kwargs) -> object:
-    env = {**kwargs.pop("env", {}), "NO_COLOR": "1"}
+    env = {**kwargs.pop("env", {}), "NO_COLOR": "1", "COLUMNS": "200"}
     kwargs.setdefault("color", False)
     return runner.invoke(app, list(args), env=env, **kwargs)
 
 
 def _track_id(output: str) -> str:
-    match = re.search(r"(otrk-[0-9a-f]{6,})", output)
-    assert match, f"no track id in output: {output}"
-    return match.group(1)
+    return first_match(r"(otrk-[0-9a-f]{6,})", output)
 
 
 class TestBrainstorm:
@@ -66,7 +63,7 @@ class TestScoreAndReport:
         result = _invoke("opportunities", "report")
         assert result.exit_code == 0
         assert "Opportunity report" in result.output
-        assert "Score" in result.output
+        assert_contains(result.output, "Score")
         assert "otrk-" in result.output
 
     def test_report_without_runs_fails_cleanly(self, tmp_path, monkeypatch):

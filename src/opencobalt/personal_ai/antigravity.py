@@ -152,7 +152,8 @@ def parse_antigravity_models_payload(raw_content: str) -> tuple[list[ProviderMod
                 execution_location="remote",
                 locality_evidence=["antigravity_authenticated_catalog"],
                 reasoning_support=bool(profile["reasoning_support"]),
-                effort_levels=list(profile["effort_levels"]),
+                effort_levels=_merged_effort_levels(model_id, raw, profile),
+                explicit_effort_supported=_explicit_effort_supported(raw, model_id),
                 streaming_support=True,
                 available=True,
                 discovered_at=discovered_at,
@@ -210,6 +211,69 @@ def mapped_effort(value: str | None) -> str | None:
     if value == "xhigh":
         return "high"
     return None
+
+
+def _model_encodes_effort(model_id: str) -> bool:
+    lowered = model_id.casefold()
+    return lowered.endswith(("-high", "-medium", "-low"))
+
+
+def _catalog_effort_levels(raw: Mapping[str, Any]) -> list[str]:
+    for key in ("effortLevels", "effort_levels"):
+        value = raw.get(key)
+        if not isinstance(value, list):
+            continue
+        levels = [item for item in value if item in {"low", "medium", "high"}]
+        if levels:
+            return levels
+    return []
+
+
+def _explicit_effort_supported(raw: Mapping[str, Any], model_id: str) -> bool:
+    """True only when catalog evidence shows a separate --effort setting.
+
+    A reasoning-capable model, a global ``agy --effort`` help flag, or an
+    identifier that already encodes high/medium/low is not sufficient.
+    """
+    if _model_encodes_effort(model_id):
+        return False
+    for key in ("supportsEffort", "supports_effort", "effortSupported", "effort_supported"):
+        value = raw.get(key)
+        if isinstance(value, bool):
+            return value
+    return bool(_catalog_effort_levels(raw))
+
+
+def _merged_effort_levels(
+    model_id: str,
+    raw: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> list[str]:
+    profile_levels = [item for item in profile.get("effort_levels", []) if item in {"low", "medium", "high"}]
+    if _model_encodes_effort(model_id):
+        return profile_levels
+    return _catalog_effort_levels(raw) or profile_levels
+
+
+def resolve_print_effort(
+    requested: str | None,
+    *,
+    model_id: str | None = None,
+    explicit_effort_supported: bool = False,
+    effort_levels: list[str] | None = None,
+) -> str | None:
+    """Return an explicit --effort value only when the selected model accepts it."""
+    mapped = mapped_effort(requested)
+    if mapped is None:
+        return None
+    if model_id and _model_encodes_effort(model_id):
+        return None
+    if not explicit_effort_supported:
+        return None
+    allowed = [level for level in (effort_levels or []) if level in {"low", "medium", "high"}]
+    if allowed and mapped not in allowed:
+        return None
+    return mapped
 
 
 class _AntigravityModelCatalogAdapter:
@@ -277,6 +341,8 @@ class _AntigravityPrintAdapter:
         capabilities: dict[str, Any],
         model_id: str | None = None,
         effort: str | None = None,
+        explicit_effort_supported: bool = False,
+        effort_levels: list[str] | None = None,
         timeout_seconds: int = 120,
         output_format: Literal["json", "stream-json"] = "json",
         json_schema: str | None = None,
@@ -286,6 +352,8 @@ class _AntigravityPrintAdapter:
         self._capabilities = capabilities
         self.model_id = model_id
         self.effort = mapped_effort(effort)
+        self.explicit_effort_supported = explicit_effort_supported
+        self.effort_levels = list(effort_levels or [])
         self.timeout_seconds = timeout_seconds
         self.output_format = output_format
         self.json_schema = json_schema
@@ -335,9 +403,12 @@ class _AntigravityPrintAdapter:
 
     def build_command(self, task: str, options: CommandOptions | None = None) -> list[str]:
         model = self.model_id or (options.model if options is not None else None)
-        effort = self.effort
-        if model and _model_encodes_effort(model):
-            effort = None
+        effort = resolve_print_effort(
+            self.effort,
+            model_id=model,
+            explicit_effort_supported=self.explicit_effort_supported,
+            effort_levels=self.effort_levels,
+        )
         sandbox = _capability_supported(self._capabilities, "sandbox_mode", "terminal_sandbox")
         output_format = self.output_format
         if output_format == "stream-json" and not _capability_supported(
@@ -593,10 +664,18 @@ class AntigravityChatProvider(EngineBackedChatProvider):
             schema_path.write_text(json_schema, encoding="utf-8")
 
         research = bool(request.metadata.get("research"))
+        selected_model = next(
+            (item for item in catalog.models if item.model_id == request.model_id),
+            None,
+        )
         adapter = _AntigravityPrintAdapter(
             capabilities=self._runtime_capabilities(),
             model_id=request.model_id,
             effort=str(request.metadata.get("reasoning_effort") or "") or None,
+            explicit_effort_supported=bool(
+                selected_model.explicit_effort_supported if selected_model is not None else False
+            ),
+            effort_levels=list(selected_model.effort_levels) if selected_model is not None else [],
             timeout_seconds=request.timeout_seconds,
             output_format="json" if schema_path is not None else (
                 "stream-json" if research else "json"
@@ -631,11 +710,6 @@ class AntigravityChatProvider(EngineBackedChatProvider):
     ):
         result = self.execute(request, cancellation)
         yield from _events_from_result(result, cancellation, chunk_size=64)
-
-
-def _model_encodes_effort(model_id: str) -> bool:
-    lowered = model_id.casefold()
-    return lowered.endswith(("-high", "-medium", "-low"))
 
 
 def _parse_json_object(raw_content: str) -> dict[str, Any] | None:
@@ -773,4 +847,5 @@ __all__ = [
     "parse_antigravity_models_payload",
     "parse_antigravity_payload",
     "print_timeout_flag",
+    "resolve_print_effort",
 ]

@@ -47,7 +47,6 @@ from pathlib import Path
 
 import typer
 from rich import box
-from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
@@ -56,6 +55,7 @@ from rich.text import Text
 
 from .agents.registry import get_agent
 from .agents.registry import list_agents as _list_agents
+from .cli_console import make_console, print_document
 from .core.cold_resume_demo import NORTH_STAR, run_cold_resume_demo
 from .core.cost import CostTracker
 from .core.ledger import Ledger
@@ -194,8 +194,8 @@ app.command("waiting")(waiting_cmd)
 app.command("review")(review_cmd)
 app.command("search")(search_cmd)
 
-console = Console()
-err = Console(stderr=True)
+console = make_console()
+err = make_console(stderr=True)
 
 _DB_PATH = Path(".opencobalt") / "ledger.db"
 _TELEMETRY_DB_PATH = Path(".opencobalt") / "telemetry.db"
@@ -3867,23 +3867,23 @@ def _resolve_opportunity_run(store, run_id: str | None):
 
 
 def _print_opportunity_table(run) -> None:
-    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
-    table.add_column("Track", style="dim", max_width=18)
-    table.add_column("Name")
-    table.add_column("Type", style="dim")
-    table.add_column("Score", justify="right")
-    table.add_column("Evidence", justify="right")
-    table.add_column("Status")
-    table.add_column("Plan", style="dim", max_width=16)
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2), collapse_padding=True)
+    table.add_column("Track", style="dim", no_wrap=True, overflow="ignore")
+    table.add_column("Name", overflow="fold")
+    table.add_column("Type", style="dim", no_wrap=True)
+    table.add_column("Score", justify="right", no_wrap=True)
+    table.add_column("Evidence", justify="right", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Plan", style="dim", no_wrap=True, overflow="ignore")
     for entry in (run.report.ranked if run.report else []):
         table.add_row(
-            entry["track_id"][:16],
+            entry["track_id"],
             entry["name"],
             entry["track_type"],
             f"{entry['total']:.3f}",
             str(entry["evidence_count"]),
             entry["status"],
-            entry["plan_id"][:14] if entry["plan_id"] else "-",
+            entry["plan_id"] if entry["plan_id"] else "-",
         )
     console.print()
     console.print(table)
@@ -4136,18 +4136,18 @@ def approvals_list(
             "Try: opencobalt opportunities approve <TRACK_ID>[/dim]\n"
         )
         return
-    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
-    table.add_column("Request", style="dim", max_width=16)
-    table.add_column("Track")
-    table.add_column("Risk")
-    table.add_column("State")
-    table.add_column("Steps", justify="right")
-    table.add_column("Goal", style="dim", max_width=40)
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2), collapse_padding=True)
+    table.add_column("Request", style="dim", no_wrap=True, overflow="ignore")
+    table.add_column("Track", overflow="fold")
+    table.add_column("Risk", no_wrap=True)
+    table.add_column("State", no_wrap=True)
+    table.add_column("Steps", justify="right", no_wrap=True)
+    table.add_column("Goal", style="dim", overflow="fold")
     for request in requests:
         done = sum(1 for s in request.steps if s.approval_state == "executed")
         approved = sum(1 for s in request.steps if s.approval_state == "approved")
         table.add_row(
-            request.request_id[:14],
+            request.request_id,
             request.track_name,
             _risk_str(request.risk_level),
             _approval_state_str(request.state),
@@ -5088,10 +5088,9 @@ def continue_mission(
         if record is not None
         else None
     )
-    console.print(
+    print_document(
+        console,
         _render_continue_context(mission, record, verification),
-        markup=False,
-        highlight=False,
     )
 
 
@@ -5128,15 +5127,14 @@ def handoff_mission(
         if record is not None
         else None
     )
-    console.print(
+    print_document(
+        console,
         render_mission_handoff(
             mission=mission,
             target=target,
             extraction_record=record,
             verification_record=verification,
         ),
-        markup=False,
-        highlight=False,
     )
 
 
@@ -5350,21 +5348,21 @@ def missions_list(
             'opencobalt missions start "your goal"\n'
         )
         return
-    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
-    table.add_column("mission_id", style=_COBALT)
-    table.add_column("status")
-    table.add_column("track")
-    table.add_column("approval")
-    table.add_column("receipt")
-    table.add_column("outcome")
-    table.add_column("goal")
+    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2), collapse_padding=True)
+    table.add_column("mission_id", style=_COBALT, no_wrap=True, overflow="ignore")
+    table.add_column("status", no_wrap=True)
+    table.add_column("track", no_wrap=True, overflow="ignore")
+    table.add_column("approval", no_wrap=True, overflow="ignore")
+    table.add_column("receipt", no_wrap=True, overflow="ignore")
+    table.add_column("outcome", no_wrap=True)
+    table.add_column("goal", overflow="fold")
     for row in rows:
         table.add_row(
-            row["mission_id"][:14],
+            row["mission_id"],
             _mission_status_str(row["status"]),
-            (row["selected_track_id"] or "")[:13],
-            (row["approval_request_id"] or "")[:13],
-            (row["last_receipt_id"] or "")[:13],
+            row["selected_track_id"] or "",
+            row["approval_request_id"] or "",
+            row["last_receipt_id"] or "",
             row["outcome"] or "",
             row["goal"][:38],
         )

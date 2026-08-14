@@ -2,21 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
-import ipaddress
 import json
-import re
-import shutil
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timezone
-from html.parser import HTMLParser
-from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin, urlsplit
 
 from opencobalt.core.mission_engine import Mission, MissionStep, MissionStore
-from opencobalt.execution.models import RuntimeCapabilitySnapshot
 from opencobalt.personal_ai.providers import (
     CancellationToken,
     ChatProvider,
@@ -24,55 +16,24 @@ from opencobalt.personal_ai.providers import (
     ProviderRequest,
     ProviderResult,
 )
+from opencobalt.personal_ai.retrieval import (
+    DocumentAcquisitionPipeline,
+    HttpsGetAdapter,
+    canonical_url,
+    followup_urls_from_payload,
+    is_public_https_url,
+    looks_like_asset_url,
+    looks_like_search_index,
+    rank_and_dedupe_sources,
+    search_seed_urls,
+)
 from opencobalt.personal_ai.router import ProviderSnapshot
 from opencobalt.personal_ai.store import PersonalAIStore
 
 _MAX_SOURCES = 8
 _MAX_FOLLOWUPS = 6
 _MAX_EVIDENCE = 16
-_FETCH_BYTES = 150_000
-_EXCERPT_CHARS = 8_000
-_ASSET_SUFFIXES = {
-    ".css",
-    ".js",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".svg",
-    ".ico",
-    ".webp",
-    ".woff",
-    ".woff2",
-    ".map",
-}
-_JUNK_PATH_TOKENS = (
-    "/email-updates",
-    "/login",
-    "/signup",
-    "/themes/",
-    "/sites/default/files/css",
-    "/sites/default/files/js",
-    "/favicon",
-    "/user/",
-    "/cart",
-)
-_PREFERRED_SOURCE_HOSTS = {
-    "pubmed.ncbi.nlm.nih.gov",
-    "eutils.ncbi.nlm.nih.gov",
-    "ncbi.nlm.nih.gov",
-    "cms.gov",
-    "medicare.gov",
-    "cdc.gov",
-    "nih.gov",
-    "nidcr.nih.gov",
-    "fda.gov",
-    "ssa.gov",
-    "govinfo.gov",
-    "federalregister.gov",
-    "uspreventiveservicestaskforce.org",
-    "cochranelibrary.com",
-}
+_HttpsGetAdapter = HttpsGetAdapter
 
 RESEARCH_PLAN_SCHEMA = {
     "type": "object",
@@ -127,6 +88,7 @@ RESEARCH_EXTRACT_SCHEMA = {
                     "endpoint": {"type": "string"},
                     "effect_direction": {"type": "string"},
                     "effect_magnitude": {"type": "string"},
+                    "uncertainty": {"type": "string"},
                     "limitations": {"type": "string"},
                 },
             },
@@ -179,75 +141,6 @@ def _iso(value: datetime | None = None) -> str:
     return (value or _now()).isoformat()
 
 
-class _HttpsGetAdapter:
-    runtime_id = "opencobalt-https-get"
-    display_name = "OpenCobalt public HTTPS fetch"
-    isolates_answer_only_inference = True
-
-    def __init__(self, url: str, *, timeout_seconds: int = 20) -> None:
-        self.url = url
-        self.timeout_seconds = timeout_seconds
-        self.executable = shutil.which("curl") or "curl"
-        self._available = shutil.which("curl") is not None
-
-    def discover_capabilities(self) -> RuntimeCapabilitySnapshot:
-        return RuntimeCapabilitySnapshot(
-            adapter_id=self.runtime_id,
-            adapter_name=self.display_name,
-            executable_path=self.executable if self._available else None,
-            available=self._available,
-            capabilities=["https_get"] if self._available else [],
-            supported_artifact_types=["stdout", "stderr"],
-            supports_dry_run=True,
-            supports_noninteractive=self._available,
-            supports_json_output=False,
-            requires_network=True,
-            requires_credentials=False,
-            max_safe_risk="yellow",
-            limitations=[] if self._available else ["curl is required for source retrieval"],
-            verifiability_level="partial" if self._available else "unavailable",
-            capability_details={"url_scheme": "https"},
-        ).with_hash()
-
-    def build_command(self, task: str, options: Any = None) -> list[str]:
-        _ = task, options
-        if not self._available:
-            raise ValueError("HTTPS fetch adapter is unavailable")
-        return [
-            self.executable,
-            "--disable",
-            "--silent",
-            "--show-error",
-            "--fail-with-body",
-            "--location",
-            "--max-redirs",
-            "3",
-            "--proto",
-            "=https",
-            "--proto-redir",
-            "=https",
-            "--compressed",
-            "--connect-timeout",
-            "8",
-            "--max-time",
-            str(self.timeout_seconds),
-            "--header",
-            "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) OpenCobaltResearch/1.0",
-            "--url",
-            self.url,
-        ]
-
-    def supports_non_interactive(self) -> bool:
-        return self._available
-
-    def default_timeout_seconds(self) -> int:
-        return self.timeout_seconds
-
-    def risk_for_task(self, task: str) -> str:
-        _ = task
-        return "green"
-
-
 class ResearchOrchestrator:
     def __init__(
         self,
@@ -273,6 +166,7 @@ class ResearchOrchestrator:
         timeout_seconds: int,
         cancellation: CancellationToken | None = None,
         system_policy: str = "",
+        attachment_ids: Sequence[str] | None = None,
     ) -> Iterator[dict[str, Any]]:
         started = _iso()
         mission = Mission(
@@ -366,29 +260,49 @@ class ResearchOrchestrator:
         yield {"step": "retrieving", "research_id": research_id, "candidate_count": len(candidate_urls)}
         sources = []
         seen_urls: set[str] = set()
+        pipeline = DocumentAcquisitionPipeline(self.engine)
+        for reused in self._reused_sources(research_id, conversation_id, question):
+            key = canonical_url(str(reused.get("canonical_url") or reused.get("url") or ""))
+            if key:
+                seen_urls.add(key)
+            sources.append(reused)
+            self.store.save_research_source(reused)
+        for attachment in self._attachment_sources(research_id, conversation_id, attachment_ids, pipeline):
+            key = canonical_url(str(attachment.get("canonical_url") or attachment.get("url") or ""))
+            if key:
+                seen_urls.add(key)
+            sources.append(attachment)
+            self.store.save_research_source(attachment)
         queue = list(candidate_urls[:_MAX_SOURCES])
         while queue and len(sources) < _MAX_SOURCES + _MAX_FOLLOWUPS:
             if cancellation is not None and cancellation.cancelled:
                 break
             url = queue.pop(0)
-            if url in seen_urls:
+            key = canonical_url(url)
+            if key in seen_urls:
                 continue
-            seen_urls.add(url)
-            source, raw = self._retrieve_source(research_id, url)
+            seen_urls.add(key)
+            source, raw = self._retrieve_source(research_id, url, pipeline)
             sources.append(source)
             self.store.save_research_source(source)
             if source["retrieval_status"] != "retrieved":
                 continue
             remaining = (_MAX_SOURCES + _MAX_FOLLOWUPS) - len(sources) - len(queue)
             for follow in followup_urls_from_payload(url, raw)[: max(0, remaining)]:
-                if follow not in seen_urls:
+                follow_key = canonical_url(follow)
+                if follow_key not in seen_urls:
                     queue.append(follow)
         retrieved = [item for item in sources if item["retrieval_status"] == "retrieved"]
-        document_sources = [
-            item
-            for item in retrieved
-            if not looks_like_search_index(item["url"]) and not looks_like_asset_url(item["url"])
-        ]
+        document_sources = rank_and_dedupe_sources(
+            [
+                item
+                for item in retrieved
+                if not looks_like_search_index(item["url"])
+                and not looks_like_asset_url(item["url"])
+                and not item.get("excluded")
+            ],
+            limit=_MAX_SOURCES,
+        )
         self._save_step(
             mission,
             f"Retrieve sources ({len(retrieved)} retrieved / {len(sources)} attempted)",
@@ -429,6 +343,10 @@ class ResearchOrchestrator:
             if not claim:
                 continue
             linked = source is not None and source["retrieval_status"] == "retrieved"
+            limitations = str(raw.get("limitations") or "")[:2000]
+            uncertainty = str(raw.get("uncertainty") or "").strip()
+            if uncertainty:
+                limitations = f"{limitations} Uncertainty: {uncertainty}".strip()[:2000]
             row = {
                 "evidence_id": _uid("ev"),
                 "research_id": research_id,
@@ -445,7 +363,7 @@ class ResearchOrchestrator:
                 "endpoint": str(raw.get("endpoint") or "")[:200],
                 "effect_direction": str(raw.get("effect_direction") or "")[:80],
                 "effect_magnitude": str(raw.get("effect_magnitude") or "")[:80],
-                "limitations": str(raw.get("limitations") or "")[:2000],
+                "limitations": limitations,
                 "extraction_model": extractor.model_id,
                 "reviewer_model": None,
                 "verification_status": "linked" if linked else "unverified",
@@ -544,9 +462,22 @@ class ResearchOrchestrator:
 
         synthesizer = roles.get("synthesizer") or extractor
         yield {"step": "synthesizing", "research_id": research_id, "model": synthesizer.model_id}
+        excluded_source_ids = {
+            item["source_id"] for item in sources if item.get("excluded")
+        }
+        synthesis_evidence = [
+            item
+            for item in evidence_rows
+            if not item.get("source_id") or item.get("source_id") not in excluded_source_ids
+        ]
+        synthesis_sources = [
+            item
+            for item in (document_sources or retrieved)
+            if not item.get("excluded")
+        ]
         synthesis_result = self._complete(
             synthesizer,
-            _synthesis_prompt(question, evidence_rows, document_sources or retrieved),
+            _synthesis_prompt(question, synthesis_evidence, synthesis_sources),
             schema=RESEARCH_SYNTHESIS_SCHEMA,
             timeout_seconds=min(timeout_seconds, 240),
             cancellation=cancellation,
@@ -659,76 +590,89 @@ class ResearchOrchestrator:
         )
         return provider.execute(request, cancellation)
 
-    def _retrieve_source(self, research_id: str, url: str) -> tuple[dict[str, Any], str]:
+    def _retrieve_source(
+        self,
+        research_id: str,
+        url: str,
+        pipeline: DocumentAcquisitionPipeline | None = None,
+    ) -> tuple[dict[str, Any], str]:
         created = _iso()
         source_id = _uid("src")
-        base = {
-            "source_id": source_id,
-            "research_id": research_id,
-            "url": url,
-            "title": "",
-            "source_type": classify_source_type(url),
-            "publication_date": None,
-            "authors": [],
-            "retrieved_at": None,
-            "retrieval_status": "unverified",
-            "content_hash": None,
-            "excerpt": "",
-            "quality_assessment": source_quality_hint(url),
-            "created_at": created,
-        }
-        if not is_public_https_url(url):
-            base["retrieval_status"] = "rejected"
-            base["excerpt"] = "URL rejected: not a public HTTPS source"
-            return base, ""
-        adapter = _HttpsGetAdapter(url)
-        try:
-            outcome = self.engine.run_task(
-                f"retrieve research source {url}",
-                runtime=adapter.runtime_id,
-                execute=True,
-                approved=False,
-                timeout_seconds=adapter.timeout_seconds,
-                unsafe_skip_permissions=False,
-                execution_context="answer_only_inference",
-                adapter=adapter,
+        pipeline = pipeline or DocumentAcquisitionPipeline(self.engine)
+        document = pipeline.acquire_url(url)
+        return document.to_source_record(
+            source_id=source_id,
+            research_id=research_id,
+            created_at=created,
+        ), document.raw
+
+    def _attachment_sources(
+        self,
+        research_id: str,
+        conversation_id: str,
+        attachment_ids: Sequence[str] | None,
+        pipeline: DocumentAcquisitionPipeline,
+    ) -> list[dict[str, Any]]:
+        ids = list(attachment_ids or [])
+        if not ids:
+            ids = [item["attachment_id"] for item in self.store.list_attachments(conversation_id)]
+        sources: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for attachment_id in ids:
+            if attachment_id in seen:
+                continue
+            seen.add(attachment_id)
+            record = self.store.get_attachment(attachment_id)
+            if record is None:
+                continue
+            if record.get("conversation_id") not in {None, conversation_id}:
+                continue
+            document = pipeline.acquire_upload(record)
+            sources.append(
+                document.to_source_record(
+                    source_id=_uid("src"),
+                    research_id=research_id,
+                    created_at=_iso(),
+                )
             )
-        except (KeyError, ValueError) as exc:
-            base["retrieval_status"] = "failed"
-            base["excerpt"] = str(exc)[:300]
-            return base, ""
-        result = getattr(outcome, "result", None)
-        if result is None or str(getattr(result, "status", "")) != "succeeded":
-            base["retrieval_status"] = "failed"
-            base["excerpt"] = str(getattr(result, "error", None) or "fetch failed")[:300]
-            return base, ""
-        raw = ""
-        output_path = getattr(result, "stdout_path", None)
-        if output_path:
-            try:
-                with Path(output_path).open("r", encoding="utf-8", errors="replace") as handle:
-                    raw = handle.read(_FETCH_BYTES)
-            except OSError:
-                raw = str(getattr(result, "stdout_preview", "") or "")
-        else:
-            raw = str(getattr(result, "stdout_preview", "") or getattr(result, "content", "") or "")
-        parsed_json = _parse_structured(raw)
-        if parsed_json is not None:
-            text = json.dumps(parsed_json)[:_EXCERPT_CHARS]
-            title = url
-        else:
-            text = html_to_text(raw)[:_EXCERPT_CHARS]
-            title = html_title(raw) or url
-        base.update(
-            {
-                "title": title[:300],
-                "retrieved_at": _iso(),
-                "retrieval_status": "retrieved" if text.strip() else "empty",
-                "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest() if text else None,
-                "excerpt": text,
-            }
-        )
-        return base, raw
+        return sources
+
+    def _reused_sources(
+        self,
+        research_id: str,
+        conversation_id: str,
+        question: str,
+    ) -> list[dict[str, Any]]:
+        tokens = {token.lower() for token in question.split() if len(token) > 4}
+        reused: list[dict[str, Any]] = []
+        for prior in self.store.list_research_missions(conversation_id=conversation_id, limit=8):
+            if prior["research_id"] == research_id:
+                continue
+            if prior.get("status") not in {"complete", "completed"}:
+                continue
+            prior_tokens = {token.lower() for token in str(prior.get("question") or "").split() if len(token) > 4}
+            if tokens and prior_tokens and len(tokens & prior_tokens) < 2:
+                continue
+            bundle = self.store.research_bundle(prior["research_id"])
+            if not bundle:
+                continue
+            for source in bundle.get("sources") or []:
+                if source.get("retrieval_status") != "retrieved":
+                    continue
+                if source.get("excluded"):
+                    continue
+                copied = dict(source)
+                copied["source_id"] = _uid("src")
+                copied["research_id"] = research_id
+                copied["created_at"] = _iso()
+                copied["quality_assessment"] = (
+                    str(copied.get("quality_assessment") or "")
+                    + "; reused from a prior mission in this conversation"
+                ).strip("; ")
+                reused.append(copied)
+                if len(reused) >= 6:
+                    return reused
+        return reused
 
     def _fail(
         self,
@@ -837,137 +781,6 @@ def role_reason(role: str, snapshot: ProviderSnapshot) -> str:
     return f"{label} was assigned to synthesis of the inspectable evidence set"
 
 
-def is_public_https_url(url: str) -> bool:
-    try:
-        parsed = urlsplit(url)
-    except ValueError:
-        return False
-    if parsed.scheme != "https" or not parsed.hostname:
-        return False
-    if parsed.username or parsed.password or parsed.fragment:
-        return False
-    if len(url) > 2000:
-        return False
-    host = parsed.hostname.lower()
-    if host in {"localhost"} or host.endswith(".local"):
-        return False
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return "." in host
-    return not (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_reserved
-    )
-
-
-def _normalized_host(host: str) -> str:
-    value = host.lower()
-    return value[4:] if value.startswith("www.") else value
-
-
-def classify_source_type(url: str) -> str:
-    host = (urlsplit(url).hostname or "").lower()
-    if any(token in host for token in ("pubmed", "nih.gov", "ncbi.nlm.nih.gov")):
-        return "primary_literature"
-    if any(token in host for token in ("cms.gov", "medicare.gov", "cdc.gov", "fda.gov")):
-        return "government_policy"
-    if "cochrane" in host or "guideline" in host:
-        return "review"
-    if any(token in host for token in ("nytimes", "washingtonpost", "reuters", "bbc")):
-        return "journalism"
-    return "unknown"
-
-
-def source_quality_hint(url: str) -> str:
-    kind = classify_source_type(url)
-    return {
-        "primary_literature": "scientific literature host; still requires study-design review",
-        "government_policy": "authoritative government/policy host; not causal proof",
-        "review": "review or guideline host; prefer primary evidence when making causal claims",
-        "journalism": "secondary reporting; use only for context unless primary evidence is absent",
-        "unknown": "host class not identified; treat as unverified until retrieved",
-    }[kind]
-
-
-def html_to_text(raw: str) -> str:
-    parser = _TextExtractor()
-    try:
-        parser.feed(raw)
-        parser.close()
-    except Exception:
-        return re.sub(r"<[^>]+>", " ", raw)
-    return re.sub(r"\s+", " ", parser.text).strip()
-
-
-def html_title(raw: str) -> str:
-    match = re.search(r"(?is)<title[^>]*>(.*?)</title>", raw)
-    if not match:
-        return ""
-    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", match.group(1))).strip()
-
-
-class _TextExtractor(HTMLParser):
-    _skip_tags = {
-        "script",
-        "style",
-        "noscript",
-        "svg",
-        "nav",
-        "header",
-        "footer",
-        "aside",
-        "form",
-        "iframe",
-        "button",
-    }
-    _main_tags = {"main", "article"}
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._skip_depth = 0
-        self._main_depth = 0
-        self._body: list[str] = []
-        self._main: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in self._skip_tags:
-            self._skip_depth += 1
-            return
-        names = {key.lower(): (value or "") for key, value in attrs}
-        if tag in self._main_tags or names.get("role") == "main":
-            self._main_depth += 1
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in self._skip_tags and self._skip_depth:
-            self._skip_depth -= 1
-            return
-        if tag in self._main_tags and self._main_depth:
-            self._main_depth -= 1
-
-    def handle_data(self, data: str) -> None:
-        if self._skip_depth:
-            return
-        text = data.strip()
-        if not text:
-            return
-        if self._main_depth:
-            self._main.append(text)
-        else:
-            self._body.append(text)
-
-    @property
-    def text(self) -> str:
-        main = " ".join(self._main).strip()
-        body = " ".join(self._body).strip()
-        if len(main) >= 200:
-            return main
-        return body or main
-
-
 def _plan_prompt(question: str, system_policy: str) -> str:
     policy = f"{system_policy.rstrip()}\n\n" if system_policy.strip() else ""
     return (
@@ -998,7 +811,8 @@ def _extract_prompt(question: str, sources: Sequence[Mapping[str, Any]]) -> str:
         "Extract structured evidence ONLY from the retrieved excerpts below.\n"
         "If an excerpt does not support a claim, do not emit that claim.\n"
         "Distinguish association from causation. Record study design, population, "
-        "endpoint, confounding, and limitations when the source provides them.\n"
+        "endpoint, effect direction, uncertainty, confounding, and limitations when "
+        "the source provides them.\n"
         "Copy each source_url exactly from the URL line. Prefer one evidence record "
         "per retrieved source that actually contains relevant text.\n"
         f"Research question:\n{question}\n\n{joined}\n"
@@ -1092,93 +906,6 @@ def _candidate_urls(plan: Mapping[str, Any], queries: Sequence[Any]) -> list[str
         seen.add(url)
         deduped.append(url)
     return deduped[:_MAX_SOURCES]
-
-
-def search_seed_urls(query: str) -> list[str]:
-    encoded = re.sub(r"\s+", "+", query.strip())[:180]
-    if not encoded:
-        return []
-    return [
-        (
-            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-            f"?db=pubmed&retmode=json&retmax=5&term={encoded}"
-        ),
-        f"https://www.cms.gov/search/cms?keys={encoded}",
-    ]
-
-
-def looks_like_search_index(url: str) -> bool:
-    parsed = urlsplit(url)
-    host = (parsed.hostname or "").lower()
-    path = parsed.path.lower()
-    query = parsed.query.lower()
-    if "esearch.fcgi" in path or "search" in path.split("/"):
-        return True
-    if "term=" in query or "keys=" in query:
-        return True
-    if host.endswith("pubmed.ncbi.nlm.nih.gov") and not re.fullmatch(r"/\d+/?", parsed.path):
-        return bool(query)
-    return False
-
-
-def looks_like_asset_url(url: str) -> bool:
-    path = urlsplit(url).path.lower()
-    if Path(path).suffix in _ASSET_SUFFIXES:
-        return True
-    return any(token in path for token in _JUNK_PATH_TOKENS)
-
-
-def followup_urls_from_payload(url: str, raw: str) -> list[str]:
-    found: list[str] = []
-    payload = _parse_structured(raw)
-    if isinstance(payload, Mapping):
-        result = payload.get("esearchresult")
-        ids = result.get("idlist") if isinstance(result, Mapping) else None
-        if isinstance(ids, list):
-            for pmid in ids[:5]:
-                token = re.sub(r"[^0-9]", "", str(pmid))
-                if token:
-                    found.append(
-                        "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-                        f"?db=pubmed&id={token}&rettype=abstract&retmode=text"
-                    )
-                    found.append(f"https://pubmed.ncbi.nlm.nih.gov/{token}/")
-    for match in re.finditer(r"""href=["']([^"'#]+)["']""", raw, flags=re.IGNORECASE):
-        candidate = urljoin(url, match.group(1).strip())
-        if _is_preferred_document_url(candidate):
-            found.append(candidate)
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for item in found:
-        if item in seen or item == url:
-            continue
-        seen.add(item)
-        deduped.append(item)
-    return deduped[:_MAX_FOLLOWUPS]
-
-
-def _is_preferred_document_url(url: str) -> bool:
-    if not is_public_https_url(url):
-        return False
-    if looks_like_search_index(url):
-        return False
-    parsed = urlsplit(url)
-    path = parsed.path.lower()
-    if looks_like_asset_url(url) or path in {"", "/"}:
-        return False
-    host = _normalized_host(parsed.hostname or "")
-    if host not in _PREFERRED_SOURCE_HOSTS:
-        return False
-    if host == "pubmed.ncbi.nlm.nih.gov":
-        return bool(re.fullmatch(r"/\d+/?", parsed.path))
-    if host == "eutils.ncbi.nlm.nih.gov":
-        return "efetch.fcgi" in path
-    if host == "ncbi.nlm.nih.gov":
-        return bool(
-            re.search(r"/pmc/articles/", path)
-            or re.search(r"/books/nbk\d+", path)
-        )
-    return True
 
 
 def _parse_structured(raw: str) -> dict[str, Any] | None:

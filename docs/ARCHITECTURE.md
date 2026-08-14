@@ -116,8 +116,10 @@ See [MISSIONS.md](MISSIONS.md), [research.md](research.md), and
 ## Evidence and receipts
 
 Research stores sources, evidence, citations, and disagreements in the
-shared ledger. Execution writes work receipts with artifact hashes through
-`ExecutionEngine`. Receipt integrity is not factual verification.
+shared ledger. User document attachments live beside the ledger under
+`.opencobalt/attachments/` and can become Research sources. Execution writes
+work receipts with artifact hashes through `ExecutionEngine`. Receipt
+integrity is not factual verification.
 
 ## Approvals and staging
 

@@ -634,6 +634,31 @@ CREATE TABLE IF NOT EXISTS change_sets (
 );
 """
 
+_SCHEMA_V6 = """
+CREATE TABLE IF NOT EXISTS document_attachments (
+    attachment_id       TEXT PRIMARY KEY,
+    conversation_id     TEXT,
+    original_filename   TEXT NOT NULL,
+    stored_filename     TEXT NOT NULL,
+    stored_path         TEXT NOT NULL,
+    mime_type           TEXT NOT NULL DEFAULT '',
+    size_bytes          INTEGER NOT NULL,
+    sha256              TEXT NOT NULL,
+    ingestion_status    TEXT NOT NULL,
+    extracted_text      TEXT NOT NULL DEFAULT '',
+    excerpt             TEXT NOT NULL DEFAULT '',
+    page_count          INTEGER,
+    section_json        TEXT NOT NULL DEFAULT '[]',
+    limitations_json    TEXT NOT NULL DEFAULT '[]',
+    kind                TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_attachments_conversation
+ON document_attachments (conversation_id, created_at);
+"""
+
 
 def _dump(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -666,6 +691,7 @@ class PersonalAIStore:
             self._apply_v3(conn)
             self._apply_v4(conn)
             self._apply_v5(conn)
+            self._apply_v6(conn)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=5)
@@ -751,6 +777,35 @@ class PersonalAIStore:
             "INSERT OR IGNORE INTO personal_ai_schema_versions (version, applied_at) "
             "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             (5,),
+        )
+
+    def _apply_v6(self, conn: sqlite3.Connection) -> None:
+        versions = {
+            row[0]
+            for row in conn.execute("SELECT version FROM personal_ai_schema_versions")
+        }
+        if 5 not in versions:
+            return
+        conn.executescript(_SCHEMA_V6)
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(research_sources)")}
+        for name, ddl in (
+            ("canonical_url", "TEXT NOT NULL DEFAULT ''"),
+            ("retrieval_adapter", "TEXT NOT NULL DEFAULT ''"),
+            ("mime_type", "TEXT NOT NULL DEFAULT ''"),
+            ("attachment_id", "TEXT"),
+            ("limitations_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("page_map_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("quality_score", "REAL NOT NULL DEFAULT 0"),
+            ("excluded", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if name not in existing:
+                conn.execute(f"ALTER TABLE research_sources ADD COLUMN {name} {ddl}")
+        if 6 in versions:
+            return
+        conn.execute(
+            "INSERT OR IGNORE INTO personal_ai_schema_versions (version, applied_at) "
+            "VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            (6,),
         )
 
     @staticmethod
@@ -1789,12 +1844,21 @@ class PersonalAIStore:
             ).fetchone()
         return self._decode_research_mission(row) if row else None
 
-    def list_research_missions(self, *, limit: int = 100) -> list[dict[str, Any]]:
+    def list_research_missions(
+        self, *, limit: int = 100, conversation_id: str | None = None
+    ) -> list[dict[str, Any]]:
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM research_missions ORDER BY updated_at DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
+            if conversation_id:
+                rows = conn.execute(
+                    "SELECT * FROM research_missions WHERE conversation_id = ? "
+                    "ORDER BY updated_at DESC LIMIT ?",
+                    (conversation_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM research_missions ORDER BY updated_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
         return [self._decode_research_mission(row) for row in rows]
 
     def save_research_query(self, record: dict[str, Any]) -> None:
@@ -1817,7 +1881,9 @@ class PersonalAIStore:
                 "INSERT OR REPLACE INTO research_sources ("
                 "source_id, research_id, url, title, source_type, publication_date, "
                 "authors_json, retrieved_at, retrieval_status, content_hash, excerpt, "
-                "quality_assessment, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "quality_assessment, created_at, canonical_url, retrieval_adapter, "
+                "mime_type, attachment_id, limitations_json, page_map_json, "
+                "quality_score, excluded) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     record["source_id"],
                     record["research_id"],
@@ -1832,6 +1898,14 @@ class PersonalAIStore:
                     record.get("excerpt", ""),
                     record.get("quality_assessment", ""),
                     record["created_at"],
+                    record.get("canonical_url") or record.get("url") or "",
+                    record.get("retrieval_adapter", ""),
+                    record.get("mime_type", ""),
+                    record.get("attachment_id"),
+                    _dump(record.get("limitations", [])),
+                    _dump(record.get("page_map", [])),
+                    float(record.get("quality_score") or 0),
+                    int(bool(record.get("excluded"))),
                 ),
             )
 
@@ -1931,7 +2005,14 @@ class PersonalAIStore:
             **mission,
             "queries": [dict(row) for row in queries],
             "sources": [
-                {**dict(row), "authors": _load(row["authors_json"], [])} for row in sources
+                {
+                    **dict(row),
+                    "authors": _load(row["authors_json"], []),
+                    "limitations": _load(row["limitations_json"] if "limitations_json" in row.keys() else None, []),
+                    "page_map": _load(row["page_map_json"] if "page_map_json" in row.keys() else None, []),
+                    "excluded": bool(row["excluded"]) if "excluded" in row.keys() else False,
+                }
+                for row in sources
             ],
             "evidence": [dict(row) for row in evidence],
             "citations": [dict(row) for row in citations],
@@ -1956,6 +2037,97 @@ class PersonalAIStore:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "metadata": _load(row["metadata_json"], {}),
+        }
+
+    def save_attachment(self, record: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO document_attachments ("
+                "attachment_id, conversation_id, original_filename, stored_filename, "
+                "stored_path, mime_type, size_bytes, sha256, ingestion_status, "
+                "extracted_text, excerpt, page_count, section_json, limitations_json, "
+                "kind, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    record["attachment_id"],
+                    record.get("conversation_id"),
+                    record["original_filename"],
+                    record["stored_filename"],
+                    record["stored_path"],
+                    record.get("mime_type", ""),
+                    int(record.get("size_bytes") or 0),
+                    record["sha256"],
+                    record.get("ingestion_status", "stored"),
+                    record.get("extracted_text", ""),
+                    record.get("excerpt", ""),
+                    record.get("page_count"),
+                    _dump(record.get("sections", [])),
+                    _dump(record.get("limitations", [])),
+                    record.get("kind", ""),
+                    record["created_at"],
+                ),
+            )
+
+    def get_attachment(self, attachment_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM document_attachments WHERE attachment_id = ?",
+                (attachment_id,),
+            ).fetchone()
+        return self._decode_attachment(row) if row else None
+
+    def list_attachments(self, conversation_id: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM document_attachments WHERE conversation_id = ? "
+                "ORDER BY created_at",
+                (conversation_id,),
+            ).fetchall()
+        return [self._decode_attachment(row) for row in rows]
+
+    def delete_attachment(self, attachment_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM document_attachments WHERE attachment_id = ?",
+                (attachment_id,),
+            )
+
+    def set_source_excluded(self, source_id: str, excluded: bool) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE research_sources SET excluded = ? WHERE source_id = ?",
+                (int(bool(excluded)), source_id),
+            )
+            row = conn.execute(
+                "SELECT * FROM research_sources WHERE source_id = ?",
+                (source_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            **dict(row),
+            "authors": _load(row["authors_json"], []),
+            "excluded": bool(row["excluded"]),
+        }
+
+    @staticmethod
+    def _decode_attachment(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "attachment_id": row["attachment_id"],
+            "conversation_id": row["conversation_id"],
+            "original_filename": row["original_filename"],
+            "stored_filename": row["stored_filename"],
+            "stored_path": row["stored_path"],
+            "mime_type": row["mime_type"],
+            "size_bytes": row["size_bytes"],
+            "sha256": row["sha256"],
+            "ingestion_status": row["ingestion_status"],
+            "extracted_text": row["extracted_text"],
+            "excerpt": row["excerpt"],
+            "page_count": row["page_count"],
+            "sections": _load(row["section_json"], []),
+            "limitations": _load(row["limitations_json"], []),
+            "kind": row["kind"],
+            "created_at": row["created_at"],
         }
 
     def save_coding_mission(self, record: dict[str, Any]) -> None:

@@ -176,6 +176,39 @@ export const api = {
   deleteMemory: (memoryId) => request(`/memory/${encodeURIComponent(memoryId)}`, { method: "DELETE" }),
   missions: () => request("/missions").then((value) => listOf(value, ["missions", "items", "data", "results"])),
   research: (researchId) => request(`/research/${encodeURIComponent(researchId)}`).then((value) => recordOf(value, "research mission")),
+  excludeResearchSource: (researchId, sourceId) =>
+    request(`/research/${encodeURIComponent(researchId)}/sources/${encodeURIComponent(sourceId)}/exclude`, jsonOptions("POST")).then((value) => recordOf(value, "excluded source")),
+  retryResearchSource: (researchId, sourceId) =>
+    request(`/research/${encodeURIComponent(researchId)}/sources/${encodeURIComponent(sourceId)}/retry`, jsonOptions("POST")).then((value) => recordOf(value, "retried source")),
+  attachments: (conversationId) =>
+    request(`/conversations/${encodeURIComponent(conversationId)}/attachments`).then((value) => listOf(value, ["attachments", "items", "data", "results"])),
+  uploadAttachment: async (conversationId, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    let response;
+    try {
+      response = await fetch(endpoint(`/conversations/${encodeURIComponent(conversationId)}/attachments`), {
+        method: "POST",
+        headers: { Accept: "application/json" },
+        body: form,
+      });
+    } catch {
+      throw new ApiError("OpenCobalt could not be reached. Start the local app and try again.");
+    }
+    const raw = await response.text();
+    let body = null;
+    try {
+      body = raw ? JSON.parse(raw) : null;
+    } catch {
+      body = raw || null;
+    }
+    if (!response.ok) {
+      throw new ApiError(messageFor(response, body), { status: response.status, detail: body });
+    }
+    return recordOf(body, "attachment");
+  },
+  deleteAttachment: (conversationId, attachmentId) =>
+    request(`/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" }),
   skills: () => request("/skills").then((value) => listOf(value, ["skills", "items", "data", "results"])),
   skill: (skillId) => request(`/skills/${encodeURIComponent(skillId)}`).then((value) => recordOf(value, "skill")),
   updateSkill: (skillId, input) => request(`/skills/${encodeURIComponent(skillId)}`, jsonOptions("PATCH", input)).then((value) => recordOf(value, "skill")),

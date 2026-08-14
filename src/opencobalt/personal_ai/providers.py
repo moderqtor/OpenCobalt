@@ -120,6 +120,7 @@ class ProviderModel(BaseModel):
     locality_evidence: list[str] = Field(default_factory=list)
     reasoning_support: bool | None = None
     effort_levels: list[str] = Field(default_factory=list)
+    explicit_effort_supported: bool = False
     tool_names: list[str] = Field(default_factory=list)
     context_window: int | None = Field(default=None, ge=1)
     streaming_support: bool | None = None

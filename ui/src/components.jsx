@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   BookOpen, Bot, BrainCircuit, ChevronRight, Clock3, Database,
   FileKey2, Layers3, MessageSquareText, Network, PanelRight, Plus,
-  Route, Settings2, ShieldCheck, Sparkles, Wrench, X,
+  Route, Settings2, ShieldCheck, Wrench, X,
 } from "lucide-react";
 
 export const NAVIGATION = [
@@ -85,7 +85,7 @@ export function PageTitle({ eyebrow, title, children }) {
 }
 
 export function EmptyState({ title, children, action }) {
-  return <div className="empty-state"><Sparkles size={18} aria-hidden="true" /><h2>{title}</h2>{children && <p>{children}</p>}{action}</div>;
+  return <div className="empty-state"><h2>{title}</h2>{children && <p>{children}</p>}{action}</div>;
 }
 
 export function ErrorState({ error, retry, title = "Could not load this local record." }) {

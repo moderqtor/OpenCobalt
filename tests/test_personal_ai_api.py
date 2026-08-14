@@ -198,6 +198,74 @@ def test_conversation_project_path_is_canonical_and_rejects_traversal(
     assert escaped.status_code == 422
 
 
+def test_attachment_upload_list_and_delete(client: TestClient) -> None:
+    conversation = _conversation(client, "With docs")
+    conversation_id = conversation["conversation_id"]
+    uploaded = client.post(
+        f"/api/v1/conversations/{conversation_id}/attachments",
+        files={"file": ("notes.md", b"# Memo\nScreening evidence from the user.", "text/markdown")},
+    )
+    assert uploaded.status_code == 201
+    body = uploaded.json()
+    assert body["original_filename"] == "notes.md"
+    assert body["ingestion_status"] == "extracted"
+    listed = client.get(f"/api/v1/conversations/{conversation_id}/attachments")
+    assert listed.status_code == 200
+    assert listed.json()["attachments"][0]["attachment_id"] == body["attachment_id"]
+    rejected = client.post(
+        f"/api/v1/conversations/{conversation_id}/attachments",
+        files={"file": ("payload.exe", b"MZ", "application/octet-stream")},
+    )
+    assert rejected.status_code == 422
+    deleted = client.delete(
+        f"/api/v1/conversations/{conversation_id}/attachments/{body['attachment_id']}"
+    )
+    assert deleted.status_code == 200
+    empty = client.get(f"/api/v1/conversations/{conversation_id}/attachments")
+    assert empty.json()["attachments"] == []
+
+
+def test_research_source_exclude(client: TestClient, tmp_path: Path) -> None:
+    store = PersonalAIStore(tmp_path / ".opencobalt" / "ledger.db")
+    now = datetime.now(timezone.utc).isoformat()
+    store.save_research_mission(
+        {
+            "research_id": "res-1",
+            "mission_id": "mis-1",
+            "conversation_id": None,
+            "route_id": None,
+            "question": "Medicare oral health screening evidence",
+            "status": "complete",
+            "synthesis": "placeholder",
+            "limitations": [],
+            "model_roles": {},
+            "created_at": now,
+            "updated_at": now,
+            "metadata": {},
+        }
+    )
+    store.save_research_source(
+        {
+            "source_id": "src-1",
+            "research_id": "res-1",
+            "url": "https://www.cms.gov/medicare",
+            "title": "CMS Medicare",
+            "source_type": "government_policy",
+            "retrieval_status": "retrieved",
+            "excerpt": "Medicare covers limited oral services.",
+            "created_at": now,
+            "canonical_url": "https://www.cms.gov/medicare",
+            "quality_score": 0.8,
+        }
+    )
+    excluded = client.post("/api/v1/research/res-1/sources/src-1/exclude")
+    assert excluded.status_code == 200
+    assert excluded.json()["excluded"] is True
+    bundle = client.get("/api/v1/research/res-1")
+    assert bundle.status_code == 200
+    assert bundle.json()["sources"][0]["excluded"] is True
+
+
 def test_mock_stream_persists_messages_route_execution_and_redacted_receipt(
     client: TestClient,
 ) -> None:

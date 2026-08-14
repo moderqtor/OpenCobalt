@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   ArrowRight, Check, ChevronDown, CircleStop, Loader2, MessageSquareText,
-  PanelRightOpen, RefreshCw, Save, Send, SlidersHorizontal,
+  Paperclip, PanelRightOpen, RefreshCw, Save, Send, SlidersHorizontal,
 } from "lucide-react";
 import { ApiError, api, eventPayload, eventType, streamChat } from "./api";
 import Markdown from "./Markdown";
@@ -135,16 +135,19 @@ function allowedPolicies(persona) {
   return Array.isArray(policies) && policies.length ? policies : COGNITIVE_POLICIES;
 }
 
-function Composer({ controls, personas, providers, models: discoveredModels, modelError, onChange, onSend, busy, cancelling = false, onCancel }) {
+function Composer({ controls, personas, providers, models: discoveredModels, modelError, onChange, onSend, busy, cancelling = false, onCancel, attachments = [], onAttach, onRemoveAttachment, attachmentError, executableAvailable = true }) {
   const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState("");
+  const fileRef = useRef(null);
   const selectedProvider = providers.find((provider) => (provider.provider_id || provider.id) === controls.providerId);
   const selectedPersona = personas.find((persona) => (persona.persona_id || persona.id) === controls.personaId);
   const cognitivePolicies = allowedPolicies(selectedPersona);
   const models = discoveredModels.length ? discoveredModels : providerModels(selectedProvider);
   const manualProviderMissing = !controls.automatic && !controls.providerId;
   const manualProviderUnavailable = !controls.automatic && Boolean(controls.providerId) && (!selectedProvider?.installed || !selectedProvider?.execution_supported || !selectedProvider?.capabilities?.answer_only_isolation || selectedProvider?.enabled === false);
-  const validationMessage = manualProviderMissing
+  const validationMessage = !executableAvailable && controls.automatic
+    ? "No executable provider is currently available."
+    : manualProviderMissing
     ? "Choose an installed, executable provider before sending in manual mode."
     : manualProviderUnavailable
       ? "The selected provider is not currently eligible for isolated answer-only Chat execution."
@@ -175,6 +178,7 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
       }}
       disabled={busy}
     />
+    {attachments.length > 0 && <ul className="attachment-chips">{attachments.map((item) => <li key={item.attachment_id}><span>{item.original_filename}</span><button type="button" className="text-button" onClick={() => onRemoveAttachment?.(item)} aria-label={`Remove ${item.original_filename}`}>Remove</button></li>)}</ul>}
     <div className="composer-foot">
       <div className="control-strip">
         <SelectField label="Persona" value={controls.personaId} onChange={(personaId) => onChange({ personaId })}>
@@ -182,19 +186,22 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
         </SelectField>
         <button type="button" className={`mode-toggle ${controls.automatic ? "is-on" : ""}`} onClick={() => onChange({ automatic: !controls.automatic })}>{controls.automatic ? "Automatic" : "Manual"}</button>
         <button type="button" className="control-more" onClick={() => setExpanded((current) => !current)} aria-expanded={expanded} aria-controls="composer-advanced"><SlidersHorizontal size={15} aria-hidden="true" /> Controls</button>
+        <button type="button" className="control-more" onClick={() => fileRef.current?.click()} disabled={busy || !onAttach}><Paperclip size={15} aria-hidden="true" /> Attach</button>
+        <input ref={fileRef} className="visually-hidden" type="file" accept=".pdf,.md,.markdown,.txt,.html,.htm,.csv,application/pdf,text/plain,text/markdown,text/html,text/csv" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onAttach?.(file); }} />
       </div>
       {busy
         ? <button className="button stop" type="button" onClick={onCancel} disabled={cancelling}><CircleStop size={15} aria-hidden="true" /> {cancelling ? "Cancelling…" : "Cancel"}</button>
         : <button className="button primary" type="submit" disabled={!canSend}><Send size={15} aria-hidden="true" /> Send</button>}
     </div>
-    {validationMessage && <p id="composer-provider-validation" className="composer-validation" role="status">{validationMessage}</p>}
+    {validationMessage && <p id="composer-provider-validation" className="composer-validation" role="status">{validationMessage}{!executableAvailable && controls.automatic ? <> <button type="button" className="text-button" onClick={() => { window.location.hash = "providers"; }}>Open Providers</button></> : ""}</p>}
+    {attachmentError && <p className="composer-validation" role="status">{attachmentError}</p>}
     {expanded && <div id="composer-advanced" className="composer-advanced">
       <SelectField label="Cognitive policy" value={controls.cognitivePolicy} onChange={(cognitivePolicy) => onChange({ cognitivePolicy })}>{cognitivePolicies.map((policy) => <option key={policy} value={policy}>{label(policy)}</option>)}</SelectField>
-      {(controls.cognitivePolicy === "research" || controls.cognitivePolicy === "research_synthesis") && <p className="composer-validation">Research launches an evidence-backed mission: OpenCobalt retrieves public HTTPS sources, stores structured evidence, and links citations. It does not prove factual truth.</p>}
+      {(controls.cognitivePolicy === "research" || controls.cognitivePolicy === "research_synthesis") && <p className="composer-note">Research</p>}
       <SelectField label="Reasoning effort" value={controls.reasoningEffort} onChange={(reasoningEffort) => onChange({ reasoningEffort })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option></SelectField>
       <SelectField label="Privacy" value={controls.privacy} onChange={(privacy) => onChange({ privacy })}><option value="standard">Standard</option><option value="private">Private</option><option value="sensitive">Sensitive</option></SelectField>
-      <Toggle label="Local only" checked={controls.localOnly} onChange={(localOnly) => onChange({ localOnly })} note="Excludes routes whose capability record requires network access." />
-      <Toggle label="Allow fallback" checked={controls.allowFallback} onChange={(allowFallback) => onChange({ allowFallback })} note="Permits the next eligible route. Every fallback is recorded with its reason." />
+      <Toggle label="Local only" checked={controls.localOnly} onChange={(localOnly) => onChange({ localOnly })} />
+      <Toggle label="Allow fallback" checked={controls.allowFallback} onChange={(allowFallback) => onChange({ allowFallback })} />
       {!controls.automatic && <>
         <SelectField label="Provider" value={controls.providerId} onChange={(providerId) => onChange({ providerId, modelId: "" })} describedBy={validationMessage ? "composer-provider-validation" : undefined}>
           <option value="">Choose provider</option>
@@ -325,6 +332,8 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const [comparison, setComparison] = useState({ loading: false, error: null, data: null });
   const [pendingApprovals, setPendingApprovals] = useState([]);
   const [approvalBusyId, setApprovalBusyId] = useState("");
+  const [attachments, setAttachments] = useState([]);
+  const [attachmentError, setAttachmentError] = useState("");
   const abortRef = useRef(null);
   const executionRef = useRef(null);
   const runRef = useRef(null);
@@ -450,6 +459,22 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       });
     return () => { alive = false; };
   }, [selectedId, refreshSignal]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setAttachments([]);
+      return undefined;
+    }
+    let alive = true;
+    api.attachments(selectedId)
+      .then((items) => {
+        if (alive) setAttachments(Array.isArray(items) ? items : []);
+      })
+      .catch(() => {
+        if (alive) setAttachments([]);
+      });
+    return () => { alive = false; };
+  }, [selectedId]);
 
   useEffect(() => {
     const generation = routeGenerationRef.current;
@@ -607,6 +632,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
         provider_override: controls.automatic ? undefined : controls.providerId,
         model_override: controls.automatic ? undefined : controls.modelId || undefined,
         allow_fallback: controls.allowFallback,
+        attachment_ids: attachments.map((item) => item.attachment_id).filter(Boolean),
       }, handleEvent, controller.signal);
 
       const terminalType = eventType(result?.lastEvent);
@@ -753,8 +779,40 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     }
   };
 
+  const attachFile = async (file) => {
+    if (!file || interactionBusy) return;
+    setAttachmentError("");
+    try {
+      const conversationId = await ensureConversation();
+      const record = await api.uploadAttachment(conversationId, file);
+      setAttachments((current) => [...current.filter((item) => item.attachment_id !== record.attachment_id), record]);
+    } catch (error) {
+      setAttachmentError(error.message || "The file could not be attached.");
+    }
+  };
+
+  const removeAttachment = async (item) => {
+    if (!item?.attachment_id) return;
+    setAttachmentError("");
+    try {
+      if (selectedId) await api.deleteAttachment(selectedId, item.attachment_id);
+      setAttachments((current) => current.filter((record) => record.attachment_id !== item.attachment_id));
+    } catch (error) {
+      setAttachmentError(error.message || "The attachment could not be removed.");
+    }
+  };
+
   const selected = conversations.find((conversation) => conversationIdOf(conversation) === selectedId);
   const activePersona = personas.find((persona) => (persona.persona_id || persona.id) === controls.personaId);
+  const executableAvailable = providers.some((provider) => provider.installed && provider.execution_supported && provider.capabilities?.answer_only_isolation && provider.enabled !== false);
+  const routeHint = controls.automatic
+    ? "Automatic"
+    : (controls.modelId || providerName(providers.find((provider) => (provider.provider_id || provider.id) === controls.providerId)) || "Manual");
+  const statusHint = pendingApprovals.length
+    ? "approval required"
+    : interactionBusy
+      ? (cancelling ? "cancelling" : "working")
+      : "ready";
   const comparableResponses = messages.filter((message) => message.role === "assistant" && message.status === "complete");
   const executionEvents = streamEvents.filter((event) => ["tool", "tool_event", "tool_started", "tool_completed", "approval_required", "fallback_started", "research_planning", "research_retrieving", "research_extracting", "research_reviewing", "research_synthesizing", "research_complete"].includes(event.event_type));
   const liveStatus = pendingApprovals.length
@@ -770,8 +828,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     <ConversationRail conversations={conversations} selectedId={selectedId} onSelect={setSelectedId} onCreate={createConversation} isCreating={creating} disabled={interactionBusy} mobileOpen={conversationOpen} onClose={closeConversations} />
     <section className="chat-main" aria-labelledby="chat-title">
       <header className="chat-header">
-        <div className="chat-heading"><IconButton className="conversation-open" label="Open conversations" aria-expanded={conversationOpen} aria-controls="conversation-navigation" onClick={() => setConversationOpen(true)}><MessageSquareText size={17} /></IconButton><div><p className="eyebrow">Chat</p><h1 id="chat-title">{selected?.title || "New conversation"}</h1><p className="project-path" title={selected?.project_path || undefined}>{selected?.project_path ? `Project: ${selected.project_path}` : "No project path attached"}</p></div></div>
-        <div className="active-policy"><span>Active persona</span><b>{activePersona?.name || activePersona?.display_name || controls.personaId || "not selected"}</b></div>
+        <div className="chat-heading"><IconButton className="conversation-open" label="Open conversations" aria-expanded={conversationOpen} aria-controls="conversation-navigation" onClick={() => setConversationOpen(true)}><MessageSquareText size={17} /></IconButton><div><h1 id="chat-title">{selected?.title || "New conversation"}</h1><p className="chat-status">{activePersona?.name || activePersona?.display_name || controls.personaId || "persona"} · {routeHint} · {statusHint}</p>{selected?.project_path ? <p className="project-path" title={selected.project_path}>{selected.project_path}</p> : null}</div></div>
       </header>
       <div ref={scrollRef} className="chat-scroll" onScroll={(event) => {
         const node = event.currentTarget;
@@ -779,7 +836,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       }}>
         {messageState.loading && <Loading label="Opening conversation" />}
         {messageState.error && <ErrorState error={messageState.error} retry={selectedId ? () => api.messages(selectedId).then((data) => { setMessages(data); setMessageState({ loading: false, error: null }); }) : undefined} />}
-        {!messageState.loading && !messages.length && <EmptyState title="No messages yet">Choose a persona if it matters, then write the request. OpenCobalt records the route and any approval with the conversation.</EmptyState>}
+        {!messageState.loading && !messages.length && <EmptyState title="Message OpenCobalt">Attach a document if the question depends on it. Route details stay on each response.</EmptyState>}
         {messages.map((message) => {
           const messageId = message.message_id || message.id;
           const matchingStreamRoute = message.route_id && streamRoute?.route_id === message.route_id ? streamRoute : null;
@@ -798,7 +855,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       </div>
       <div className="chat-live" aria-live="polite" aria-atomic="true">{liveStatus}</div>
       {notice && <div className={`stream-notice ${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}>{notice.text}</div>}
-      <Composer controls={controls} personas={personas} providers={providers} models={modelCatalog} modelError={modelError} onChange={updateControls} onSend={send} busy={interactionBusy} cancelling={cancelling} onCancel={cancel} />
+      <Composer controls={controls} personas={personas} providers={providers} models={modelCatalog} modelError={modelError} onChange={updateControls} onSend={send} busy={interactionBusy} cancelling={cancelling} onCancel={cancel} attachments={attachments} onAttach={attachFile} onRemoveAttachment={removeAttachment} attachmentError={attachmentError} executableAvailable={executableAvailable} />
     </section>
   </div>;
 }
@@ -817,18 +874,67 @@ function CollectionPage({ kind, title, description, loader, render }) {
   return <section className="page"><PageTitle eyebrow={kind} title={title}>{description}</PageTitle>{state.data.length ? <div className="record-list">{state.data.map(render)}</div> : <EmptyState title={`No ${kind.toLowerCase()} records yet`}>{description}</EmptyState>}</section>;
 }
 
+function ResearchInspector({ research, onChanged }) {
+  const [busyId, setBusyId] = useState("");
+  const [error, setError] = useState("");
+  const sources = Array.isArray(research?.sources) ? research.sources : [];
+  const evidence = Array.isArray(research?.evidence) ? research.evidence : [];
+  const citations = Array.isArray(research?.citations) ? research.citations : [];
+  const disagreements = Array.isArray(research?.disagreements) ? research.disagreements : [];
+  const roles = research?.model_roles && typeof research.model_roles === "object" ? Object.entries(research.model_roles) : [];
+  const act = async (source, action) => {
+    if (!research?.research_id || !source?.source_id || busyId) return;
+    setBusyId(source.source_id);
+    setError("");
+    try {
+      if (action === "exclude") await api.excludeResearchSource(research.research_id, source.source_id);
+      else await api.retryResearchSource(research.research_id, source.source_id);
+      await onChanged?.();
+    } catch (caught) {
+      setError(caught.message || "The source action failed.");
+    } finally {
+      setBusyId("");
+    }
+  };
+  return <details><summary>Sources</summary><div className="mission-detail research-detail">
+    <p>{research.question}</p>
+    {error && <p className="inline-error" role="alert">{error}</p>}
+    {Array.isArray(research.limitations) && research.limitations.length > 0 && <ul>{research.limitations.map((item) => <li key={item}>{item}</li>)}</ul>}
+    {roles.length > 0 && <section><h3>Model roles</h3><dl>{roles.map(([role, value]) => <React.Fragment key={role}><dt>{label(role)}</dt><dd>{value?.display_name || value?.model_id || value?.provider_id} · {value?.reason || "role assigned"}</dd></React.Fragment>)}</dl></section>}
+    {sources.length > 0 && <section><h3>Sources</h3><ol>{sources.map((source) => {
+      const linked = evidence.filter((item) => item.source_id === source.source_id);
+      const cited = citations.some((item) => item.source_id === source.source_id || linked.some((row) => row.evidence_id === item.evidence_id));
+      return <li key={source.source_id}>
+        <b>{source.title || source.canonical_url || source.url || "Untitled source"}</b>
+        <span>{label(source.source_type)} · {label(source.retrieval_status)}{source.retrieval_adapter ? ` · ${label(source.retrieval_adapter)}` : ""}{source.excluded ? " · excluded" : ""}{cited ? " · cited" : ""}</span>
+        {source.excerpt && <span className="source-excerpt">{String(source.excerpt).slice(0, 280)}</span>}
+        {(source.canonical_url || source.url) && <a href={source.canonical_url || source.url} target="_blank" rel="noreferrer">{source.canonical_url || source.url}</a>}
+        <div className="source-actions">
+          {!source.excluded && <button type="button" className="text-button" disabled={busyId === source.source_id} onClick={() => act(source, "exclude")}>Exclude</button>}
+          {source.retrieval_status !== "retrieved" && !source.attachment_id && <button type="button" className="text-button" disabled={busyId === source.source_id} onClick={() => act(source, "retry")}>Retry</button>}
+        </div>
+      </li>;
+    })}</ol></section>}
+    {evidence.length > 0 && <section><h3>Evidence</h3><ol>{evidence.map((item) => <li key={item.evidence_id}><b>{item.claim}</b><span>{label(item.causal_class)} · {label(item.relation)} · {label(item.verification_status)}{item.study_design ? ` · ${item.study_design}` : ""}{item.effect_direction ? ` · ${item.effect_direction}` : ""}</span>{item.passage && <span className="source-excerpt">{String(item.passage).slice(0, 280)}</span>}{item.limitations && <span>{item.limitations}</span>}<code>{item.evidence_id}{item.source_id ? ` · ${item.source_id}` : ""}</code></li>)}</ol></section>}
+    {disagreements.length > 0 && <section><h3>Disagreements</h3><ol>{disagreements.map((item) => <li key={item.disagreement_id}><b>{item.topic}</b><span>{(item.positions || []).join(" · ")}</span></li>)}</ol></section>}
+    {citations.length > 0 && <section><h3>Citations</h3><ol>{citations.map((item) => <li key={item.citation_id}><b>{item.claim_span || "claim"}</b><span>{label(item.verification_status)}{item.verification_note ? ` · ${item.verification_note}` : ""}</span><code>{item.evidence_id || "no evidence id"}</code></li>)}</ol></section>}
+    {research.synthesis && <section><h3>Synthesis</h3><p>{research.synthesis}</p></section>}
+  </div></details>;
+}
+
 function MissionsPage() {
-  return <CollectionPage kind="Missions" title="Missions" description="Research and coding work that stays resumable with checkpoints, approvals, and outcomes." loader={api.missions} render={(mission) => {
+  const state = useLoad(api.missions);
+  if (state.loading) return <section className="page"><PageTitle eyebrow="Missions" title="Missions">Research and coding work that stays resumable.</PageTitle><Loading /></section>;
+  if (state.error) return <section className="page"><PageTitle eyebrow="Missions" title="Missions">Research and coding work that stays resumable.</PageTitle><ErrorState error={state.error} retry={state.reload} /></section>;
+  if (!state.data.length) return <section className="page"><PageTitle eyebrow="Missions" title="Missions">Research and coding work that stays resumable.</PageTitle><EmptyState title="No missions yet">Research or coding work from Chat appears here.</EmptyState></section>;
+  return <section className="page"><PageTitle eyebrow="Missions" title="Missions">Research and coding work that stays resumable.</PageTitle><div className="record-list">{state.data.map((mission) => {
     const steps = Array.isArray(mission.steps) ? mission.steps : [];
     const research = mission.research && typeof mission.research === "object" ? mission.research : null;
     const coding = mission.coding && typeof mission.coding === "object" ? mission.coding : null;
     const sources = Array.isArray(research?.sources) ? research.sources : [];
     const evidence = Array.isArray(research?.evidence) ? research.evidence : [];
-    const citations = Array.isArray(research?.citations) ? research.citations : [];
-    const disagreements = Array.isArray(research?.disagreements) ? research.disagreements : [];
-    const roles = research?.model_roles && typeof research.model_roles === "object" ? Object.entries(research.model_roles) : [];
-    return <article className="record-card mission-card" key={missionIdOf(mission)}><div className="card-top"><div className="pill-row"><Pill tone={mission.status === "complete" || mission.status === "completed" ? "green" : mission.status === "blocked" ? "amber" : "neutral"}>{label(mission.status || "planned")}</Pill><Pill>{label(mission.mission_type || "mission")}</Pill>{research && <Pill>{sources.length} sources</Pill>}{research && <Pill>{evidence.length} evidence</Pill>}{coding && <Pill>{label(coding.capability_role || "coding")}</Pill>}</div><small className="mono">{mission.mission_id || mission.id}</small></div><h2>{mission.goal || mission.title || "Untitled mission"}</h2><p>{mission.current_state || mission.summary || research?.synthesis || coding?.outcome || "No current state has been recorded."}</p><details><summary>Inspect plan, checkpoints, and provenance</summary><div className="mission-detail"><dl><dt>Active plan</dt><dd>{mission.active_plan_id || "not recorded"}</dd><dt>Last receipt</dt><dd>{mission.last_receipt_id || "not recorded"}</dd><dt>Source route</dt><dd>{mission.route_id || research?.route_id || "not promoted from chat"}</dd><dt>Outcome</dt><dd>{mission.outcome || "not final"}</dd></dl>{steps.length ? <ol>{steps.map((step) => <li key={step.step_id}><b>{step.title}</b><span>{label(step.execution_state)} · approval {label(step.approval_state)} · risk {label(step.risk_level)}</span>{step.receipt_id && <code>{step.receipt_id}</code>}</li>)}</ol> : <p>No durable steps were returned for this mission.</p>}</div></details>{research && <details><summary>Inspect research sources, evidence, and citations</summary><div className="mission-detail research-detail"><p>{research.question}</p>{Array.isArray(research.limitations) && research.limitations.length > 0 && <ul>{research.limitations.map((item) => <li key={item}>{item}</li>)}</ul>}{roles.length > 0 && <section><h3>Model roles</h3><dl>{roles.map(([role, value]) => <React.Fragment key={role}><dt>{label(role)}</dt><dd>{value?.display_name || value?.model_id || value?.provider_id} · {value?.reason || "role assigned"}</dd></React.Fragment>)}</dl></section>}{sources.length > 0 && <section><h3>Sources</h3><ol>{sources.map((source) => <li key={source.source_id}><b>{source.title || source.url}</b><span>{label(source.source_type)} · {label(source.retrieval_status)}</span><code>{source.url}</code></li>)}</ol></section>}{evidence.length > 0 && <section><h3>Evidence</h3><ol>{evidence.map((item) => <li key={item.evidence_id}><b>{item.claim}</b><span>{label(item.causal_class)} · {label(item.relation)} · {label(item.verification_status)}</span>{item.limitations && <span>{item.limitations}</span>}<code>{item.evidence_id}</code></li>)}</ol></section>}{disagreements.length > 0 && <section><h3>Disagreements preserved</h3><ol>{disagreements.map((item) => <li key={item.disagreement_id}><b>{item.topic}</b><span>{(item.positions || []).join(" · ")}</span></li>)}</ol></section>}{citations.length > 0 && <section><h3>Citations</h3><ol>{citations.map((item) => <li key={item.citation_id}><b>{item.claim_span || "claim"}</b><span>{label(item.verification_status)} · {item.verification_note}</span><code>{item.evidence_id || "no evidence id"}</code></li>)}</ol></section>}{research.synthesis && <section><h3>Final synthesis</h3><p>{research.synthesis}</p></section>}</div></details>}{coding && <details open={["running", "pending"].includes(coding.status)}><summary>Coding execution</summary><div className="mission-detail"><dl><dt>Objective</dt><dd>{coding.objective || mission.goal || "not recorded"}</dd><dt>Status</dt><dd>{label(coding.status || mission.status)}</dd><dt>Repository</dt><dd><code>{coding.repository_path || "not recorded"}</code></dd><dt>Provider</dt><dd>{coding.provider_id || "not recorded"}{coding.model_id ? ` · ${coding.model_id}` : ""} · {label(coding.capability_role || "coding")}</dd><dt>ACP session</dt><dd><code>{coding.acp_session_id || "not reloadable across restart"}</code></dd><dt>Receipt</dt><dd><code>{coding.receipt_id || "not recorded"}</code></dd></dl>{Array.isArray(coding.approvals) && coding.approvals.length > 0 && <section><h3>Approvals</h3><ol>{coding.approvals.map((item, index) => <li key={item.request_id || item.approval_request_id || index}><b>{item.headline || item.tool || item.policy_decision || "permission"}</b><span>{label(item.state || item.policy_decision)} · {label(item.risk_level)}{item.command ? ` · ${item.command}` : item.path ? ` · ${item.path}` : ""}</span></li>)}</ol></section>}{Array.isArray(coding.files_changed) && coding.files_changed.length > 0 && <section><h3>Files changed</h3><ol>{coding.files_changed.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.terminal_operations) && coding.terminal_operations.length > 0 && <section><h3>Commands</h3><ol>{coding.terminal_operations.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.tests) && coding.tests.length > 0 && <section><h3>Verification</h3><ol>{coding.tests.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{coding.changeset && <section><h3>ChangeSet</h3><p>{label(coding.changeset.promotion_state)} · {(coding.changeset.summary && coding.changeset.summary.files_changed) || 0} files</p><PromotionCard changeset={coding.changeset} onApply={async (item) => { await api.applyChangeset(item.changeset_id); window.location.reload(); }} onReject={async (item) => { await api.rejectChangeset(item.changeset_id); window.location.reload(); }} /></section>}{coding.outcome && <section><h3>Outcome</h3><p>{coding.outcome}</p></section>}</div></details>}</article>;
-  }} />;
+    return <article className="record-card mission-card" key={missionIdOf(mission)}><div className="card-top"><div className="pill-row"><Pill tone={mission.status === "complete" || mission.status === "completed" ? "green" : mission.status === "blocked" ? "amber" : "neutral"}>{label(mission.status || "planned")}</Pill><Pill>{label(mission.mission_type || "mission")}</Pill>{research && <Pill>{sources.length} sources</Pill>}{research && <Pill>{evidence.length} evidence</Pill>}{coding && <Pill>{label(coding.capability_role || "coding")}</Pill>}</div><small className="mono">{mission.mission_id || mission.id}</small></div><h2>{mission.goal || mission.title || "Untitled mission"}</h2><p>{mission.current_state || mission.summary || research?.synthesis || coding?.outcome || "No current state has been recorded."}</p><details><summary>Inspect plan, checkpoints, and provenance</summary><div className="mission-detail"><dl><dt>Active plan</dt><dd>{mission.active_plan_id || "not recorded"}</dd><dt>Last receipt</dt><dd>{mission.last_receipt_id || "not recorded"}</dd><dt>Source route</dt><dd>{mission.route_id || research?.route_id || "not promoted from chat"}</dd><dt>Outcome</dt><dd>{mission.outcome || "not final"}</dd></dl>{steps.length ? <ol>{steps.map((step) => <li key={step.step_id}><b>{step.title}</b><span>{label(step.execution_state)} · approval {label(step.approval_state)} · risk {label(step.risk_level)}</span>{step.receipt_id && <code>{step.receipt_id}</code>}</li>)}</ol> : <p>No durable steps were returned for this mission.</p>}</div></details>{research && <ResearchInspector research={research} onChanged={state.reload} />}{coding && <details open={["running", "pending"].includes(coding.status)}><summary>Coding Mission</summary><div className="mission-detail"><dl><dt>Objective</dt><dd>{coding.objective || mission.goal || "not recorded"}</dd><dt>Status</dt><dd>{label(coding.status || mission.status)}</dd><dt>Repository</dt><dd><code>{coding.repository_path || "not recorded"}</code></dd><dt>Provider</dt><dd>{coding.provider_id || "not recorded"}{coding.model_id ? ` · ${coding.model_id}` : ""} · {label(coding.capability_role || "coding")}</dd><dt>ACP session</dt><dd><code>{coding.acp_session_id || "not reloadable across restart"}</code></dd><dt>Receipt</dt><dd><code>{coding.receipt_id || "not recorded"}</code></dd></dl>{Array.isArray(coding.approvals) && coding.approvals.length > 0 && <section><h3>Approvals</h3><ol>{coding.approvals.map((item, index) => <li key={item.request_id || item.approval_request_id || index}><b>{item.headline || item.tool || item.policy_decision || "permission"}</b><span>{label(item.state || item.policy_decision)} · {label(item.risk_level)}{item.command ? ` · ${item.command}` : item.path ? ` · ${item.path}` : ""}</span></li>)}</ol></section>}{Array.isArray(coding.files_changed) && coding.files_changed.length > 0 && <section><h3>Staged files</h3><ol>{coding.files_changed.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.terminal_operations) && coding.terminal_operations.length > 0 && <section><h3>Commands</h3><ol>{coding.terminal_operations.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.tests) && coding.tests.length > 0 && <section><h3>Verification</h3><ol>{coding.tests.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{coding.changeset && <section><h3>Staged ChangeSet</h3><p>{label(coding.changeset.promotion_state)} · {(coding.changeset.summary && coding.changeset.summary.files_changed) || 0} files</p><PromotionCard changeset={coding.changeset} onApply={async (item) => { await api.applyChangeset(item.changeset_id); await state.reload(); }} onReject={async (item) => { await api.rejectChangeset(item.changeset_id); await state.reload(); }} /></section>}{coding.outcome && <section><h3>Outcome</h3><p>{coding.outcome}</p></section>}</div></details>}</article>;
+  })}</div></section>;
 }
 
 function SkillsPage() {
@@ -946,9 +1052,9 @@ function MemoryPage() {
       setActionError(error);
     }
   };
-  if (state.loading) return <section className="page"><PageTitle eyebrow="Memory" title="Memory">Each memory remains attributable, scoped, and under your control.</PageTitle><Loading /></section>;
-  if (state.error) return <section className="page"><PageTitle eyebrow="Memory" title="Memory">Each memory remains attributable, scoped, and under your control.</PageTitle><ErrorState error={state.error} retry={state.reload} /></section>;
-  return <section className="page"><PageTitle eyebrow="Memory" title="Memory">Each memory remains attributable, scoped, and under your control.</PageTitle>{actionError && <ErrorState error={actionError} title="The memory change was not saved." />}<form className="memory-add" onSubmit={add}><input value={draft.content} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} placeholder="Save a fact or preference explicitly" aria-label="New memory" /><SelectField label="Scope" value={draft.scope} onChange={(scope) => setDraft((current) => ({ ...current, scope }))}><option value="user">User</option><option value="project" disabled>Project — requires a bound project</option><option value="conversation" disabled>Conversation — requires a bound conversation</option><option value="temporary">Temporary</option></SelectField><SelectField label="Sensitivity" value={draft.sensitivity} onChange={(sensitivity) => setDraft((current) => ({ ...current, sensitivity }))}><option value="normal">Normal</option><option value="sensitive">Sensitive</option></SelectField><button type="submit" className="button primary" disabled={saving || !draft.content.trim()}>{saving ? "Saving…" : "Save memory"}</button></form>{state.data.length ? <div className="record-list">{state.data.map((memory) => <MemoryRecord key={memoryIdOf(memory)} memory={memory} onUpdate={update} onRemove={remove} />)}</div> : <EmptyState title="No curated memory yet">OpenCobalt proposes memory from explicit requests. You decide what persists.</EmptyState>}</section>;
+  if (state.loading) return <section className="page"><PageTitle eyebrow="Memory" title="Memory">Stored facts, scoped and deletable.</PageTitle><Loading /></section>;
+  if (state.error) return <section className="page"><PageTitle eyebrow="Memory" title="Memory">Stored facts, scoped and deletable.</PageTitle><ErrorState error={state.error} retry={state.reload} /></section>;
+  return <section className="page"><PageTitle eyebrow="Memory" title="Memory">Stored facts, scoped and deletable.</PageTitle>{actionError && <ErrorState error={actionError} title="The memory change was not saved." />}<form className="memory-add" onSubmit={add}><input value={draft.content} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} placeholder="Save a fact or preference explicitly" aria-label="New memory" /><SelectField label="Scope" value={draft.scope} onChange={(scope) => setDraft((current) => ({ ...current, scope }))}><option value="user">User</option><option value="project" disabled>Project — requires a bound project</option><option value="conversation" disabled>Conversation — requires a bound conversation</option><option value="temporary">Temporary</option></SelectField><SelectField label="Sensitivity" value={draft.sensitivity} onChange={(sensitivity) => setDraft((current) => ({ ...current, sensitivity }))}><option value="normal">Normal</option><option value="sensitive">Sensitive</option></SelectField><button type="submit" className="button primary" disabled={saving || !draft.content.trim()}>{saving ? "Saving…" : "Save memory"}</button></form>{state.data.length ? <div className="record-list">{state.data.map((memory) => <MemoryRecord key={memoryIdOf(memory)} memory={memory} onUpdate={update} onRemove={remove} />)}</div> : <EmptyState title="No curated memory yet">OpenCobalt proposes memory from explicit requests. You decide what persists.</EmptyState>}</section>;
 }
 
 function LedgerPage() {
@@ -991,7 +1097,7 @@ function ProvidersPage({ providers, reloadProviders }) {
       setCatalogs((current) => ({ ...current, [providerId]: { loading: false, error, models: current[providerId]?.models || [] } }));
     }
   };
-  return <section className="page"><PageTitle eyebrow="Providers" title="Providers">Installation, authentication, health, and executable support remain separate facts.</PageTitle>{!providers.length ? <EmptyState title="No providers discovered">Refresh after installing or starting a supported runtime. No provider availability is inferred here.</EmptyState> : <div className="record-list">{providers.map((provider) => {
+  return <section className="page"><PageTitle eyebrow="Providers" title="Providers">Available, authenticated, and executable are separate facts.</PageTitle>{!providers.length ? <EmptyState title="No providers discovered">Refresh after installing or starting a supported runtime. No provider availability is inferred here.</EmptyState> : <div className="record-list">{providers.map((provider) => {
     const providerId = provider.provider_id || provider.id;
     const state = health[providerId];
     const capabilities = provider.capabilities || {};
@@ -1192,7 +1298,7 @@ function SettingsPage({ settings, onSettingsChange, personas, providers, reloadP
       setSaveState({ saving: false, saved: false, error });
     }
   };
-  return <section className="page"><PageTitle eyebrow="Settings" title="Settings">Defaults shape a route. They do not grant authority or create an implicit fallback.</PageTitle>{saveState.error && <ErrorState error={saveState.error} title="Local settings were not saved." />}<form className="settings-form" onSubmit={save}>
+  return <section className="page"><PageTitle eyebrow="Settings" title="Settings">Defaults for Chat, privacy, and approvals. They do not grant authority.</PageTitle>{saveState.error && <ErrorState error={saveState.error} title="Local settings were not saved." />}<form className="settings-form" onSubmit={save}>
     <section><h2>Interaction defaults</h2><SelectField label="Default persona" value={draft.default_persona_id} onChange={(default_persona_id) => setDraft({ ...draft, default_persona_id })}>{personas.map((persona) => <option key={persona.persona_id || persona.id} value={persona.persona_id || persona.id}>{persona.name || persona.display_name || persona.persona_id || persona.id}</option>)}</SelectField><SelectField label="Routing mode" value={draft.default_routing_mode} onChange={(default_routing_mode) => setDraft({ ...draft, default_routing_mode })}><option value="automatic">Automatic</option><option value="manual">Manual</option></SelectField><SelectField label="Theme" value={draft.theme} onChange={(theme) => setDraft({ ...draft, theme })}><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></SelectField></section>
     <section><h2>Safety and retention</h2><Toggle label="Local-only by default" checked={draft.local_only_default} onChange={(local_only_default) => setDraft({ ...draft, local_only_default })} note="Blocks providers whose capability record requires network access." /><SelectField label="Privacy policy" value={draft.privacy_policy} onChange={(privacy_policy) => setDraft({ ...draft, privacy_policy })}><option value="standard">Standard</option><option value="private">Private</option><option value="sensitive">Sensitive</option></SelectField><SelectField label="Memory behavior" value={draft.memory_behavior} onChange={(memory_behavior) => setDraft({ ...draft, memory_behavior })}><option value="off">Off</option><option value="propose">Propose</option><option value="explicit_only">Explicit only</option></SelectField><SelectField label="Verification" value={draft.verification_preference} onChange={(verification_preference) => setDraft({ ...draft, verification_preference })}><option value="minimal">Minimal</option><option value="task_appropriate">Task appropriate</option><option value="strict">Strict</option></SelectField></section>
     <section><h2>Authority and cost</h2><SelectField label="Approval policy" value={draft.approval_policy} onChange={(approval_policy) => setDraft({ ...draft, approval_policy })}><option value="ask_for_risk">Ask for risk</option><option value="always_ask">Always ask</option><option value="deny_tools">Deny tools</option></SelectField><p className="setting-boundary">Chat is answer-only: tool and skill execution is blocked. “Always ask” also blocks model execution until an approval-resume lifecycle exists.</p><SelectField label="Cost ceiling" value={draft.cost_ceiling_category} onChange={(cost_ceiling_category) => setDraft({ ...draft, cost_ceiling_category })}><option value="free">Free</option><option value="low">Low</option><option value="standard">Standard</option><option value="high">High</option></SelectField><SelectField label="Skill permissions" value={draft.skill_permissions} onChange={(skill_permissions) => setDraft({ ...draft, skill_permissions })}><option value="deny">Deny</option><option value="ask">Ask</option><option value="allow_builtin">Allow built-in</option></SelectField><ProviderPriorityField value={draft.provider_priority} providers={providers} onChange={(provider_priority) => setDraft({ ...draft, provider_priority })} /></section>

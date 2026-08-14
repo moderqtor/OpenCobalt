@@ -35,7 +35,7 @@ Starting the UI and inspecting existing records requires no provider credential.
 
 | Page | Purpose |
 |---|---|
-| Chat | Durable conversations, workspace selection, persona and cognitive controls, automatic or manual provider selection, privacy and local-only controls, normalized lifecycle events, and cancellation. |
+| Chat | Durable conversations, document attachments, persona and cognitive controls, automatic or manual provider selection, privacy and local-only controls, normalized lifecycle events, and cancellation. |
 | Routes | Route history and an inspector for candidates, heuristic components, reasons, selected and actual provider, model, persona, privacy, controlled reruns, and receipt linkage. |
 | Missions | Existing durable mission records, including Research and coding-agent work. Simple Chat questions do not create missions. |
 | Skills | Searchable and filterable installed local skill records. Listing, inspecting, or toggling a pinned imported skill does not execute its code. |
@@ -106,7 +106,9 @@ There is no silent fallback. New requests and reruns default to fallback disable
 
 Chat is currently answer-only. Requested tool or skill execution is rejected at the API boundary instead of being silently attempted. The `always_ask` setting also blocks chat model execution because approval-and-resume is not yet implemented; this is an explicit policy denial, not an implicit approval. Other policies allow bounded provider inference while route records retain any human-review requirement before acting on consequential output. Ollama and Mock have inference-only adapter contracts, so harmless discussion of a sensitive topic is distinct from process authority. Codex and Claude remain agent runtimes without a proven answer-only isolation boundary, so Personal AI chat currently fails closed for those providers until approval-and-resume exists. Antigravity Chat is admitted only through the isolated print boundary above; it does not grant repository or shell authority to ordinary Chat. Explicit receipt-backed execution surfaces can still use the generic Antigravity adapter under their own approval policy.
 
-Selecting the Research or Research synthesis cognitive policy launches an evidence-backed Research Mission instead of ordinary Chat. OpenCobalt decomposes the question, retrieves public HTTPS sources itself, stores structured evidence, optionally reviews important claims with a distinct stronger model, synthesizes from that evidence set, and marks citations as `verified_link` only when they point at retrieved mission evidence. Citation linkage is not a proof of factual truth. Ordinary Chat messages are not turned into Missions automatically.
+Selecting the Research or Research synthesis cognitive policy launches an evidence-backed Research Mission instead of ordinary Chat. OpenCobalt decomposes the question, retrieves public HTTPS sources itself (HTML, PDF, PubMed, DOI/Crossref, and government hosts), can include conversation attachments as sources, stores structured evidence, optionally reviews important claims with a distinct stronger model, synthesizes from that evidence set, and marks citations as `verified_link` only when they point at retrieved mission evidence. Citation linkage is not a proof of factual truth. Ordinary Chat messages are not turned into Missions automatically.
+
+Chat can attach PDF, Markdown, plain text, HTML, or CSV files. Attachments are stored under `.opencobalt/attachments/`, treated as untrusted data rather than instructions, and supplied to the model as bounded excerpts.
 
 When fallback is enabled, OpenCobalt skips remaining models from the same failed provider and tries the next eligible different provider. It does not ask every Antigravity model the same question.
 

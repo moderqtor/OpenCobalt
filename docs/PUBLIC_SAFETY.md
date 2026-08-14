@@ -19,6 +19,7 @@ This document defines what is excluded from the public OpenCobalt repo, how that
 - Obsidian vault ChromaDB indexes
 - Private memory store files (JSONL)
 - Generated SQLite databases (`.opencobalt/ledger.db` is gitignored)
+- Uploaded document attachments (`.opencobalt/attachments/` and `attachments/`)
 - Screenshots that include private information
 
 ### Generated artifacts

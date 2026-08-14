@@ -90,6 +90,7 @@ class ChatRequest(BaseModel):
     model_override: str | None = None
     requested_tools: list[str] = Field(default_factory=list, max_length=50)
     requested_skills: list[str] = Field(default_factory=list, max_length=50)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=20)
     allow_fallback: bool = False
     timeout_seconds: int = Field(default=120, ge=1, le=3600)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -110,7 +111,7 @@ class ChatRequest(BaseModel):
             raise ValueError("identifier must be a bounded non-flag value")
         return value
 
-    @field_validator("requested_tools", "requested_skills")
+    @field_validator("requested_tools", "requested_skills", "attachment_ids")
     @classmethod
     def _bounded_capability_ids(cls, value: list[str]) -> list[str]:
         if any(
@@ -123,7 +124,7 @@ class ChatRequest(BaseModel):
             )
             for item in value
         ):
-            raise ValueError("tool and skill identifiers must be bounded non-flag values")
+            raise ValueError("tool, skill, and attachment identifiers must be bounded non-flag values")
         return list(dict.fromkeys(value))
 
     @model_validator(mode="after")
@@ -196,6 +197,7 @@ class ChatService:
             metadata={
                 "requested_persona_id": request.persona_id,
                 "cognitive_policy": cognitive_policy,
+                "attachment_ids": list(request.attachment_ids),
                 **request.metadata,
             },
         )
@@ -1409,6 +1411,7 @@ class ChatService:
                 timeout_seconds=max(request.timeout_seconds, 180),
                 cancellation=cancellation,
                 system_policy=rendered_policy,
+                attachment_ids=request.attachment_ids,
             ):
                 event = lifecycle(
                     f"research_{step.get('step', 'update')}",
@@ -1875,6 +1878,28 @@ class ChatService:
             sections.append(f"Persona/provider disclosure: {route.persona_provider_mismatch}")
         if history:
             sections.extend(["", "Recent conversation context:", history])
+        from opencobalt.personal_ai.documents import render_attachment_context
+
+        attachment_ids = [
+            str(item)
+            for item in (user_message.metadata or {}).get("attachment_ids", [])
+            if str(item).strip()
+        ]
+        if not attachment_ids:
+            attachment_ids = [
+                item["attachment_id"]
+                for item in self.store.list_attachments(conversation.conversation_id)
+            ]
+        records = [
+            record
+            for record in (
+                self.store.get_attachment(item) for item in attachment_ids
+            )
+            if record is not None
+        ]
+        document_context = render_attachment_context(records, user_message.content)
+        if document_context:
+            sections.extend(["", document_context])
         return "\n".join(sections)
 
     def _persist_lifecycle_event(
