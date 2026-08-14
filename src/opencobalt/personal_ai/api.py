@@ -379,10 +379,11 @@ def _stream_event_payload(event: StreamEvent) -> dict[str, Any]:
         return {"approval": result}
 
     allowed_keys = {
-        "request_accepted": ("message_id",),
-        "execution_started": ("provider_id", "model_id", "attempt"),
-        "provider_started": ("provider_id", "receipt_id"),
+        "request_accepted": ("message_id", "phase_label"),
+        "execution_started": ("provider_id", "model_id", "attempt", "phase_label"),
+        "provider_started": ("provider_id", "receipt_id", "phase_label"),
         "provider_completed": ("receipt_id",),
+        "phase_changed": ("phase_label",),
         "fallback_started": (
             "from_provider",
             "from_model",
@@ -975,18 +976,24 @@ def _validate_chat_request(context: APIContext, request: ChatRequest) -> ChatReq
 def _stream_ndjson(service: ChatService, request: ChatRequest):
     """Serialize events and durably abandon a still-active disconnected stream."""
     active_execution_id: str | None = None
+    active_request_id: str | None = None
     try:
         for event in service.stream_request(request):
+            if event.request_id is not None:
+                active_request_id = event.request_id
             if event.execution_id is not None:
                 active_execution_id = event.execution_id
-            if event.event_type in {"completed", "cancelled", "error"}:
+            if event.event_type in {"completed", "cancelled", "error", "route_failed"}:
                 active_execution_id = None
+                active_request_id = None
             yield event.model_dump_json() + "\n"
     finally:
         if active_execution_id is not None:
             has_pending = getattr(service, "has_live_pending_approval", None)
             if not (callable(has_pending) and has_pending(active_execution_id)):
                 service.abandon(active_execution_id)
+        elif active_request_id is not None:
+            service.abandon(active_request_id)
 
 
 @router.post("/chat/stream")
@@ -1601,8 +1608,14 @@ def provider_health(provider_id: str) -> ProviderHealth:
 
 
 @router.get("/providers/{provider_id}/models", response_model=ProviderModelCatalog)
-def provider_models(provider_id: str, local_only: bool = False) -> ProviderModelCatalog:
-    return _provider(_api_context(), provider_id).discover_models(local_only=local_only)
+def provider_models(
+    provider_id: str,
+    local_only: bool = False,
+    refresh: bool = False,
+) -> ProviderModelCatalog:
+    return _provider(_api_context(), provider_id).discover_models(
+        local_only=local_only, refresh=refresh
+    )
 
 
 def _provider_preference(context: APIContext, provider_id: str) -> ProviderPreference:

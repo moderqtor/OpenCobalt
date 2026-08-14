@@ -160,6 +160,7 @@ class ProcessRunner:
         runtime: str = "unknown",
         cwd: str | None = None,
         timeout_seconds: int = 120,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> ExecutionResult:
         if not argv or not isinstance(argv, list) or not all(isinstance(part, str) for part in argv):
             raise ValueError("argv must be a non-empty list of strings")
@@ -180,18 +181,29 @@ class ProcessRunner:
             with stdout_path.open("w+", encoding="utf-8") as stdout_file, stderr_path.open(
                 "w+", encoding="utf-8"
             ) as stderr_file:
-                completed = subprocess.run(
-                    argv,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    text=True,
-                    cwd=cwd,
-                    timeout=timeout_seconds,
-                )
-            result.return_code = completed.returncode
-            result.status = "succeeded" if completed.returncode == 0 else "failed"
-            if completed.returncode != 0:
-                result.error = f"exit code {completed.returncode}"
+                if cancel_check is None:
+                    completed = subprocess.run(
+                        argv,
+                        stdout=stdout_file,
+                        stderr=stderr_file,
+                        text=True,
+                        cwd=cwd,
+                        timeout=timeout_seconds,
+                    )
+                    result.return_code = completed.returncode
+                    result.status = "succeeded" if completed.returncode == 0 else "failed"
+                    if completed.returncode != 0:
+                        result.error = f"exit code {completed.returncode}"
+                else:
+                    self._run_cancellable(
+                        result,
+                        argv,
+                        stdout_file=stdout_file,
+                        stderr_file=stderr_file,
+                        cwd=cwd,
+                        timeout_seconds=timeout_seconds,
+                        cancel_check=cancel_check,
+                    )
         except FileNotFoundError:
             result.status = "failed"
             result.error = f"executable not found: {argv[0]}"
@@ -209,6 +221,49 @@ class ProcessRunner:
         result.stdout_path = self._path_if_nonempty(stdout_path)
         result.stderr_path = self._path_if_nonempty(stderr_path)
         return result
+
+    def _run_cancellable(
+        self,
+        result: ExecutionResult,
+        argv: list[str],
+        *,
+        stdout_file: TextIO,
+        stderr_file: TextIO,
+        cwd: str | None,
+        timeout_seconds: int,
+        cancel_check: Callable[[], bool],
+    ) -> None:
+        proc = subprocess.Popen(
+            argv,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            text=True,
+            cwd=cwd,
+            start_new_session=os.name == "posix",
+        )
+        deadline = time.monotonic() + timeout_seconds
+        try:
+            while proc.poll() is None:
+                if cancel_check():
+                    _terminate_process(proc)
+                    result.return_code = proc.returncode
+                    result.status = "failed"
+                    result.error = "cancelled"
+                    return
+                if time.monotonic() >= deadline:
+                    _terminate_process(proc)
+                    result.return_code = proc.returncode
+                    result.status = "timeout"
+                    result.error = f"timed out after {timeout_seconds}s"
+                    return
+                time.sleep(0.05)
+            result.return_code = proc.returncode
+            result.status = "succeeded" if proc.returncode == 0 else "failed"
+            if proc.returncode not in {0, None}:
+                result.error = f"exit code {proc.returncode}"
+        finally:
+            if proc.poll() is None:
+                _terminate_process(proc)
 
     def interact(
         self,

@@ -177,12 +177,16 @@ def test_registry_discovery_keeps_installation_authentication_and_readiness_dist
 
     assert list(statuses) == [
         "mock",
+        "deterministic",
         "codex",
         "antigravity",
         "claude",
         "ollama",
         "gemini",
     ]
+    assert statuses["deterministic"].health == "ready"
+    assert statuses["deterministic"].authentication == "not_required"
+    assert statuses["deterministic"].capabilities.local_only_eligible is True
     assert statuses["mock"].health == "ready"
     assert statuses["mock"].authentication == "not_required"
     assert statuses["codex"].installed is True

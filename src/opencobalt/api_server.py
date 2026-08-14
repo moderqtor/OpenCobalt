@@ -10,6 +10,7 @@ import importlib.metadata
 import json
 import re
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,24 @@ from .personal_ai.api import router as personal_ai_router
 
 _START_TIME = time.time()
 
-app = FastAPI(title="OpenCobalt API", version="0.1.0")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    yield
+    try:
+        from opencobalt.personal_ai.api import _CONTEXT_LOCK, _CONTEXTS
+
+        with _CONTEXT_LOCK:
+            contexts = [item[1] for item in _CONTEXTS.values()]
+        for context in contexts:
+            cancel_all = getattr(context.service, "cancel_all", None)
+            if callable(cancel_all):
+                cancel_all()
+    except Exception:
+        pass
+
+
+app = FastAPI(title="OpenCobalt API", version="0.1.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,

@@ -68,6 +68,11 @@ class TaskRequirements:
     consequence: SensitivityLevel = "low"
     freshness: FreshnessNeed = "none"
     citations_required: bool = False
+    latency_preference: Literal["low", "standard", "high"] = "standard"
+    cost_preference: Literal["minimize", "balanced", "quality_first"] = "balanced"
+    mutation_authority: Literal["none", "staged", "explicit"] = "none"
+    deterministic_solvable: bool = False
+    likely_tool_solvable: bool = False
 
 
 @dataclass(frozen=True)
@@ -105,11 +110,19 @@ class ProviderSnapshot:
     model_family: str | None = None
     profile_evidence: str | None = None
     capability_roles: frozenset[str] = field(default_factory=frozenset)
+    discovery_source: str | None = None
+    discovery_age_ms: int | None = None
+    observed_latency_signal: int = 0
+    cancellation_rate_signal: int = 0
 
     def __post_init__(self) -> None:
         """Reject unbounded evidence while normalizing capability collections."""
         if not -10 <= self.historical_success_signal <= 10:
             raise ValueError("historical_success_signal must be between -10 and 10")
+        if not -10 <= self.observed_latency_signal <= 10:
+            raise ValueError("observed_latency_signal must be between -10 and 10")
+        if not -10 <= self.cancellation_rate_signal <= 10:
+            raise ValueError("cancellation_rate_signal must be between -10 and 10")
         if not 0 <= self.quota_pressure <= 10:
             raise ValueError("quota_pressure must be between 0 and 10")
         if not -10 <= self.provider_priority <= 10:
@@ -138,6 +151,7 @@ class RoutingRequest:
     model_override: str | None = None
     requested_tools: tuple[str, ...] = ()
     requested_skills: tuple[str, ...] = ()
+    attachment_ids: tuple[str, ...] = ()
     project_path: str | None = None
 
 
@@ -232,6 +246,21 @@ class PersonalAIRouter:
         )
         selected_tools = sorted(set(request.requested_tools) & snapshot.tool_names)
         selected_skills = _selected_skills(request, snapshot)
+        if not selected_skills:
+            from opencobalt.personal_ai.builtin_skills import recommend_builtin_skill
+
+            recommended = recommend_builtin_skill(
+                task_class=task_class,
+                capability_role=capability_role,
+                citations_required=requirements.citations_required,
+                has_attachments=bool(request.attachment_ids),
+                has_repository=bool(request.project_path),
+            )
+            if recommended is not None:
+                selected_skills = [recommended.skill_id]
+                reasons = list(selected.reasons)
+                reasons.append(f"recommended skill contract: {recommended.skill_id}")
+                selected = selected.model_copy(update={"reasons": reasons})
         reasons = list(selected.reasons)
         if request.provider_override:
             reasons.append("manual provider override honored")
@@ -299,7 +328,14 @@ class PersonalAIRouter:
                 "answer_consequence": requirements.consequence,
                 "freshness_requirement": requirements.freshness,
                 "citations_required": requirements.citations_required,
+                "latency_preference": requirements.latency_preference,
+                "cost_preference": requirements.cost_preference,
+                "mutation_authority": requirements.mutation_authority,
+                "deterministic_solvable": requirements.deterministic_solvable,
+                "likely_tool_solvable": requirements.likely_tool_solvable,
                 "provider_discovery_receipt_id": snapshot.discovery_receipt_id,
+                "discovery_source": snapshot.discovery_source,
+                "discovery_age_ms": snapshot.discovery_age_ms,
                 "model_execution_location": snapshot.execution_location,
                 "model_locality_evidence": list(snapshot.model_locality_evidence),
             },
@@ -349,6 +385,8 @@ class PersonalAIRouter:
             "tool_fit": _tool_fit(snapshot, request.requested_tools),
             "latency_fit": _latency_fit(snapshot, complexity, demanding=demanding),
             "historical_success": snapshot.historical_success_signal,
+            "observed_latency": snapshot.observed_latency_signal,
+            "cancellation_rate": snapshot.cancellation_rate_signal,
             "quota_pressure": -snapshot.quota_pressure,
             "provider_priority": snapshot.provider_priority,
             "readiness_evidence": _readiness_evidence(snapshot),
@@ -357,6 +395,11 @@ class PersonalAIRouter:
             "factual_sensitivity_fit": factual_points,
             "freshness_fit": freshness_points,
             "citation_requirement_fit": citation_points,
+            "deterministic_fit": (
+                24
+                if requirements.deterministic_solvable and snapshot.provider_id == "deterministic"
+                else (-20 if snapshot.provider_id == "deterministic" else 0)
+            ),
         }
         rejection = _rejection_reason(
             request=request,
@@ -365,6 +408,7 @@ class PersonalAIRouter:
             capability_role=capability_role,
             risk=risk,
             local_only=local_only,
+            requirements=requirements,
         )
         reasons = [
             f"execution boundary: {'discovered' if snapshot.available else 'unavailable'}",
@@ -390,11 +434,14 @@ class PersonalAIRouter:
             ("tool fit", components["tool_fit"]),
             ("latency fit", components["latency_fit"]),
             ("historical success", components["historical_success"]),
+            ("observed latency", components["observed_latency"]),
+            ("cancellation rate", components["cancellation_rate"]),
             ("quota pressure", components["quota_pressure"]),
             ("provider priority", components["provider_priority"]),
             ("model economy", components["model_economy"]),
             ("freshness requirement", components["freshness_fit"]),
             ("citation requirement", components["citation_requirement_fit"]),
+            ("deterministic fit", components["deterministic_fit"]),
         ):
             if value:
                 reasons.append(f"{label}: {value:+d}")
@@ -488,7 +535,7 @@ def classify_complexity(
     reasoning_effort: str = "medium",
 ) -> Complexity:
     text = prompt.lower()
-    if _is_lightweight_task(prompt):
+    if _is_lightweight_task(prompt) or _is_bounded_explanation(prompt):
         return "simple"
     if reasoning_effort in {"high", "xhigh"}:
         return "complex"
@@ -529,6 +576,24 @@ def classify_requirements(
         prompt, text, task_class, complexity, domain, factual, cognitive_policy
     )
     consequence = _classify_consequence(text, task_class, domain)
+    lightweight = _is_lightweight_task(prompt) or _is_bounded_explanation(prompt)
+    from opencobalt.personal_ai.deterministic import try_deterministic
+
+    deterministic_solvable = try_deterministic(prompt) is not None
+    if lightweight and domain == "general" and factual != "high":
+        latency_preference: Literal["low", "standard", "high"] = "low"
+        cost_preference: Literal["minimize", "balanced", "quality_first"] = "minimize"
+    elif reasoning == "high" or factual == "high":
+        latency_preference = "high"
+        cost_preference = "quality_first"
+    else:
+        latency_preference = "standard"
+        cost_preference = "balanced"
+    mutation_authority: Literal["none", "staged", "explicit"] = "none"
+    if task_class in {"repository_execution", "coding"} and complexity != "simple":
+        mutation_authority = "staged"
+    if task_class in {"security_review", "consequential_decision"}:
+        mutation_authority = "explicit"
     return TaskRequirements(
         domain=domain,
         factual_sensitivity=factual,
@@ -536,6 +601,11 @@ def classify_requirements(
         consequence=consequence,
         freshness=freshness,
         citations_required=citations_required,
+        latency_preference=latency_preference,
+        cost_preference=cost_preference,
+        mutation_authority=mutation_authority,
+        deterministic_solvable=deterministic_solvable,
+        likely_tool_solvable=task_class in {"tool_operation", "data_analysis"},
     )
 
 
@@ -583,9 +653,14 @@ def _rejection_reason(
     capability_role: CapabilityRole,
     risk: RiskClassification,
     local_only: bool,
+    requirements: TaskRequirements | None = None,
 ) -> str | None:
     if not snapshot.available:
         return snapshot.unavailable_reason or "provider is unavailable"
+    if snapshot.provider_id == "deterministic" and not (
+        requirements is not None and requirements.deterministic_solvable
+    ):
+        return "deterministic provider is only eligible for closed-form micro-tasks"
     if local_only and (not snapshot.local or snapshot.requires_network):
         return "strict local-only policy excludes network/cloud provider"
     if request.provider_override and snapshot.provider_id != request.provider_override:
@@ -913,6 +988,42 @@ def _is_lightweight_task(prompt: str) -> bool:
     return False
 
 
+def _is_bounded_explanation(prompt: str) -> bool:
+    """Short low-stakes explanations should not consume strong_reasoning.
+
+    Structural: length, explanation framing, and an explicit brevity bound.
+    Domain-sensitive prompts are excluded even when they are short.
+    """
+    text = prompt.strip().lower()
+    if not text:
+        return False
+    word_count = len(text.split())
+    if word_count > 24:
+        return False
+    if _contains(
+        text,
+        "pharmacology",
+        "pathophysiology",
+        "diagnosis",
+        "patient",
+        "dosage",
+        "contraindication",
+        "legal",
+        "hypothesis",
+        "architecture",
+        "mechanism",
+        "randomized",
+    ):
+        return False
+    if not re.search(r"\b(explain|what is|what's|difference between)\b", text):
+        return False
+    if re.search(r"\bin\s+\d+\s+sentences?\b", text) or _contains(
+        text, "briefly", "in short", "in one paragraph", "three sentences"
+    ):
+        return True
+    return False
+
+
 def _classify_domain(text: str, task_class: TaskClass) -> DomainClass:
     if task_class == "personal_reflection":
         return "personal"
@@ -1010,7 +1121,7 @@ def _classify_reasoning_quality(
     factual: SensitivityLevel,
     cognitive_policy: str,
 ) -> QualityNeed:
-    if _is_lightweight_task(prompt):
+    if _is_lightweight_task(prompt) or _is_bounded_explanation(prompt):
         return "low"
     if complexity == "simple" and domain == "general" and factual != "high":
         return "low"
@@ -1126,6 +1237,8 @@ def classify_capability_role(
         complexity == "simple" and requirements.reasoning_quality == "low"
     ):
         return "cheap_local"
+    if _is_bounded_explanation(prompt) and requirements.domain == "general":
+        return "fast_general"
     if (
         requirements.reasoning_quality == "high"
         or requirements.domain in {"scientific", "medical", "philosophical", "legal"}

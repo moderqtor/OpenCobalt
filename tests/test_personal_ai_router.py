@@ -759,3 +759,40 @@ def test_evidence_questions_classify_as_research():
 
 def test_reflective_prompts_classify_as_personal_reflection():
     assert classify_task("I miss someone, and I am unsure why.") == "personal_reflection"
+
+
+def test_bounded_explanations_stay_cheap_instead_of_strong_reasoning():
+    prompts = (
+        "Explain the difference between TCP and UDP in three sentences.",
+        "What's the difference between RAM and storage briefly?",
+        "Explain HTTP in three sentences.",
+        "What is a mutex in one paragraph?",
+    )
+    for prompt in prompts:
+        plan = PersonalAIRouter().route(
+            _request(prompt, cognitive_policy="deep_analysis"),
+            [_strong_cloud(), _cheap_local()],
+        )
+        assert plan.task_complexity == "simple", prompt
+        assert plan.requirements.reasoning_quality == "low", prompt
+        assert plan.requirements.factual_sensitivity == "low", prompt
+        assert plan.capability_role in {"cheap_local", "fast_general"}, prompt
+        assert plan.record.selected_provider == "ollama", prompt
+
+
+def test_routing_matrix_keeps_high_stakes_and_light_tasks_apart():
+    cases = (
+        ("What is 8 plus 9?", "cheap_local"),
+        ("Explain the difference between TCP and UDP in three sentences.", "cheap_local"),
+        ("Walk through the tradeoffs of a consensus protocol across partitions and failure modes", "strong_reasoning"),
+        (
+            "What acetaminophen dosage and contraindications apply for an adult patient with fever?",
+            "strong_reasoning",
+        ),
+    )
+    for prompt, role in cases:
+        plan = PersonalAIRouter().route(
+            _request(prompt, cognitive_policy="deep_analysis"),
+            [_strong_cloud(), _cheap_local()],
+        )
+        assert plan.capability_role == role, prompt

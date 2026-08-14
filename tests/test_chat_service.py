@@ -159,11 +159,12 @@ def test_engine_backed_mock_chat_persists_messages_route_execution_and_receipt(t
         )
     )
 
-    assert [event.event_type for event in events[:3]] == [
-        "request_accepted",
-        "route_selected",
-        "execution_started",
-    ]
+    types = [event.event_type for event in events]
+    assert types[:2] == ["request_accepted", "phase_changed"]
+    assert types.index("route_selected") > types.index("phase_changed")
+    assert types.index("execution_started") > types.index("route_selected")
+    assert types.index("provider_started") > types.index("execution_started")
+    assert types.index("provider_started") < types.index("completed")
     assert any(event.event_type == "text_delta" for event in events)
     assert events[-1].event_type == "completed"
     messages = store.list_messages(conversation.conversation_id)
@@ -193,11 +194,10 @@ def test_engine_backed_mock_chat_persists_messages_route_execution_and_receipt(t
     assert execution.status == "complete"
     assert execution.work_receipt_id == route.receipt_id
     persisted_events = store.list_stream_events(execution.execution_id)
-    assert [event.event_type for event in persisted_events[:3]] == [
-        "request_accepted",
-        "route_selected",
-        "execution_started",
-    ]
+    persisted_types = [event.event_type for event in persisted_events]
+    assert persisted_types[0] == "route_selected"
+    assert "execution_started" in persisted_types
+    assert "provider_started" in persisted_types
     assert persisted_events[-1].event_type == "completed"
 
 
@@ -487,7 +487,7 @@ def test_settings_default_local_only_reaches_discovery_and_execution_boundary(tm
         "catalog_reported_sha256_digest",
     ]
     assert any("model discovery receipt: receipt-discovery" in reason for reason in route.reasons)
-    assert discovery_calls == [True, True]
+    assert discovery_calls == [True]
     assert engine.calls[0][1]["runtime"] == "ollama-generate"
 
 
@@ -605,9 +605,13 @@ def test_durable_cancellation_stops_mock_stream_and_marks_execution(tmp_path):
         )
     )
     assert next(stream).event_type == "request_accepted"
-    assert next(stream).event_type == "route_selected"
-    started = next(stream)
-    assert started.event_type == "execution_started"
+    assert next(stream).event_type == "phase_changed"
+    started = None
+    for event in stream:
+        if event.event_type == "execution_started":
+            started = event
+            break
+    assert started is not None
 
     assert service.cancel(started.execution_id) is True
     assert service.cancel(started.execution_id) is False
@@ -618,9 +622,9 @@ def test_durable_cancellation_stops_mock_stream_and_marks_execution(tmp_path):
     assert service.cancel("missing-execution") is False
 
 
-@pytest.mark.parametrize("yield_count", [1, 2])
+@pytest.mark.parametrize("stop_type", ["execution_started", "provider_started"])
 def test_abandon_before_execution_started_creates_durable_terminal_state(
-    tmp_path, yield_count
+    tmp_path, stop_type
 ):
     service, store, _ = _real_mock_service(tmp_path)
     conversation = service.create_conversation(title="Disconnected stream")
@@ -634,8 +638,10 @@ def test_abandon_before_execution_started_creates_durable_terminal_state(
         )
     )
     last = None
-    for _ in range(yield_count):
-        last = next(stream)
+    for event in stream:
+        last = event
+        if event.event_type == stop_type:
+            break
     assert last is not None and last.execution_id is not None
 
     assert service.abandon(last.execution_id) is True
