@@ -115,10 +115,10 @@ class ExecutionStore:
             conn.executescript(_SCHEMA)
             self._migrate(conn)
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        from opencobalt.core.sqlite import closing_sqlite
+
+        return closing_sqlite(self.db_path)
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
         columns = {

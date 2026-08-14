@@ -6,7 +6,6 @@ directly on SQLite to keep observability local-first and offline.
 
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -79,10 +78,10 @@ class ObservabilitySession:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        from opencobalt.core.sqlite import closing_sqlite
+
+        return closing_sqlite(self._db_path)
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
