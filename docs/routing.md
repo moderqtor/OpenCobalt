@@ -33,10 +33,16 @@ unit conversion can execute in-process through the `deterministic` provider.
 Medical, scientific, legal, and difficult multi-step reasoning keep
 `strong_reasoning`.
 
-The router classifies from the prompt, cognitive policy, attached project
-path, and privacy/local-only flags. Mutating repo work becomes `coding_agent`
-only when a conversation `project_path` is set. Without that path, the same
-text does not grant coding-agent execution.
+The router classifies **task family from the prompt**, not from cognitive
+policy. An `implementation` policy may change depth or style. It does not
+turn "Explain DNS caching" into a coding request. Manual provider or model
+override is an execution constraint: it does not change task family,
+authority, risk, or verification strategy.
+
+The router also reads attached project path and privacy/local-only flags.
+Mutating repo work becomes `coding_agent` only when a conversation
+`project_path` is set. Without that path, the same text does not grant
+coding-agent execution.
 
 ## Scoring
 
@@ -62,6 +68,7 @@ Components that are actually populated today include:
 | observed_latency | Bounded signal from recent execution durations, not a quality score |
 | cancellation_rate | Bounded penalty when recent attempts were cancelled often |
 | deterministic_fit | Closed-form micro-tasks prefer the in-process deterministic provider |
+| billing_fit | Local or subscription-backed near-zero marginal cost vs per-call API billing |
 | provider_priority | User settings order |
 | readiness_evidence | Discovery evidence, not inferred availability |
 | reasoning_quality_fit | Reasoning effort vs provider strength |

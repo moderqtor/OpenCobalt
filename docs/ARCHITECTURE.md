@@ -68,8 +68,9 @@ ui/                      React workspace and optional Tauri wrapper
    OpenCobalt work from provider runtime.
 3. `PersonalAIRouter` classifies requirements and scores an immutable
    provider snapshot. Closed-form arithmetic and unit conversion may use the
-   in-process `deterministic` provider. Catalog discovery is TTL-cached so a
-   single request does not relaunch `agy models`.
+   Catalog discovery is TTL-cached so a single request does not relaunch
+   `agy models`. Task family comes from the prompt, not from cognitive policy.
+   `GET /api/ready` is the UI launcher probe and does not scan the repository.
 4. After route selection the route leaves `planned` and the stream emits
    `provider_started` before blocking `execute()`. A terminal pre-execution
    failure is durable `failed` or `blocked`, never a hanging `planned` row.
