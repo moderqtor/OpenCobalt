@@ -814,9 +814,9 @@ class ChatService:
                 started_at=_now(),
             )
             self.store.save_execution(current)
-            attempt_token = cancellation or CancellationToken()
+            attempt_cancel = cancellation or CancellationToken()
             with self._cancellation_lock:
-                self._cancellations[current.execution_id] = attempt_token
+                self._cancellations[current.execution_id] = attempt_cancel
 
             if attempt_index == 0:
                 selected = emit(
@@ -905,7 +905,7 @@ class ChatService:
             attempt_error: ProviderError | None = None
             terminal_type: str | None = None
             try:
-                provider_events = provider.stream(provider_request, attempt_token)
+                provider_events = provider.stream(provider_request, attempt_cancel)
                 for provider_event in provider_events:
                     attempt_receipt = provider_event.receipt_id or attempt_receipt
                     if provider_event.event_type == "started":
