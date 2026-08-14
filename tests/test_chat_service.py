@@ -270,6 +270,41 @@ def test_task_specific_verifier_is_not_claimed_when_only_integrity_was_checked(t
     assert route.metadata["verification"]["integrity_check"] == "passed"
 
 
+def test_format_constraint_outranks_persona_and_implementation_policy(tmp_path):
+    service, store, _ = _real_mock_service(tmp_path)
+    conversation = service.create_conversation(title="Format")
+    captured = {}
+    provider = service.providers.get("mock")
+    original = provider.execute
+
+    def wrapped(request, cancellation=None):
+        captured["policy"] = request.system_policy
+        captured["message"] = request.message
+        return original(request, cancellation)
+
+    provider.execute = wrapped
+    list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Explain why DNS caching improves performance in three sentences.",
+                cognitive_policy="implementation",
+                provider_override="mock",
+            )
+        )
+    )
+    policy = captured["policy"]
+    assert captured["message"].startswith("Explain why DNS caching")
+    assert policy.index("User output constraint") < policy.index("OpenCobalt interaction policy")
+    assert "admonition blocks" in policy
+    assert "answer-only request" in policy
+    assert "tests, diffs" in policy
+    route = store.list_routes(conversation_id=conversation.conversation_id)[0]
+    assert route.task_class == "general_reasoning"
+    assert route.verification_strategy != "tests_and_diff"
+    assert route.autonomy_level == "answer_only"
+
+
 def test_development_mock_is_used_only_when_no_real_provider_is_routable(tmp_path):
     mock_service, mock_store, _ = _real_mock_service(tmp_path / "mock-only")
     conversation = mock_service.create_conversation(title="Automatic development route")

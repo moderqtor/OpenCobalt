@@ -34,6 +34,7 @@ def _provider(
     authentication_state: str = "unknown",
     model_id: str | None = None,
     capability_roles: frozenset[str] = frozenset(),
+    billing_classification: str = "unknown",
 ) -> ProviderSnapshot:
     return ProviderSnapshot(
         provider_id=provider_id,
@@ -55,6 +56,7 @@ def _provider(
         readiness_state=readiness_state,
         authentication_state=authentication_state,
         capability_roles=capability_roles,
+        billing_classification=billing_classification,
     )
 
 
@@ -455,6 +457,8 @@ def _cheap_local(**changes: object) -> ProviderSnapshot:
         latency_category="low",
         capabilities=frozenset({"chat", "coding", "research", "file_analysis"}),
         authentication_state="not_required",
+        billing_classification="local",
+        capability_roles=frozenset({"cheap_local", "fast_general"}),
     )
     values.update(changes)
     return _provider(**values)
@@ -470,6 +474,8 @@ def _strong_cloud(**changes: object) -> ProviderSnapshot:
         latency_category="high",
         capabilities=frozenset({"chat", "coding", "research", "file_analysis"}),
         authentication_state="unknown",
+        billing_classification="subscription_backed",
+        capability_roles=frozenset({"fast_general", "strong_reasoning", "research"}),
     )
     values.update(changes)
     return _provider(**values)

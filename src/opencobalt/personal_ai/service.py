@@ -50,6 +50,7 @@ from .router import (
     classify_requirements,
     classify_risk,
     classify_task,
+    has_explicit_format_constraint,
     resolve_persona_for_provider,
 )
 from .store import PersonalAIStore
@@ -726,7 +727,7 @@ class ChatService:
         if not ordered:
             raise RuntimeError("selected route has no eligible candidate")
 
-        if cognitive_policy in {"research", "research_synthesis"}:
+        if route.task_class == "research":
             yield from self._execute_research_route(
                 request=request,
                 routing_request=routing_request,
@@ -1906,6 +1907,7 @@ class ChatService:
                         display_name=getattr(record, "display_name", None),
                         model_family=getattr(record, "family", None),
                         profile_evidence=getattr(record, "profile_evidence", None),
+                        billing_classification=profile.billing_classification,
                     )
                 )
 
@@ -2115,15 +2117,42 @@ class ChatService:
         history = "\n".join(
             f"{message.role.title()}: {message.content[:3000]}" for message in prior
         )
-        sections = [
-            "OpenCobalt interaction policy:",
-            persona_policy,
-            "",
-            "Execution constraints:",
-            "Answer the request only. Do not modify files, run tools, or take external actions unless the route explicitly selected those capabilities and the user explicitly requested the action.",
-            f"Privacy classification: {route.privacy_classification}",
-            f"Local-only: {bool(route.metadata.get('local_only', False))}",
-        ]
+        task_class = route.task_class
+        answer_only = route.autonomy_level == "answer_only" and task_class not in {
+            "coding",
+            "repository_execution",
+            "tool_operation",
+        }
+        sections: list[str] = []
+        if has_explicit_format_constraint(user_message.content):
+            sections.extend(
+                [
+                    "User output constraint (highest priority):",
+                    "Obey the user's requested length and format exactly.",
+                    "Do not add headings, admonition blocks such as [!NOTE], preamble, or assistant pleasantries.",
+                    "Do not open with an offer to help. The requested format outranks persona warmth, verbosity, and cognitive-policy style.",
+                    "",
+                ]
+            )
+        sections.extend(
+            [
+                "OpenCobalt interaction policy:",
+                persona_policy,
+                "",
+                "Execution constraints:",
+            ]
+        )
+        if answer_only:
+            sections.append(
+                "This is an answer-only request. Do not produce tests, diffs, implementation plans, or engineering-report scaffolding unless the user asked for those."
+            )
+        sections.extend(
+            [
+                "Answer the request only. Do not modify files, run tools, or take external actions unless the route explicitly selected those capabilities and the user explicitly requested the action.",
+                f"Privacy classification: {route.privacy_classification}",
+                f"Local-only: {bool(route.metadata.get('local_only', False))}",
+            ]
+        )
         if route.persona_provider_mismatch:
             sections.append(f"Persona/provider disclosure: {route.persona_provider_mismatch}")
         from opencobalt.personal_ai.builtin_skills import skill_policy_addendum
@@ -2147,14 +2176,19 @@ class ChatService:
             ]
         records = [
             record
-            for record in (
-                self.store.get_attachment(item) for item in attachment_ids
-            )
+            for record in (self.store.get_attachment(item) for item in attachment_ids)
             if record is not None
         ]
         document_context = render_attachment_context(records, user_message.content)
         if document_context:
             sections.extend(["", document_context])
+        if has_explicit_format_constraint(user_message.content):
+            sections.extend(
+                [
+                    "",
+                    "Reminder: the user's length and format constraint still has priority over the policy text above.",
+                ]
+            )
         return "\n".join(sections)
 
     def _next_stream_sequence(self, execution_id: str) -> int:
