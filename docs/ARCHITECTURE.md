@@ -62,15 +62,25 @@ ui/                      React workspace and optional Tauri wrapper
 ## Chat lifecycle
 
 1. The user sends a message in a durable conversation.
-2. `ChatService` classifies the request and asks `PersonalAIRouter` for a
-   route over an immutable provider snapshot.
-3. Research cognitive policies divert into `ResearchOrchestrator`.
-4. Mutating repo work with an attached `project_path` becomes a coding
+2. `ChatService` records inspectable phases: interpreting, checking
+   capabilities, routing, starting provider, running, verifying, persisting,
+   then complete, failed, cancelled, or blocked. Phase timings distinguish
+   OpenCobalt work from provider runtime.
+3. `PersonalAIRouter` classifies requirements and scores an immutable
+   provider snapshot. Closed-form arithmetic and unit conversion may use the
+   in-process `deterministic` provider. Catalog discovery is TTL-cached so a
+   single request does not relaunch `agy models`.
+4. After route selection the route leaves `planned` and the stream emits
+   `provider_started` before blocking `execute()`. A terminal pre-execution
+   failure is durable `failed` or `blocked`, never a hanging `planned` row.
+5. Research cognitive policies divert into `ResearchOrchestrator`.
+6. Mutating repo work with an attached `project_path` becomes a coding
    Mission and, when eligible, Cursor ACP execution in a staged workspace.
-5. Ordinary Chat is answer-only. Tool and skill execution is rejected at the
-   API boundary.
-6. Successful or failed execution is recorded as a route, optional receipt,
-   and lifecycle events. There is no silent fallback.
+7. Ordinary Chat is answer-only. Tool execution is rejected at the API
+   boundary. Built-in skills are prompt contracts recorded on the route.
+8. Successful or failed execution is recorded as a route, optional receipt,
+   and lifecycle events. Fallback happens only when the user enables it, the
+   next candidate is a different provider, and the failure category allows it.
 
 Simple questions do not create Missions. Research and coding-agent work do.
 
@@ -87,6 +97,7 @@ table as the Chat architecture.
 
 | Provider | Chat | Research LLM roles | Coding |
 |---|---|---|---|
+| Deterministic local | Closed-form arithmetic and unit conversion only | No | No |
 | Ollama | Executes when loopback local-catalog evidence passes | Eligible | No |
 | Google Antigravity | Executes through isolated print | Eligible | `coding_analysis` advertised; no staging path |
 | Cursor ACP | Not answer-only Chat | No | `coding_analysis` and `coding_agent` |

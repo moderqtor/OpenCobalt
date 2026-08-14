@@ -22,7 +22,8 @@ git and [history/](history/README.md).
 - UI and desktop polish. The web UI is canonical; Tauri is a development
   wrapper.
 - Outcome-weighted routing using recorded execution history more strongly
-  than the current bounded heuristic.
+  than the current bounded heuristic. Success, latency, and cancellation
+  signals are now recorded; they are not a learned router.
 
 ## Later, if justified
 
