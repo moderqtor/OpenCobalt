@@ -86,3 +86,34 @@ front door.
 Final reports should be plain technical language: branch, base SHA, test
 baseline, worktree cleanliness, push/merge state, local commits, and remaining
 risk. Do not use branding slogans.
+
+## Cursor Cloud specific instructions
+
+Durable, non-obvious notes for working in the Cloud Agent environment. Standard
+commands live in `README.md`, `pyproject.toml`, and this file's quality gates;
+do not duplicate them here.
+
+- Python deps live in a project venv at `.venv` managed by `uv`. `uv` is on
+  `PATH` (added to `~/.bashrc`). Run the gates with `uv run ...` as written in
+  the gates section, or `source .venv/bin/activate` first. Do not use the
+  system `pip`; it is not the project environment.
+- The venv is Python 3.11 (the CI target and the repo minimum). Tests,
+  `ruff`, and `public-check` all pass from this venv.
+- Run everything from the repository root so the CLI and UI share
+  `.opencobalt/ledger.db` (the local SQLite source of truth).
+- `opencobalt ui` starts FastAPI on `127.0.0.1:8000` and the Vite dev server
+  on `:5173`, then blocks in the foreground; run it under `tmux` for
+  background use and pass `--no-browser` in headless environments (it tries to
+  open a browser otherwise).
+- Vite binds IPv6 loopback: reach the UI at `http://localhost:5173`, not
+  `http://127.0.0.1:5173` (IPv4 refuses). The API is reachable on either
+  `127.0.0.1:8000` or `localhost:8000`.
+- End-to-end Chat testing: use the built-in deterministic `mock` provider.
+  Real CLI providers (Claude Code, Codex) fail closed for answer-only Chat and
+  Gemini is discovery-only, so with no authenticated provider Automatic routing
+  selects `mock` (it echoes `Mock response: <message>` and still produces a
+  real route, WorkReceipt, and verification record).
+- The `always_ask` approval policy blocks Chat execution (no approve/resume
+  lifecycle exists yet); keep the default policy when testing Chat.
+- If frontend files change, also run `npm run build --prefix ui` (Vite build)
+  as noted in the gates.
