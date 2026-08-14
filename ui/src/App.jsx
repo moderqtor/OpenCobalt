@@ -313,7 +313,7 @@ function PromotionCard({ changeset, onApply, onReject, busy = false }) {
   </article>;
 }
 
-function MessageBubble({ message, route, onInspect, events = [], approvals = [], onAllowApproval, onDenyApproval, onApplyChangeset, onRejectChangeset, approvalBusy = false }) {
+function MessageBubble({ message, route, onInspect, events = [], approvals = [], onAllowApproval, onDenyApproval, onApplyChangeset, onRejectChangeset, approvalBusy = false, onCompare, compareBusy = false }) {
   const assistant = message.role === "assistant";
   const status = message.status === "streaming" ? streamingStatus(message) : MESSAGE_STATUS[message.status];
   const changeset = message.metadata && typeof message.metadata === "object" ? message.metadata.changeset : null;
@@ -322,6 +322,7 @@ function MessageBubble({ message, route, onInspect, events = [], approvals = [],
       <span>{assistant ? "OpenCobalt" : "You"}</span>
       <time dateTime={message.created_at || undefined}>{relativeTime(message.created_at)}</time>
       {status && <span className={`message-status ${status[1]}`} role="status">{message.status === "streaming" && <i aria-hidden="true" />}{status[0]}</span>}
+      {assistant && onCompare && <button type="button" className="text-button" onClick={onCompare} disabled={compareBusy}>{compareBusy ? "Comparing…" : "Compare with previous"}</button>}
     </div>
     <Markdown content={message.content} />
     {assistant && route && <RouteSpine route={route} onInspect={onInspect} />}
@@ -344,6 +345,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const [routeCache, setRouteCache] = useState({});
   const [routeHydrationErrors, setRouteHydrationErrors] = useState({});
   const [conversationOpen, setConversationOpen] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(() => localStorage.getItem("opencobalt.railCollapsed") === "1");
   const [modelCatalog, setModelCatalog] = useState([]);
   const [modelError, setModelError] = useState(null);
   const [comparison, setComparison] = useState({ loading: false, error: null, data: null });
@@ -372,7 +374,17 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     cognitivePolicy: "deep_analysis",
     reasoningEffort: "medium",
   });
-  const closeConversations = useCallback(() => setConversationOpen(false), []);
+  const closeConversations = useCallback(() => {
+    setConversationOpen(false);
+    setRailCollapsed(true);
+  }, []);
+  const openConversations = useCallback(() => {
+    setConversationOpen(true);
+    setRailCollapsed(false);
+  }, []);
+  useEffect(() => {
+    localStorage.setItem("opencobalt.railCollapsed", railCollapsed ? "1" : "0");
+  }, [railCollapsed]);
 
   useEffect(() => {
     if (!settingsReady || settingsAppliedRef.current) return;
@@ -872,12 +884,12 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       : `OpenCobalt is ${streamRoute?.metadata?.lifecycle?.phase ? label(streamRoute.metadata.lifecycle.phase) : "working on"} the current request${executionRef.current ? ` with execution ${executionRef.current}` : ""}.`
     : notice?.text || "";
 
-  return <div className="chat-layout">
+  return <div className={`chat-layout ${railCollapsed ? "rail-collapsed" : ""}`}>
     {conversationOpen && <button type="button" className="drawer-backdrop conversation-backdrop" aria-label="Close conversations" onClick={closeConversations} />}
     <ConversationRail conversations={conversations} selectedId={selectedId} onSelect={setSelectedId} onCreate={createConversation} isCreating={creating} disabled={interactionBusy} mobileOpen={conversationOpen} onClose={closeConversations} />
     <section className="chat-main" aria-labelledby="chat-title">
       <header className="chat-header">
-        <div className="chat-heading"><IconButton className="conversation-open" label="Open conversations" aria-expanded={conversationOpen} aria-controls="conversation-navigation" onClick={() => setConversationOpen(true)}><MessageSquareText size={17} /></IconButton><div><h1 id="chat-title">{selected?.title || "New conversation"}</h1><p className="chat-status">{activePersona?.name || activePersona?.display_name || controls.personaId || "persona"} · {routeHint} · {statusHint}</p>{selected?.project_path ? <p className="project-path" title={selected.project_path}>{selected.project_path}</p> : null}</div></div>
+        <div className="chat-heading"><IconButton className="conversation-open" label="Open conversations" aria-expanded={!railCollapsed || conversationOpen} aria-controls="conversation-navigation" onClick={openConversations}><MessageSquareText size={17} /></IconButton><div><h1 id="chat-title">{selected?.title || "New conversation"}</h1><p className="chat-status">{activePersona?.name || activePersona?.display_name || controls.personaId || "persona"} · {routeHint} · {statusHint}</p>{selected?.project_path ? <p className="project-path" title={selected.project_path}>{selected.project_path}</p> : null}</div></div>
       </header>
       <div ref={scrollRef} className="chat-scroll" onScroll={(event) => {
         const node = event.currentTarget;
@@ -891,10 +903,10 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
           const matchingStreamRoute = message.route_id && streamRoute?.route_id === message.route_id ? streamRoute : null;
           const hydratedRoute = message.route_id ? routeCache[message.route_id] : null;
           const route = message.route_id ? { route_id: message.route_id, receipt_id: message.receipt_id || message.work_receipt_id, verification_status: message.verification_status, provenance_error: Boolean(routeHydrationErrors[message.route_id]), ...(hydratedRoute || {}), ...(matchingStreamRoute || {}) } : null;
-          return <MessageBubble key={messageId} message={message} route={route} events={messageId === "local-stream" ? executionEvents : []} onInspect={() => route && openRoute(route.route_id, route)} onAllowApproval={(item) => decideApproval(item, true)} onDenyApproval={(item) => decideApproval(item, false)} onApplyChangeset={(item) => decidePromotion(item, true)} onRejectChangeset={(item) => decidePromotion(item, false)} approvalBusy={Boolean(approvalBusyId)} />;
+          const lastComparableId = comparableResponses.at(-1) && messageIdOf(comparableResponses.at(-1));
+          return <MessageBubble key={messageId} message={message} route={route} events={messageId === "local-stream" ? executionEvents : []} onInspect={() => route && openRoute(route.route_id, route)} onAllowApproval={(item) => decideApproval(item, true)} onDenyApproval={(item) => decideApproval(item, false)} onApplyChangeset={(item) => decidePromotion(item, true)} onRejectChangeset={(item) => decidePromotion(item, false)} approvalBusy={Boolean(approvalBusyId)} onCompare={comparableResponses.length >= 2 && messageId === lastComparableId ? compareLastTwo : undefined} compareBusy={comparison.loading} />;
         })}
         {pendingApprovals.length > 0 && <div className="approval-stack">{pendingApprovals.map((approval) => <ApprovalCard key={approval.request_id || approval.step_id} approval={approval} onAllow={(item) => decideApproval(item, true)} onDeny={(item) => decideApproval(item, false)} onApply={(item) => decidePromotion(item, true)} onReject={(item) => decidePromotion(item, false)} busy={Boolean(approvalBusyId)} />)}</div>}
-        {comparableResponses.length >= 2 && <div className="compare-action"><button type="button" className="button secondary" onClick={compareLastTwo} disabled={comparison.loading}>{comparison.loading ? "Comparing…" : "Compare last two responses"}</button><span>Uses each response’s stored message and independent route record.</span></div>}
         {comparison.error && <div className="compare-state"><ErrorState error={comparison.error} title="The responses could not be compared." /></div>}
         {comparison.data && <section className="comparison" aria-labelledby="comparison-title"><div className="comparison-heading"><h2 id="comparison-title">Stored response comparison</h2><button type="button" className="text-button" onClick={() => setComparison({ loading: false, error: null, data: null })}>Close</button></div><div className="comparison-grid">{comparison.data.map((entry, index) => {
         const comparedMessage = entry.message || {};
@@ -1362,6 +1374,7 @@ function CoreUnavailable({ error, retry, title = "Local API unavailable" }) {
 export default function App() {
   const [page, setPage] = useState(initialPage);
   const [navOpen, setNavOpen] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(() => localStorage.getItem("opencobalt.navCollapsed") === "1");
   const conversations = useLoad(api.conversations);
   const personas = useLoad(api.personas);
   const providers = useLoad(api.providers);
@@ -1371,6 +1384,9 @@ export default function App() {
   const [inspector, setInspector] = useState({ open: false, route: null, candidates: [], loading: false, error: null, rerunning: false, promoting: false, promoted: null });
   const inspectorRequestRef = useRef(0);
   const closeNavigation = useCallback(() => setNavOpen(false), []);
+  useEffect(() => {
+    localStorage.setItem("opencobalt.navCollapsed", navCollapsed ? "1" : "0");
+  }, [navCollapsed]);
 
   useEffect(() => {
     if (settingsRecord.data) setSettings({ ...DEFAULT_SETTINGS, ...settingsRecord.data });
@@ -1484,10 +1500,11 @@ export default function App() {
         : <SettingsPage settings={settings} onSettingsChange={setSettings} personas={personas.data || []} providers={providers.data || []} reloadPersonas={personas.reload} />;
   }
 
-  return <div className="app-shell">
-    <Navigation active={page} onSelect={selectPage} open={navOpen} onClose={closeNavigation} status={controlPlaneStatus} />
+  return <div className={`app-shell ${navCollapsed ? "nav-collapsed" : ""}`}>
+    <Navigation active={page} onSelect={selectPage} open={navOpen} onClose={closeNavigation} onCollapse={() => setNavCollapsed(true)} status={controlPlaneStatus} />
     {navOpen && <button type="button" className="drawer-backdrop nav-backdrop" aria-label="Close navigation" onClick={closeNavigation} />}
-    <div className="mobile-nav"><IconButton label="Open navigation" aria-expanded={navOpen} aria-controls="primary-navigation" onClick={() => setNavOpen(true)}><PanelRightOpen size={18} /></IconButton><span>OpenCobalt</span><span className="mobile-status"><span className="live-dot" data-state={controlPlaneStatus} aria-hidden="true" /><span className="visually-hidden">{controlPlaneStatus === "connected" ? "Local API connected" : controlPlaneStatus === "unavailable" ? "Local API unavailable" : "Checking local API"}</span></span></div>
+    <div className="mobile-nav"><IconButton label="Open navigation" aria-expanded={navOpen} aria-controls="primary-navigation" onClick={() => { setNavOpen(true); setNavCollapsed(false); }}><PanelRightOpen size={18} /></IconButton><span>OpenCobalt</span><span className="mobile-status"><span className="live-dot" data-state={controlPlaneStatus} aria-hidden="true" /><span className="visually-hidden">{controlPlaneStatus === "connected" ? "Local API connected" : controlPlaneStatus === "unavailable" ? "Local API unavailable" : "Checking local API"}</span></span></div>
+    {navCollapsed && <IconButton className="nav-reopen" label="Open navigation" aria-expanded={!navCollapsed} aria-controls="primary-navigation" onClick={() => setNavCollapsed(false)}><PanelRightOpen size={18} /></IconButton>}
     {coreError && <div className="api-banner" role="alert"><div><strong>Local API degraded</strong><span>{coreError.message}</span></div><button type="button" className="text-button" onClick={retryCore}>Retry core records</button></div>}
     <main className={`app-content ${inspector.open ? "inspector-open" : ""}`}>{view}</main>
     {inspector.open && <><button type="button" className="inspector-backdrop" aria-label="Close route inspector" onClick={closeInspector} /><RouteInspector route={inspector.route} candidates={inspector.candidates} providers={providers.data || []} personas={personas.data || []} onClose={closeInspector} onRerun={rerun} rerunning={inspector.rerunning} onPromote={promote} promoting={inspector.promoting} promoted={inspector.promoted} loading={inspector.loading} error={inspector.error} /></>}
