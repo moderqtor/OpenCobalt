@@ -1096,11 +1096,41 @@ def _is_lightweight_task(prompt: str) -> bool:
         )
     ):
         return True
+    if _is_domain_sensitive_prompt(text):
+        return False
     if _contains(text, "extract", "extraction") and word_count <= 40:
         return True
     if _contains(text, "summarize", "summary") and word_count <= 25:
         return True
     return False
+
+
+def _is_domain_sensitive_prompt(text: str) -> bool:
+    """True when the prompt names scientific, medical, legal, or architectural work."""
+    return _contains(
+        text,
+        "pharmacology",
+        "pathophysiology",
+        "diagnosis",
+        "patient",
+        "dosage",
+        "contraindication",
+        "legal",
+        "hypothesis",
+        "architecture",
+        "mechanism",
+        "randomized",
+        "receptor",
+        "antagonism",
+        "synapse",
+        "synaptic",
+        "neurotransmitter",
+        "circuit-level",
+        "neuron",
+        "enzyme",
+        "clinical",
+        "therapeutic",
+    )
 
 
 def _is_bounded_explanation(prompt: str) -> bool:
@@ -1115,20 +1145,7 @@ def _is_bounded_explanation(prompt: str) -> bool:
     word_count = len(text.split())
     if word_count > 24:
         return False
-    if _contains(
-        text,
-        "pharmacology",
-        "pathophysiology",
-        "diagnosis",
-        "patient",
-        "dosage",
-        "contraindication",
-        "legal",
-        "hypothesis",
-        "architecture",
-        "mechanism",
-        "randomized",
-    ):
+    if _is_domain_sensitive_prompt(text):
         return False
     if not re.search(r"\b(explain|what is|what's|difference between)\b", text):
         return False

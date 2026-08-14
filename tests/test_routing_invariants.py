@@ -126,6 +126,24 @@ def test_routing_matrix_keeps_impossible_authority_combinations_apart():
         ("Plan next week", "planning", "fast_general", "none"),
         ("Review this repository structure", "repository_execution", "fast_general", "none"),
         ("Explain what a mutex is in two sentences.", "general_reasoning", "cheap_local", "none"),
+        (
+            "Explain this software architecture in three sentences.",
+            "general_reasoning",
+            "strong_reasoning",
+            "none",
+        ),
+        (
+            "Summarize the established mechanism of NMDA receptor antagonism across synaptic and circuit-level findings.",
+            "general_reasoning",
+            "strong_reasoning",
+            "none",
+        ),
+        (
+            "Explain what a preliminary injunction is in two sentences.",
+            "general_reasoning",
+            "cheap_local",
+            "none",
+        ),
         ("Implement this function in src/parser.py", "coding", "fast_general", "staged"),
         (
             "Refactor this repository and apply the change",
@@ -185,9 +203,10 @@ def test_routing_matrix_keeps_impossible_authority_combinations_apart():
         assert plan.task_class == task, prompt
         assert plan.capability_role == role, prompt
         assert plan.requirements.mutation_authority == mutation, prompt
-        if task == "general_reasoning" and role in {"cheap_local", "fast_general"}:
+        if task == "general_reasoning":
             assert plan.record.verification_strategy != "tests_and_diff", prompt
             assert plan.record.autonomy_level == "answer_only", prompt
+            assert plan.record.approval_requirements == [], prompt
 
 
 def test_subscription_backed_fast_model_is_not_scored_as_api_billed():
