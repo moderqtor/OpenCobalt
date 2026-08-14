@@ -280,3 +280,82 @@ def test_ui_stops_api_when_vite_exits_after_readiness(tmp_path, monkeypatch) -> 
     assert api_process.terminated is True
     assert api_process.waited is True
     assert vite_process.waited is True
+
+
+def test_ui_keeps_waiting_while_the_api_process_is_alive_past_ten_seconds(
+    tmp_path, monkeypatch
+) -> None:
+    ui_dir = tmp_path / "ui"
+    (ui_dir / "node_modules" / "lucide-react").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("shutil.which", lambda executable: f"/test/{executable}")
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    clock = {"now": 0.0}
+    attempts = {"n": 0}
+
+    class FakeResponse:
+        def close(self):
+            return None
+
+    def probe(url, *args, **kwargs):
+        assert "/api/ready" in url
+        attempts["n"] += 1
+        clock["now"] = float(attempts["n"])
+        if attempts["n"] < 12:
+            raise ConnectionResetError("still importing")
+        return FakeResponse()
+
+    monkeypatch.setattr("time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr(urllib.request, "urlopen", probe)
+
+    class RunningProcess:
+        def __init__(self, interrupt_after_polls=None):
+            self.interrupt_after_polls = interrupt_after_polls
+            self.poll_count = 0
+            self.interrupted = False
+            self.terminated = False
+            self.waited = False
+
+        def poll(self):
+            self.poll_count += 1
+            if (
+                self.interrupt_after_polls is not None
+                and self.poll_count >= self.interrupt_after_polls
+                and not self.interrupted
+            ):
+                self.interrupted = True
+                raise KeyboardInterrupt
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            self.waited = True
+            return 0
+
+        def kill(self):
+            self.terminated = True
+
+    api_process = RunningProcess(interrupt_after_polls=20)
+    vite_process = RunningProcess()
+    processes = iter([api_process, vite_process])
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: next(processes))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "ui",
+            "--no-browser",
+            "--port",
+            str(_unused_loopback_port()),
+            "--api-port",
+            str(_unused_loopback_port()),
+        ],
+        color=False,
+    )
+
+    assert result.exit_code == 0
+    assert "did not become ready within 10 seconds" not in result.output
+    assert "API ready after" in result.output
+    assert api_process.terminated is True

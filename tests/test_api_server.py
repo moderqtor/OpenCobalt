@@ -63,6 +63,23 @@ class TestStatus:
         assert data["test_count_evidence"] == "tests_directory_unavailable"
 
 
+class TestReady:
+    def test_ready_does_not_scan_the_repository(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        def boom(_root, **kwargs):
+            raise AssertionError("readiness must not scan the repository")
+
+        monkeypatch.setattr("opencobalt.api_server.scan_directory", boom)
+        monkeypatch.chdir(tmp_path)
+        response = client.get("/api/ready")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ready"] is True
+        assert data["phase"] == "listening"
+        assert "uptime_ms" in data
+
+
 # ---------------------------------------------------------------------------
 # /api/sessions
 # ---------------------------------------------------------------------------

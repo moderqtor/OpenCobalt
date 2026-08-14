@@ -2176,6 +2176,70 @@ def _stop_ui_processes(processes: list, *, timeout_seconds: float = 3.0) -> None
                 pass
 
 
+_API_READY_TIMEOUT_SECONDS = 45.0
+_API_READY_PROGRESS_SECONDS = 2.0
+
+
+def _wait_for_api_readiness(
+    api_proc,
+    vite_proc,
+    api_port: int,
+    *,
+    timeout_seconds: float = _API_READY_TIMEOUT_SECONDS,
+) -> None:
+    """Wait while the API child is alive. Do not treat slow init as a crash.
+
+    Probes ``/api/ready``, which must not scan the repository or discover
+    providers. Distinguishes a dead child from an initializing listener.
+    """
+    import time as _time
+    import urllib.error
+    import urllib.request
+
+    deadline = _time.monotonic() + timeout_seconds
+    started = _time.monotonic()
+    last_progress = started
+    ready_url = f"http://127.0.0.1:{api_port}/api/ready"
+    while True:
+        if api_proc.poll() is not None:
+            err.print(
+                f"\n[{_RED}]API server failed to start.[/{_RED}]  "
+                f"Run: pip install -e '.[server]'\n"
+            )
+            vite_proc.terminate()
+            raise typer.Exit(1)
+        if vite_proc.poll() is not None:
+            err.print(
+                f"\n[{_RED}]UI server failed to start.[/{_RED}]  "
+                "Run: npm install --prefix ui\n"
+            )
+            api_proc.terminate()
+            raise typer.Exit(1)
+        try:
+            response = urllib.request.urlopen(ready_url, timeout=1)
+            response.close()
+            elapsed_ms = int((_time.monotonic() - started) * 1000)
+            console.print(f"  [dim]API ready after {elapsed_ms} ms.[/dim]")
+            return
+        except (urllib.error.URLError, OSError, TimeoutError):
+            now = _time.monotonic()
+            if now >= deadline:
+                elapsed = int(now - started)
+                err.print(
+                    f"\n[{_RED}]API process is still initializing after {elapsed}s.[/{_RED}]  "
+                    "The child is alive; /api/ready did not respond. "
+                    "This is not treated as a crash. Retry, or inspect the API process.\n"
+                )
+                raise typer.Exit(1) from None
+            if now - last_progress >= _API_READY_PROGRESS_SECONDS:
+                elapsed = int(now - started)
+                console.print(
+                    f"  [dim]API process is alive, waiting for listen ({elapsed}s)...[/dim]"
+                )
+                last_progress = now
+            _time.sleep(0.2)
+
+
 @app.command("ui")
 def ui_shell(
     port: int = typer.Option(5173, "--port", help="Vite dev server port"),
@@ -2248,39 +2312,7 @@ def ui_shell(
         console.print(f"  [{_GREEN}]Dashboard running at[/{_GREEN}]  http://localhost:{port}")
         console.print("  [dim]Ctrl+C to stop.[/dim]\n")
 
-        # Open the browser only after the API is actually ready. Child failures and
-        # transient loopback resets remain bounded and produce a useful CLI error.
-        import urllib.error
-        import urllib.request
-        readiness_deadline = _time.monotonic() + 10
-        while True:
-            if api_proc.poll() is not None:
-                err.print(
-                    f"\n[{_RED}]API server failed to start.[/{_RED}]  "
-                    f"Run: pip install -e '.[server]'\n"
-                )
-                vite_proc.terminate()
-                raise typer.Exit(1)
-            if vite_proc.poll() is not None:
-                err.print(
-                    f"\n[{_RED}]UI server failed to start.[/{_RED}]  "
-                    "Run: npm install --prefix ui\n"
-                )
-                api_proc.terminate()
-                raise typer.Exit(1)
-            try:
-                response = urllib.request.urlopen(
-                    f"http://127.0.0.1:{api_port}/api/status", timeout=1
-                )
-                response.close()
-                break
-            except (urllib.error.URLError, OSError):
-                if _time.monotonic() >= readiness_deadline:
-                    err.print(
-                        f"\n[{_RED}]API server did not become ready within 10 seconds.[/{_RED}]\n"
-                    )
-                    raise typer.Exit(1) from None
-                _time.sleep(0.1)
+        _wait_for_api_readiness(api_proc, vite_proc, api_port)
 
         if not no_browser:
             webbrowser.open(f"http://localhost:{port}")
@@ -2381,7 +2413,7 @@ def desktop_shell(
     _time.sleep(1)
 
     try:
-        urllib.request.urlopen(f"http://127.0.0.1:{api_port}/api/status", timeout=3)
+        urllib.request.urlopen(f"http://127.0.0.1:{api_port}/api/ready", timeout=3)
     except urllib.error.URLError:
         server.should_exit = True
         thread.join(timeout=5)
