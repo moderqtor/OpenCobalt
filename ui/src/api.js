@@ -168,7 +168,7 @@ export const api = {
   resetPersona: (personaId) => request(`/personas/${encodeURIComponent(personaId)}/reset`, jsonOptions("POST")).then((value) => recordOf(value, "persona")),
   providers: () => request("/providers").then((value) => listOf(value, ["providers", "items", "data", "results"])),
   providerHealth: (providerId) => request(`/providers/${encodeURIComponent(providerId)}/health`, jsonOptions("POST")).then((value) => recordOf(value, "provider health")),
-  providerModels: (providerId) => request(`/providers/${encodeURIComponent(providerId)}/models`).then((value) => recordOf(value, "provider models")),
+  providerModels: (providerId, refresh = false) => request(`/providers/${encodeURIComponent(providerId)}/models${refresh ? "?refresh=true" : ""}`).then((value) => recordOf(value, "provider models")),
   updateProviderPreference: (providerId, input) => request(`/providers/${encodeURIComponent(providerId)}/preference`, jsonOptions("PATCH", input)).then((value) => recordOf(value, "provider preference")),
   memory: () => request("/memory").then((value) => listOf(value, ["memories", "memory", "items", "data", "results"])),
   createMemory: (input) => request("/memory", jsonOptions("POST", input)),

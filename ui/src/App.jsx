@@ -228,6 +228,23 @@ const MESSAGE_STATUS = {
   cancel_requested: ["cancel requested", "pending"],
 };
 
+function streamingStatus(message) {
+  const phaseLabel = message.metadata?.phase_label;
+  if (typeof phaseLabel === "string" && phaseLabel.trim()) return [phaseLabel, "streaming"];
+  const phase = message.metadata?.lifecycle?.phase;
+  const labels = {
+    interpreting: "interpreting",
+    checking_capabilities: "checking capabilities",
+    routing: "routing",
+    starting_provider: "starting provider",
+    running: "provider running",
+    verifying: "verifying",
+    persisting: "saving",
+  };
+  if (phase && labels[phase]) return [labels[phase], "streaming"];
+  return MESSAGE_STATUS.streaming;
+}
+
 function ApprovalCard({ approval, onAllow, onDeny, onApply, onReject, busy = false }) {
   if (!approval) return null;
   const promotion = approval.source_type === "coding_promotion";
@@ -298,7 +315,7 @@ function PromotionCard({ changeset, onApply, onReject, busy = false }) {
 
 function MessageBubble({ message, route, onInspect, events = [], approvals = [], onAllowApproval, onDenyApproval, onApplyChangeset, onRejectChangeset, approvalBusy = false }) {
   const assistant = message.role === "assistant";
-  const status = MESSAGE_STATUS[message.status];
+  const status = message.status === "streaming" ? streamingStatus(message) : MESSAGE_STATUS[message.status];
   const changeset = message.metadata && typeof message.metadata === "object" ? message.metadata.changeset : null;
   return <article className={`message ${assistant ? "assistant" : "user"}`}>
     <div className="message-meta">
@@ -575,6 +592,20 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
           : routeId
             ? { route_id: routeId, receipt_id: payload.receipt_id }
             : null;
+        if (type === "phase_changed" || type === "provider_started" || type === "execution_started" || type === "route_selected") {
+          const phaseLabel = payload.phase_label;
+          const lifecycle = payload.lifecycle;
+          setMessages((current) => current.map((message) => message.message_id === "local-stream" ? {
+            ...message,
+            status: "streaming",
+            route_id: routeId || message.route_id,
+            metadata: {
+              ...(message.metadata || {}),
+              phase_label: phaseLabel || message.metadata?.phase_label,
+              lifecycle: lifecycle || message.metadata?.lifecycle,
+            },
+          } : message));
+        }
         if (route) {
           setStreamRoute((current) => ({ ...(current || {}), ...route }));
           setMessages((current) => current.map((message) => message.message_id === "local-stream" ? { ...message, route_id: routeId || message.route_id, receipt_id: payload.receipt_id || route.receipt_id || message.receipt_id } : message));
@@ -666,9 +697,11 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     const cancelledGeneration = cancelledRun?.generation ?? runGenerationRef.current;
     const cancelledController = abortRef.current;
     const executionId = executionRef.current;
+    const requestId = cancelledRun?.requestId;
     const conversationId = cancelledRun?.conversationId || selectedId;
     setMessages((current) => current.map((message) => message.message_id === "local-stream" ? { ...message, status: "cancel_requested", content: message.content || "The local stream was closed." } : message));
-    if (!executionId) {
+    const cancelTarget = executionId || requestId;
+    if (!cancelTarget) {
       cancelledController?.abort();
       setNotice({ tone: "warning", text: "The browser stream closed before an execution ID arrived. If the server accepted the request, disconnect cleanup will finalize it as cancelled." });
       setCancelling(false);
@@ -677,7 +710,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     let cancellationResult = null;
     let cancellationError = null;
     try {
-      cancellationResult = await api.cancelExecution(executionId);
+      cancellationResult = await api.cancelExecution(cancelTarget);
     } catch (error) {
       cancellationError = error;
     } finally {
@@ -814,13 +847,29 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       ? (cancelling ? "cancelling" : "working")
       : "ready";
   const comparableResponses = messages.filter((message) => message.role === "assistant" && message.status === "complete");
-  const executionEvents = streamEvents.filter((event) => ["tool", "tool_event", "tool_started", "tool_completed", "approval_required", "fallback_started", "research_planning", "research_retrieving", "research_extracting", "research_reviewing", "research_synthesizing", "research_complete"].includes(event.event_type));
+  const executionEvents = streamEvents.filter((event) => [
+    "phase_changed",
+    "provider_started",
+    "execution_started",
+    "fallback_started",
+    "tool",
+    "tool_event",
+    "tool_started",
+    "tool_completed",
+    "approval_required",
+    "research_planning",
+    "research_retrieving",
+    "research_extracting",
+    "research_reviewing",
+    "research_synthesizing",
+    "research_complete",
+  ].includes(event.event_type));
   const liveStatus = pendingApprovals.length
     ? "Approval required before Cursor can continue."
     : interactionBusy
     ? cancelling
       ? "OpenCobalt is finalizing cancellation and refreshing the durable record."
-      : `OpenCobalt is routing the current request${executionRef.current ? ` with execution ${executionRef.current}` : ""}.`
+      : `OpenCobalt is ${streamRoute?.metadata?.lifecycle?.phase ? label(streamRoute.metadata.lifecycle.phase) : "working on"} the current request${executionRef.current ? ` with execution ${executionRef.current}` : ""}.`
     : notice?.text || "";
 
   return <div className="chat-layout">
@@ -1091,7 +1140,7 @@ function ProvidersPage({ providers, reloadProviders }) {
     const providerId = provider.provider_id || provider.id;
     setCatalogs((current) => ({ ...current, [providerId]: { loading: true, error: null, models: current[providerId]?.models || [] } }));
     try {
-      const result = await api.providerModels(providerId);
+      const result = await api.providerModels(providerId, true);
       setCatalogs((current) => ({ ...current, [providerId]: { loading: false, error: null, models: Array.isArray(result.models) ? result.models : [], receiptId: result.receipt_id, limitations: Array.isArray(result.limitations) ? result.limitations : [] } }));
     } catch (error) {
       setCatalogs((current) => ({ ...current, [providerId]: { loading: false, error, models: current[providerId]?.models || [] } }));

@@ -2024,6 +2024,82 @@ def _ui_port_has_listener(port: int) -> bool:
         return False
 
 
+def _listener_command_line(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\x00", b" ").decode(
+            "utf-8", errors="replace"
+        ).strip()
+    except OSError:
+        return ""
+
+
+def _opencobalt_owned_listener(port: int, label: str) -> tuple[int, str] | None:
+    """Identify an OpenCobalt-owned listener by command line, or None."""
+    import subprocess
+
+    try:
+        listed = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except Exception:
+        return None
+    pids = []
+    for line in listed.stdout.split():
+        try:
+            pids.append(int(line))
+        except ValueError:
+            continue
+    markers = {
+        "API": ("opencobalt.api_server:app", "uvicorn"),
+        "UI": ("vite",),
+    }.get(label, ())
+    for pid in pids:
+        command = _listener_command_line(pid)
+        if not command:
+            continue
+        if label == "API" and "opencobalt.api_server" in command:
+            return pid, command
+        if label == "UI" and "vite" in command and ("opencobalt" in command.lower() or "/ui" in command):
+            return pid, command
+        if any(marker in command for marker in markers) and "opencobalt" in command.lower():
+            return pid, command
+    return None
+
+
+def _reclaim_stale_opencobalt_listener(port: int, label: str) -> bool:
+    """Terminate a listener only when command-line ownership is unambiguous."""
+    import os
+    import signal
+    import time
+
+    owned = _opencobalt_owned_listener(port, label)
+    if owned is None:
+        return False
+    pid, command = owned
+    err.print(
+        f"  [dim]Reclaiming stale OpenCobalt {label} listener pid {pid}: {command[:160]}[/dim]"
+    )
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if not _ui_port_has_listener(port) and _can_bind_ui_port(port):
+            return True
+        time.sleep(0.05)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    time.sleep(0.1)
+    return _can_bind_ui_port(port)
+
+
 def _require_available_ui_port(
     label: str,
     port: int,
@@ -2037,8 +2113,22 @@ def _require_available_ui_port(
         err.print(f"\n[{_RED}]{label} port must be between 1 and 65535.[/{_RED}]\n")
         raise typer.Exit(1)
     deadline = time.monotonic() + release_timeout_seconds
+    if _ui_port_has_listener(port):
+        if _reclaim_stale_opencobalt_listener(port, label) and _can_bind_ui_port(port):
+            return
+        occupant = _opencobalt_owned_listener(port, label)
+        detail = (
+            f" Occupying process {occupant[0]}: {occupant[1][:160]}"
+            if occupant
+            else " The occupying process is not an OpenCobalt-owned listener."
+        )
+        err.print(
+            f"\n[{_RED}]{label} port {port} is already in use.[/{_RED}]  "
+            f"Choose another port and try again.{detail}\n"
+        )
+        raise typer.Exit(1) from None
     while not _can_bind_ui_port(port):
-        if _ui_port_has_listener(port) or time.monotonic() >= deadline:
+        if time.monotonic() >= deadline:
             err.print(
                 f"\n[{_RED}]{label} port {port} is already in use.[/{_RED}]  "
                 "Choose another port and try again.\n"
@@ -2047,7 +2137,7 @@ def _require_available_ui_port(
         time.sleep(0.1)
 
 
-def _stop_ui_processes(processes: list, *, timeout_seconds: float = 5.0) -> None:
+def _stop_ui_processes(processes: list, *, timeout_seconds: float = 3.0) -> None:
     """Terminate launcher-owned process groups and wait for their ports to release."""
     import os
     import signal
@@ -2134,7 +2224,8 @@ def ui_shell(
     try:
         api_proc = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "opencobalt.api_server:app",
-             "--port", str(api_port), "--log-level", "warning"],
+             "--port", str(api_port), "--log-level", "warning",
+             "--timeout-graceful-shutdown", "2"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=os.name == "posix",

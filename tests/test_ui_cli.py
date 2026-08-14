@@ -8,7 +8,11 @@ import urllib.request
 
 from typer.testing import CliRunner
 
-from opencobalt.cli import _require_available_ui_port, app
+from opencobalt.cli import (
+    _reclaim_stale_opencobalt_listener,
+    _require_available_ui_port,
+    app,
+)
 
 
 def _unused_loopback_port() -> int:
@@ -37,6 +41,25 @@ def test_ui_port_probe_retries_a_released_port_without_hiding_a_listener(
 
     assert listener_checks == [5198]
     assert sleeps == [0.1]
+
+
+def test_stale_listener_reclaim_requires_opencobalt_ownership(monkeypatch) -> None:
+    monkeypatch.setattr("opencobalt.cli._opencobalt_owned_listener", lambda port, label: None)
+    assert _reclaim_stale_opencobalt_listener(8000, "API") is False
+
+
+def test_stale_opencobalt_listener_is_reclaimed(monkeypatch) -> None:
+    killed = []
+    monkeypatch.setattr(
+        "opencobalt.cli._opencobalt_owned_listener",
+        lambda port, label: (4242, "uvicorn opencobalt.api_server:app --port 8000"),
+    )
+    monkeypatch.setattr("os.kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr("opencobalt.cli._ui_port_has_listener", lambda port: False)
+    monkeypatch.setattr("opencobalt.cli._can_bind_ui_port", lambda port: True)
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    assert _reclaim_stale_opencobalt_listener(8000, "API") is True
+    assert killed[0][0] == 4242
 
 
 def test_ui_refuses_an_occupied_api_port_before_starting_children(
