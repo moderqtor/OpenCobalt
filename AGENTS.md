@@ -86,3 +86,21 @@ front door.
 Final reports should be plain technical language: branch, base SHA, test
 baseline, worktree cleanliness, push/merge state, local commits, and remaining
 risk. Do not use branding slogans.
+
+## Cursor Cloud
+
+Use the prepared Python/uv and UI environment in this repository. Do not add
+provider secrets, credentials, or `.env` files.
+
+Normal production and API behavior does not silently enable Mock. Explicit
+cloud or development smoke tests may set:
+
+```
+OPENCOBALT_ENABLE_DEVELOPMENT_MOCK=1
+```
+
+Cloud tests that use Mock are development verification, not live-provider
+proof. Do not assume authenticated Antigravity, Ollama, or Cursor ACP in Cloud.
+
+Run the normal quality gates. In headless environments start the workspace
+with `opencobalt ui --no-browser`.
