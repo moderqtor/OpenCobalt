@@ -89,7 +89,9 @@ it for local-only Chat and some research roles.
 1. Open Chat and start typing, or click New.
 2. Write the goal. Automatic routing is on unless you choose Manual.
 3. Open Controls only for persona, approach, privacy, local-only, a
-   manual provider, or an optional repository path.
+   manual provider, or an optional repository path. Those draft choices
+   apply to the first send. A repository can be attached before any
+   message; the path is stored with the conversation when it is created.
 4. Open Details on a response, or Missions, when you want the decision
    record. Routes, Ledger, Skills, Providers, and Settings stay under
    System.

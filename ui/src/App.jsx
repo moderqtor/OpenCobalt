@@ -208,6 +208,25 @@ function routingPatchFromControls(controls) {
   };
 }
 
+function routingControlsEqual(left, right) {
+  return left.automatic === right.automatic
+    && left.providerId === right.providerId
+    && left.modelId === right.modelId
+    && left.privacy === right.privacy
+    && left.localOnly === right.localOnly
+    && left.allowFallback === right.allowFallback
+    && left.reasoningEffort === right.reasoningEffort;
+}
+
+function mergeRoutingIntoControls(current, routing, settings = DEFAULT_SETTINGS) {
+  const next = controlsFromRouting(routing, settings);
+  return {
+    ...next,
+    personaId: current.personaId,
+    cognitivePolicy: current.cognitivePolicy,
+  };
+}
+
 function Composer({ controls, personas, providers, models: discoveredModels, modelError, onChange, onSend, busy, cancelling = false, onCancel, attachments = [], onAttach, onRemoveAttachment, attachmentError, executableAvailable = true, routingAvailability = null, projectPath = "", onToggleRepository, repositoryOpen = false }) {
   const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState("");
@@ -439,7 +458,12 @@ function MessageBubble({ message, route, onInspect, onOpenMission, approvals = [
 }
 
 function ChatPage({ conversations, refreshConversations, personas, providers, settings, settingsReady, openRoute, refreshSignal = 0 }) {
+  // Settings defaults initialize a local unsaved Chat draft. Creating, attaching
+  // a file, or sending promotes that draft into durable conversation state.
+  // Request payloads use the controls currently visible. Previous conversations
+  // do not seed a new draft.
   const [selectedId, setSelectedId] = useState(() => localStorage.getItem("opencobalt.activeConversation") || "");
+  const [composerSession, setComposerSession] = useState(() => localStorage.getItem("opencobalt.activeConversation") || "draft");
   const [messages, setMessages] = useState([]);
   const [messageState, setMessageState] = useState({ loading: false, error: null });
   const [notice, setNotice] = useState(null);
@@ -461,6 +485,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const [routingAvailability, setRoutingAvailability] = useState(null);
   const [repoOpen, setRepoOpen] = useState(false);
   const [repoDraft, setRepoDraft] = useState("");
+  const [draftProjectPath, setDraftProjectPath] = useState("");
   const [repoBusy, setRepoBusy] = useState(false);
   const abortRef = useRef(null);
   const executionRef = useRef(null);
@@ -471,8 +496,13 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const hydrateGenerationRef = useRef(0);
   const selectedIdRef = useRef(selectedId);
   const hydratingRef = useRef(false);
+  const draftingRef = useRef(false);
   const controlsConversationRef = useRef("");
   const settingsRef = useRef(settings);
+  const controlsRef = useRef(null);
+  const draftProjectPathRef = useRef("");
+  const draftTransferRef = useRef(null);
+  const routingEpochRef = useRef(0);
   const writeSeqRef = useRef(new Map());
   const persistQueueRef = useRef(null);
   const scrollRef = useRef(null);
@@ -482,6 +512,9 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const [controls, setControls] = useState(() => defaultComposerControls(settings));
   selectedIdRef.current = selectedId;
   settingsRef.current = settings;
+  controlsRef.current = controls;
+  draftProjectPathRef.current = draftProjectPath;
+  draftingRef.current = drafting;
   if (persistQueueRef.current == null) {
     persistQueueRef.current = createPerConversationWriteQueue({
       write: (conversationId, payload) => api.updateConversationRouting(conversationId, payload),
@@ -496,7 +529,13 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     setConversationOpen(true);
   }, []);
   const selectConversation = useCallback((conversationId) => {
+    draftingRef.current = false;
     setDrafting(false);
+    setDraftProjectPath("");
+    setRepoDraft("");
+    setRepoOpen(false);
+    draftTransferRef.current = null;
+    setComposerSession(conversationId);
     setSelectedId(conversationId);
     setConversationOpen(false);
   }, []);
@@ -508,22 +547,47 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     if (!settingsReady) return undefined;
     const conversationId = selectedId;
     const generation = ++hydrateGenerationRef.current;
+    const epochAtStart = routingEpochRef.current;
     hydratingRef.current = true;
     if (!conversationId) {
-      setControls(defaultComposerControls(settings));
+      if (!draftingRef.current && !draftTransferRef.current) {
+        setControls(defaultComposerControls(settings));
+      }
       setRoutingAvailability(null);
       controlsConversationRef.current = "";
       hydratingRef.current = false;
       return undefined;
     }
     const listed = conversations.find((conversation) => conversationIdOf(conversation) === conversationId);
-    setControls(controlsFromRouting(listed?.metadata?.routing, settings));
+    const transfer = draftTransferRef.current?.conversationId === conversationId
+      ? draftTransferRef.current.controls
+      : null;
+    if (transfer) {
+      setControls(transfer);
+    } else {
+      setControls(controlsFromRouting(listed?.metadata?.routing, settings));
+    }
     setRoutingAvailability(null);
     controlsConversationRef.current = conversationId;
     api.conversationRouting(conversationId)
       .then((routing) => {
         if (hydrateGenerationRef.current !== generation || selectedIdRef.current !== conversationId) return;
-        setControls(controlsFromRouting(routing, settings));
+        if (routingEpochRef.current !== epochAtStart) {
+          setRoutingAvailability(routing);
+          return;
+        }
+        const transferred = draftTransferRef.current?.conversationId === conversationId
+          ? draftTransferRef.current.controls
+          : null;
+        if (transferred) {
+          draftTransferRef.current = null;
+          const fromServer = controlsFromRouting(routing, settings);
+          setControls(routingControlsEqual(fromServer, transferred)
+            ? { ...fromServer, personaId: transferred.personaId, cognitivePolicy: transferred.cognitivePolicy }
+            : transferred);
+        } else {
+          setControls(controlsFromRouting(routing, settings));
+        }
         setRoutingAvailability(routing);
         controlsConversationRef.current = conversationId;
       })
@@ -573,6 +637,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     if (exists) return;
     const nextId = conversations.length ? conversationIdOf(conversations[0]) : "";
     setSelectedId(nextId);
+    if (nextId) setComposerSession(nextId);
   }, [interactionBusy, conversations, selectedId, drafting]);
 
   useEffect(() => {
@@ -677,12 +742,16 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
 
   const startConversation = () => {
     if (interactionBusy) return;
+    draftingRef.current = true;
+    draftTransferRef.current = null;
     setDrafting(true);
     setSelectedId("");
+    setComposerSession(`draft-${Date.now()}`);
     setMessages([]);
     setNotice(null);
     setRepoOpen(false);
     setRepoDraft("");
+    setDraftProjectPath("");
     setPendingApprovals([]);
     setAttachments([]);
     setControls(defaultComposerControls(settingsRef.current));
@@ -694,12 +763,38 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     if (selectedId && conversations.some((conversation) => conversationIdOf(conversation) === selectedId)) {
       return { conversationId: selectedId, created: false };
     }
-    const conversation = await api.createConversation({ title: "New conversation" });
+    const projectPath = (draftProjectPathRef.current || "").trim();
+    const payload = { title: "New conversation" };
+    if (projectPath) payload.project_path = projectPath;
+    const conversation = await api.createConversation(payload);
     const createdId = conversationIdOf(conversation);
     if (!createdId) throw new ApiError("OpenCobalt created a conversation without an identifier.", { detail: conversation });
-    writeSeqRef.current.delete(createdId);
+    const draftControls = { ...controlsRef.current };
+    writeSeqRef.current.set(createdId, 1);
+    let routing = null;
+    try {
+      routing = await api.updateConversationRouting(createdId, {
+        ...routingPatchFromControls(draftControls),
+        write_seq: 1,
+      });
+    } catch (error) {
+      setNotice({
+        tone: "error",
+        source: "routing",
+        text: error?.message || "Conversation routing was not saved. Showing the draft controls.",
+      });
+    }
+    draftTransferRef.current = { conversationId: createdId, controls: draftControls };
+    setControls(draftControls);
+    if (routing) setRoutingAvailability(routing);
+    controlsConversationRef.current = createdId;
+    setDraftProjectPath("");
+    setRepoDraft("");
+    setRepoOpen(false);
+    draftingRef.current = false;
     setDrafting(false);
     await refreshConversations();
+    selectedIdRef.current = createdId;
     setSelectedId(createdId);
     return { conversationId: createdId, created: true };
   };
@@ -726,7 +821,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       api.conversationRouting(conversationId)
         .then((routing) => {
           if (selectedIdRef.current !== conversationId) return;
-          setControls(controlsFromRouting(routing, settingsRef.current));
+          setControls((current) => mergeRoutingIntoControls(current, routing, settingsRef.current));
           setRoutingAvailability(routing);
         })
         .catch(() => undefined)
@@ -744,7 +839,8 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     ));
     setControls((current) => {
       const next = { ...current, ...patch };
-      if (routingChanged && conversationId && !hydratingRef.current) {
+      if (routingChanged && conversationId) {
+        routingEpochRef.current += 1;
         persistConversationRouting(next, conversationId);
       }
       return next;
@@ -763,9 +859,9 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     setMessageState({ loading: false, error: null });
     executionRef.current = null;
     try {
+      const sendControls = { ...controlsRef.current };
       const ensured = await ensureConversation();
       const conversationId = ensured.conversationId;
-      const sendControls = ensured.created ? defaultComposerControls(settings) : controls;
       const localUser = { message_id: `local-user-${Date.now()}`, conversation_id: conversationId, role: "user", content, status: "complete", created_at: new Date().toISOString() };
       const localAssistant = { message_id: "local-stream", conversation_id: conversationId, role: "assistant", content: "", status: "streaming", created_at: new Date().toISOString() };
       setMessages((current) => [...current, localUser, localAssistant]);
@@ -877,6 +973,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       await refreshConversations();
     } catch (error) {
       if (error?.name !== "AbortError") {
+        setNotice({ tone: "error", text: error.message || "The request could not be sent." });
         setMessageState({ loading: false, error });
         setMessages((current) => current.map((message) => message.message_id === "local-stream" ? { ...message, status: "failed", content: message.content || error.message } : message));
       }
@@ -1037,11 +1134,19 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
 
   const attachRepository = async (event) => {
     event.preventDefault();
-    if (!selectedId || !repoDraft.trim() || repoBusy) return;
+    const path = repoDraft.trim();
+    if (!path || repoBusy) return;
+    if (!selectedId) {
+      setDraftProjectPath(path);
+      setRepoDraft("");
+      setRepoOpen(false);
+      setNotice(null);
+      return;
+    }
     setRepoBusy(true);
     setNotice(null);
     try {
-      const updated = await api.updateConversation(selectedId, { project_path: repoDraft.trim() });
+      const updated = await api.updateConversation(selectedId, { project_path: path });
       await refreshConversations();
       setRepoDraft("");
       setRepoOpen(false);
@@ -1084,6 +1189,8 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   }, [selectedId, messageState.loading, messages.length, interactionBusy]);
 
   const selected = conversations.find((conversation) => conversationIdOf(conversation) === selectedId);
+  const attachedProjectPath = selected?.project_path || draftProjectPath;
+  const canAttachRepository = Boolean(selected || drafting);
   const executableAvailable = providers.some((provider) => provider.installed && provider.execution_supported && provider.capabilities?.answer_only_isolation && provider.enabled !== false);
   const routeHint = controls.automatic
     ? "Automatic"
@@ -1112,13 +1219,13 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
           <div>
             <h1 id="chat-title">{selected?.title || "New conversation"}</h1>
             <p className="chat-status">{routeHint} · {statusHint}</p>
-            {selected?.project_path
-              ? <p className="project-path" title={selected.project_path}>Repository {selected.project_path}</p>
+            {attachedProjectPath
+              ? <p className="project-path" title={attachedProjectPath}>Repository {attachedProjectPath}</p>
               : null}
           </div>
         </div>
       </header>
-      {repoOpen && selected && <form className="repo-form" onSubmit={attachRepository}>
+      {repoOpen && canAttachRepository && <form className="repo-form" onSubmit={attachRepository}>
         <label>
           <span>Repository path</span>
           <input value={repoDraft} maxLength="4096" placeholder="Existing local repository" autoFocus onChange={(event) => setRepoDraft(event.target.value)} />
@@ -1151,7 +1258,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       </div>
       <div className="chat-live" aria-live="polite" aria-atomic="true">{liveStatus}</div>
       {notice && <div className={`stream-notice ${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}>{notice.text}</div>}
-      <Composer key={selectedId || "draft"} controls={controls} personas={personas} providers={providers} models={modelCatalog} modelError={modelError} onChange={updateControls} onSend={send} busy={interactionBusy} cancelling={cancelling} onCancel={cancel} attachments={attachments} onAttach={attachFile} onRemoveAttachment={removeAttachment} attachmentError={attachmentError} executableAvailable={executableAvailable} routingAvailability={routingAvailability} projectPath={selected?.project_path || ""} onToggleRepository={selected ? () => setRepoOpen((current) => !current) : undefined} repositoryOpen={repoOpen} />
+      <Composer key={composerSession} controls={controls} personas={personas} providers={providers} models={modelCatalog} modelError={modelError} onChange={updateControls} onSend={send} busy={interactionBusy} cancelling={cancelling} onCancel={cancel} attachments={attachments} onAttach={attachFile} onRemoveAttachment={removeAttachment} attachmentError={attachmentError} executableAvailable={executableAvailable} routingAvailability={routingAvailability} projectPath={attachedProjectPath} onToggleRepository={canAttachRepository ? () => setRepoOpen((current) => !current) : undefined} repositoryOpen={repoOpen} />
     </section>
   </div>;
 }

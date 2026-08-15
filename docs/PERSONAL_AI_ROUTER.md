@@ -49,7 +49,7 @@ System behind a disclosure.
 
 Pages remain hash-linkable, such as `http://localhost:5173/#providers`. System pages stay available; they are no longer equal primary destinations.
 
-New Chat work starts locally: the plus control focuses the composer without creating an empty record. The conversation is stored when the first message is sent. The title starts as "New conversation" and is replaced by that first message unless you already named it. A repository path is optional under Controls after the conversation exists. The path is still canonicalized and cannot escape the startup workspace.
+New Chat work starts locally: the plus control focuses the composer without creating an empty record. The new draft starts from Settings defaults, not from another conversation. Changes made in that draft, including Automatic or Manual, provider, model, reasoning, privacy, local-only, fallback, and an optional repository path, stay local until the conversation is stored. The conversation is stored when the first message is sent or a file is attached. At that moment the visible draft controls become the conversation routing preset, and a draft repository path is canonicalized through the same workspace authority checks as later attachments. An invalid repository path is rejected and the request is not sent without that context. The title starts as "New conversation" and is replaced by that first message unless you already named it.
 
 ## Shared local state
 
@@ -65,7 +65,7 @@ The shared database means a reset affects more than chat: conversations, persona
 
 ## Conversation routing presets
 
-Chat keeps Automatic vs Manual mode, the last manual provider/model, reasoning effort, fallback, privacy, and local-only on the conversation record (`metadata.routing` in SQLite). The browser is a cache. Switching to Automatic does not destroy the last manual preset for that conversation. New conversations follow Settings defaults, normally Automatic, and do not inherit another chat's provider. If a stored provider or model later becomes unavailable, OpenCobalt keeps the stored values and labels them stale instead of substituting another model.
+Chat keeps Automatic vs Manual mode, the last manual provider/model, reasoning effort, fallback, privacy, and local-only on the conversation record (`metadata.routing` in SQLite). The browser is a cache. Switching to Automatic does not destroy the last manual preset for that conversation. New conversations follow Settings defaults, normally Automatic, and do not inherit another chat's provider. After the user changes controls on a new draft, those visible choices are written to the new conversation when it is created. If a stored provider or model later becomes unavailable, OpenCobalt keeps the stored values and labels them stale instead of substituting another model.
 
 Persona and approach stay under Controls. They are not part of the routing preset.
 
