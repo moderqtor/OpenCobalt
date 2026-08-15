@@ -93,7 +93,8 @@ Known dynamically discoverable help evidence:
 
 Ordinary Chat does not use the generic repository-cwd Antigravity adapter.
 Chat admission requires discovered JSON print and `--sandbox` support. Each
-invocation uses a private mode-0700 directory under the OS temporary root,
+invocation uses an atomically created, unpredictable private mode-0700 directory
+directly under the OS temporary root,
 outside the attached repository, with `--sandbox`, JSON output, and never
 `--dangerously-skip-permissions`. The directory is removed after the bounded
 invocation on a best-effort basis. This reduces repository discovery and

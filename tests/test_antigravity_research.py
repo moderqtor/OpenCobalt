@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -449,6 +450,29 @@ def test_antigravity_scratch_is_private_external_and_not_a_git_worktree(
     assert not scratch.exists()
 
 
+def test_antigravity_scratch_does_not_trust_predictable_symlink_parent(
+    tmp_path, monkeypatch
+):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / ".git").mkdir()
+    temporary = tmp_path / "temporary"
+    temporary.mkdir()
+    uid = getattr(os, "getuid", lambda: 0)()
+    (temporary / f"opencobalt-{uid}").symlink_to(repository, target_is_directory=True)
+    monkeypatch.setattr("tempfile.tempdir", str(temporary))
+
+    scratch = antigravity_scratch_dir("symlink-defense", repository_root=repository)
+    try:
+        assert scratch.parent == temporary.resolve()
+        assert scratch.name.startswith("opencobalt-antigravity-symlink-defense-")
+        assert not scratch.is_relative_to(repository.resolve())
+        assert scratch.stat().st_mode & 0o077 == 0
+        assert not (repository / "antigravity").exists()
+    finally:
+        _cleanup_antigravity_scratch(scratch)
+
+
 def test_print_adapter_requires_managed_external_scratch_for_isolation(tmp_path):
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -776,10 +800,12 @@ def test_https_fetch_command_is_bounded_and_https_only(tmp_path):
         target,
         output_path=tmp_path / "body",
         headers_path=tmp_path / "headers",
+        curl_version="curl 8.4.0",
     ).build_command("retrieve")
     assert command[0].endswith("curl") or command[0] == "curl"
     assert "--proto" in command and command[command.index("--proto") + 1] == "=https"
-    assert "--compressed" in command
+    assert "--compressed" not in command
+    assert "Accept-Encoding: identity" in command
     assert "--max-filesize" in command
     assert command[command.index("--max-filesize") + 1] == "150000"
     assert "--dangerously-skip-permissions" not in command

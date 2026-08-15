@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import socket
+import subprocess
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -93,6 +94,7 @@ _REVIEW_ROOTS = {"cochranelibrary.com", "uspreventiveservicestaskforce.org"}
 _JOURNALISM_ROOTS = {"nytimes.com", "washingtonpost.com", "reuters.com", "bbc.com"}
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
 Resolver = Callable[[str, int], Sequence[str]]
+_MINIMUM_HARD_LIMIT_CURL = (8, 4, 0)
 
 
 def _now() -> str:
@@ -237,6 +239,32 @@ def canonical_url(url: str) -> str:
     return f"{parsed.scheme}://{host}{path}" + (f"?{parsed.query}" if parsed.query else "")
 
 
+def redirect_network_identity(url: str) -> tuple[str, int, str, str]:
+    """Identify a redirect hop without applying source-deduplication rules."""
+    host, port = _validated_https_target_parts(url)
+    parsed = urlsplit(url)
+    return host, port, parsed.path or "/", parsed.query
+
+
+def _curl_version(executable: str) -> str:
+    try:
+        result = subprocess.run(
+            [executable, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.splitlines()[0] if result.returncode == 0 and result.stdout else ""
+
+
+def _curl_enforces_hard_max_filesize(version: str) -> bool:
+    match = re.match(r"^curl\s+(\d+)\.(\d+)\.(\d+)(?:\s|$)", version.strip())
+    return bool(match and tuple(int(item) for item in match.groups()) >= _MINIMUM_HARD_LIMIT_CURL)
+
+
 def classify_source_type(url: str) -> str:
     host = urlsplit(url).hostname or ""
     if any(host_matches_trusted_root(host, root) for root in _LITERATURE_ROOTS):
@@ -291,6 +319,7 @@ class HttpsGetAdapter:
         timeout_seconds: int = 20,
         output_path: Path,
         headers_path: Path,
+        curl_version: str | None = None,
     ) -> None:
         self.target = target
         self.url = target.url
@@ -298,7 +327,15 @@ class HttpsGetAdapter:
         self.output_path = output_path
         self.headers_path = headers_path
         self.executable = shutil.which("curl") or "curl"
-        self._available = shutil.which("curl") is not None
+        self._executable_available = shutil.which("curl") is not None
+        self.curl_version = (
+            _curl_version(self.executable) if curl_version is None else curl_version
+        )
+        self.hard_size_limit_supported = bool(
+            self._executable_available
+            and _curl_enforces_hard_max_filesize(self.curl_version)
+        )
+        self._available = self.hard_size_limit_supported
 
     def discover_capabilities(self) -> RuntimeCapabilitySnapshot:
         return RuntimeCapabilitySnapshot(
@@ -314,9 +351,21 @@ class HttpsGetAdapter:
             requires_network=True,
             requires_credentials=False,
             max_safe_risk="yellow",
-            limitations=[] if self._available else ["curl is required for source retrieval"],
+            limitations=(
+                []
+                if self._available
+                else [
+                    "curl 8.4.0 or newer is required to enforce the hard response-size limit"
+                    if self._executable_available
+                    else "curl is required for source retrieval"
+                ]
+            ),
             verifiability_level="partial" if self._available else "unavailable",
-            capability_details={"url_scheme": "https"},
+            capability_details={
+                "url_scheme": "https",
+                "curl_version": self.curl_version,
+                "hard_response_size_limit": self.hard_size_limit_supported,
+            },
         ).with_hash()
 
     def build_command(self, task: str, options: Any = None) -> list[str]:
@@ -333,7 +382,6 @@ class HttpsGetAdapter:
             "*",
             "--proto",
             "=https",
-            "--compressed",
             "--max-filesize",
             str(_FETCH_BYTES),
             "--connect-timeout",
@@ -342,6 +390,8 @@ class HttpsGetAdapter:
             str(self.timeout_seconds),
             "--header",
             "User-Agent: OpenCobaltResearch/1.0 (https://github.com/moderqtor/OpenCobalt)",
+            "--header",
+            "Accept-Encoding: identity",
             "--dump-header",
             str(self.headers_path),
             "--output",
@@ -429,10 +479,16 @@ class DocumentAcquisitionPipeline:
         *,
         resolver: Resolver = _resolve_host_addresses,
         max_redirects: int = _MAX_REDIRECTS,
+        curl_version: str | None = None,
     ) -> None:
         self.engine = engine
         self.resolver = resolver
         self.max_redirects = max(0, min(int(max_redirects), _MAX_REDIRECTS))
+        self.curl_version = (
+            _curl_version(shutil.which("curl") or "curl")
+            if curl_version is None
+            else curl_version
+        )
 
     def acquire_url(self, url: str) -> RetrievedDocument:
         created = _now()
@@ -551,7 +607,7 @@ class DocumentAcquisitionPipeline:
             retrieval_adapter=adapter or guess_adapter(url),
         )
         current_url = url
-        seen: set[str] = set()
+        seen: set[tuple[str, int, str, str]] = set()
         with tempfile.TemporaryDirectory(prefix="oc-fetch-") as directory:
             tmpdir = Path(directory)
             for redirect_count in range(self.max_redirects + 1):
@@ -565,7 +621,7 @@ class DocumentAcquisitionPipeline:
                     document.excerpt = str(exc)[:300]
                     document.limitations.append(str(exc)[:300])
                     return document
-                key = canonical_url(current_url)
+                key = redirect_network_identity(current_url)
                 if key in seen:
                     document.retrieval_status = "failed"
                     document.excerpt = "fetch failed: redirect loop detected"
@@ -579,7 +635,17 @@ class DocumentAcquisitionPipeline:
                     target,
                     output_path=output_path,
                     headers_path=headers_path,
+                    curl_version=self.curl_version,
                 )
+                if not fetch.hard_size_limit_supported:
+                    document.retrieval_status = "failed"
+                    document.excerpt = (
+                        "fetch failed: curl cannot enforce the hard response-size limit"
+                    )
+                    document.limitations.append(
+                        "curl 8.4.0 or newer is required to enforce the hard response-size limit"
+                    )
+                    return document
                 output_path.write_bytes(b"")
                 headers_path.write_bytes(b"")
                 try:
@@ -622,6 +688,16 @@ class DocumentAcquisitionPipeline:
                     document.retrieval_status = "failed"
                     document.excerpt = f"fetch failed: HTTP status {status or 'unknown'}"
                     document.limitations.append(document.excerpt)
+                    return document
+
+                try:
+                    oversized = output_path.stat().st_size > _FETCH_BYTES
+                except OSError:
+                    oversized = False
+                if oversized:
+                    document.retrieval_status = "failed"
+                    document.excerpt = "fetch failed: response exceeded hard size limit"
+                    document.limitations.append("response exceeded hard size limit")
                     return document
 
                 payload = _read_payload(result, output_path)

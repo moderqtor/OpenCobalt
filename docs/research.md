@@ -52,10 +52,22 @@ most three hops and validates the scheme, credentials, hostname, and resolved
 addresses again on every hop. Malformed URLs, credentials, non-HTTPS schemes,
 redirect loops, and public-to-private redirects fail closed.
 
+Redirect traversal uses a network identity that preserves the normalized host,
+effective port, path, and query; unlike source deduplication, it does not fold
+`www` into the apex host. Fetches request identity encoding and require curl
+8.4.0 or newer, whose `--max-filesize` enforcement covers responses without a
+declared size. Automatic decompression is disabled so compressed expansion
+cannot bypass the 150 KB stored-body boundary. An unsupported or unprovable
+curl version fails closed before retrieval.
+
 Caps: 8 primary sources plus 6 follow-ups; truncated excerpts; 150 KB fetch
 bound. Search-index and asset URLs are excluded from document extraction.
 Trusted-source classification uses exact hostname or subdomain boundaries;
 lookalike hosts containing a trusted name receive no source-quality boost.
+The current broad NIH/NCBI and Crossref host categories remain coarse discovery
+heuristics: they can include informational or bibliographic pages that are not
+primary studies. Treating that category as study-design proof is deferred
+epistemic debt; evidence review must establish what a particular source is.
 
 A later Research Mission in the same conversation can reuse previously
 retrieved sources when the question overlaps. Excluded sources are skipped.

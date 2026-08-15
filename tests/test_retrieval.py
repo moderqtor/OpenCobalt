@@ -19,6 +19,7 @@ from opencobalt.personal_ai.retrieval import (
     looks_like_search_index,
     normalize_payload,
     rank_and_dedupe_sources,
+    redirect_network_identity,
     resolve_public_https_target,
     search_seed_urls,
 )
@@ -173,6 +174,55 @@ def test_fetch_rejects_redirect_loops_and_excessive_redirects() -> None:
     assert excessive.retrieval_status == "failed"
     assert "redirect limit" in " ".join(excessive.limitations).lower()
     assert len(excessive_engine.calls) == 4
+
+
+@pytest.mark.parametrize(
+    ("start", "destination"),
+    [
+        ("https://www.example.com/start", "https://example.com/final"),
+        ("https://example.com/start", "https://www.example.com/final"),
+        ("https://example.com:443/start", "https://example.com:8443/final"),
+        ("https://example.com/start?step=1", "https://example.com/start?step=2"),
+    ],
+)
+def test_redirect_identity_does_not_collapse_distinct_network_targets(
+    start: str,
+    destination: str,
+) -> None:
+    engine = ScriptedFetchEngine(
+        {
+            start: (302, destination, b""),
+            destination: (200, None, b"<article>redirect destination</article>"),
+        }
+    )
+    document = DocumentAcquisitionPipeline(
+        engine,
+        resolver=lambda _host, _port: ["93.184.216.34"],
+        curl_version="curl 8.4.0",
+    ).acquire_url(start)
+
+    assert document.retrieval_status == "retrieved"
+    assert len(engine.calls) == 2
+    assert redirect_network_identity(start) != redirect_network_identity(destination)
+
+
+def test_redirect_identity_detects_true_a_b_a_loop() -> None:
+    first = "https://a.example/start?step=1"
+    second = "https://b.example/next?step=2"
+    engine = ScriptedFetchEngine(
+        {
+            first: (302, second, b""),
+            second: (302, first, b""),
+        }
+    )
+    document = DocumentAcquisitionPipeline(
+        engine,
+        resolver=lambda _host, _port: ["93.184.216.34"],
+        curl_version="curl 8.4.0",
+    ).acquire_url(first)
+
+    assert document.retrieval_status == "failed"
+    assert "redirect loop" in " ".join(document.limitations).lower()
 
 
 def test_legitimate_public_fetch_pins_approved_address_without_curl_redirects() -> None:
@@ -365,11 +415,31 @@ def test_fetch_adapter_bounds_https_and_size(tmp_path) -> None:
         target,
         output_path=tmp_path / "body",
         headers_path=tmp_path / "headers",
+        curl_version="curl 8.4.0",
     ).build_command("retrieve")
     assert "--proto" in command and command[command.index("--proto") + 1] == "=https"
     assert "--max-filesize" in command
+    assert "--compressed" not in command
+    assert "Accept-Encoding: identity" in command
     assert "--dangerously-skip-permissions" not in command
     assert canonical_url("https://www.CDC.gov/path/") == "https://cdc.gov/path"
+
+
+@pytest.mark.parametrize("curl_version", ["curl 8.3.0", "curl unknown", ""])
+def test_fetch_fails_closed_without_hard_size_capability(curl_version: str) -> None:
+    url = "https://evidence.example/article"
+    engine = ScriptedFetchEngine(
+        {url: (200, None, b"must not be fetched")}
+    )
+    document = DocumentAcquisitionPipeline(
+        engine,
+        resolver=lambda _host, _port: ["93.184.216.34"],
+        curl_version=curl_version,
+    ).acquire_url(url)
+
+    assert document.retrieval_status == "failed"
+    assert "hard response-size limit" in " ".join(document.limitations)
+    assert engine.calls == []
 
 
 @pytest.mark.parametrize(

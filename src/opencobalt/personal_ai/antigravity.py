@@ -198,20 +198,13 @@ def _attached_repository_root(start: Path) -> Path:
     return resolved
 
 
-def _antigravity_scratch_root(*, repository_root: Path | None = None) -> Path:
+def _antigravity_temp_root(*, repository_root: Path | None = None) -> Path:
     repository = _attached_repository_root(repository_root or Path.cwd())
-    uid = getattr(os, "getuid", lambda: 0)()
-    root = (
-        Path(tempfile.gettempdir()).expanduser().resolve()
-        / f"opencobalt-{uid}"
-        / "antigravity"
-    ).resolve()
+    root = Path(tempfile.gettempdir()).expanduser().resolve()
     if root == repository or root.is_relative_to(repository):
         raise RuntimeError(
             "Antigravity scratch root resolves inside the attached repository"
         )
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    root.chmod(0o700)
     return root
 
 
@@ -222,8 +215,13 @@ def antigravity_scratch_dir(
 ) -> Path:
     """Create a private per-invocation directory outside the attached repository."""
     safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", request_id)[:80] or "request"
-    root = _antigravity_scratch_root(repository_root=repository_root)
-    path = Path(tempfile.mkdtemp(prefix=f"{safe_id}-", dir=str(root))).resolve()
+    root = _antigravity_temp_root(repository_root=repository_root)
+    path = Path(
+        tempfile.mkdtemp(
+            prefix=f"opencobalt-antigravity-{safe_id}-",
+            dir=str(root),
+        )
+    ).resolve()
     path.chmod(0o700)
     marker = path / _SCRATCH_MARKER
     marker.write_text("OpenCobalt Antigravity scratch workspace.\n", encoding="utf-8")
@@ -233,14 +231,42 @@ def antigravity_scratch_dir(
 
 def _cleanup_antigravity_scratch(path: Path) -> None:
     """Best-effort removal limited to a marked per-invocation scratch directory."""
-    resolved = path.expanduser().resolve()
-    marker = resolved / _SCRATCH_MARKER
-    if not marker.is_file() or resolved.parent.name != "antigravity":
+    if not _is_private_antigravity_scratch(path):
         return
     try:
-        shutil.rmtree(resolved)
+        shutil.rmtree(path.expanduser().resolve())
     except OSError:
         pass
+
+
+def _is_private_antigravity_scratch(path: Path) -> bool:
+    expanded = path.expanduser()
+    if expanded.is_symlink():
+        return False
+    resolved = expanded.resolve()
+    temporary = Path(tempfile.gettempdir()).expanduser().resolve()
+    if resolved.parent != temporary or not resolved.name.startswith(
+        "opencobalt-antigravity-"
+    ):
+        return False
+    try:
+        metadata = resolved.stat()
+        marker = resolved / _SCRATCH_MARKER
+        if marker.is_symlink():
+            return False
+        marker_metadata = marker.stat()
+    except OSError:
+        return False
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None and (
+        metadata.st_uid != getuid() or marker_metadata.st_uid != getuid()
+    ):
+        return False
+    return bool(
+        metadata.st_mode & 0o077 == 0
+        and marker_metadata.st_mode & 0o077 == 0
+        and marker.is_file()
+    )
 
 
 def _is_managed_external_scratch(
@@ -253,8 +279,7 @@ def _is_managed_external_scratch(
     resolved = path.expanduser().resolve()
     repository = _attached_repository_root(repository_root or Path.cwd())
     return bool(
-        resolved.parent.name == "antigravity"
-        and (resolved / _SCRATCH_MARKER).is_file()
+        _is_private_antigravity_scratch(path)
         and resolved != repository
         and not resolved.is_relative_to(repository)
     )
