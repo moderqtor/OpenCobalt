@@ -19,11 +19,13 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from opencobalt.execution.runner import redact_text
 
+from .conversation_routing import ConversationRoutingUpdate
 from .lifecycle import RequestLifecycle, outcome_status_for_phase, phase_label
 from .models import (
     ChatExecution,
     ChatMessage,
     Conversation,
+    ConversationRoutingSettings,
     MemoryEntry,
     PersonaVersion,
     RouteCandidate,
@@ -181,7 +183,35 @@ class ChatService:
         title: str = "New conversation",
         project_path: str | None = None,
     ) -> Conversation:
-        return self.store.create_conversation(title=title, project_path=project_path)
+        from .conversation_routing import (
+            default_conversation_routing,
+            merge_routing_metadata,
+        )
+
+        routing = default_conversation_routing(self.store.get_settings())
+        return self.store.create_conversation(
+            title=title,
+            project_path=project_path,
+            metadata=merge_routing_metadata({}, routing),
+        )
+
+    def conversation_routing(self, conversation_id: str) -> ConversationRoutingSettings:
+        from .conversation_routing import parse_conversation_routing
+
+        conversation = self.store.get_conversation(conversation_id)
+        if conversation is None:
+            raise KeyError(conversation_id)
+        return parse_conversation_routing(conversation.metadata, self.store.get_settings())
+
+    def update_conversation_routing(
+        self, conversation_id: str, update: ConversationRoutingUpdate
+    ) -> ConversationRoutingSettings:
+        from .conversation_routing import apply_routing_update
+
+        current = self.conversation_routing(conversation_id)
+        routing = apply_routing_update(current, update)
+        self.store.save_conversation_routing(conversation_id, routing)
+        return routing
 
     def stream_request(self, request: ChatRequest) -> Iterator[ChatLifecycleEvent]:
         """Execute the complete durable lifecycle and yield normalized events."""

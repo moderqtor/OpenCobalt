@@ -34,6 +34,41 @@ class CommunicationControls(BaseModel):
     uncertainty_explicitness: ControlLevel = "high"
 
 
+class ConversationManualPreset(BaseModel):
+    """Last manual execution selections. Kept when routing mode is Automatic."""
+
+    provider_id: str | None = None
+    model_id: str | None = None
+
+    @field_validator("provider_id", "model_id")
+    @classmethod
+    def _bounded_override(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        clean = value.strip()
+        if not clean:
+            return None
+        if len(clean) > 200 or clean.startswith("-"):
+            raise ValueError("override identifier must be a bounded non-flag value")
+        return clean
+
+
+class ConversationRoutingSettings(BaseModel):
+    """Durable per-conversation routing controls.
+
+    Automatic mode and the last manual preset are independent. Switching to
+    Automatic must not destroy provider/model selections for later restoration.
+    Persona and cognitive policy are not stored here.
+    """
+
+    mode: Literal["automatic", "manual"] = "automatic"
+    manual_preset: ConversationManualPreset = Field(default_factory=ConversationManualPreset)
+    reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "medium"
+    allow_fallback: bool = False
+    privacy_mode: Literal["standard", "private", "sensitive"] = "standard"
+    local_only: bool = False
+
+
 class Conversation(BaseModel):
     conversation_id: str = Field(default_factory=lambda: _uid("conv"))
     title: str = "New conversation"

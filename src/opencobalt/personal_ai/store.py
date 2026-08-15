@@ -15,6 +15,7 @@ from .models import (
     ChatExecution,
     ChatMessage,
     Conversation,
+    ConversationRoutingSettings,
     MemoryEntry,
     Persona,
     PersonaVersion,
@@ -852,11 +853,36 @@ class PersonalAIStore:
         self, conversation_id: str, metadata: dict[str, Any]
     ) -> None:
         with self._connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE conversations SET metadata_json = ?, updated_at = ? "
                 "WHERE conversation_id = ?",
                 (_dump(metadata), _iso(datetime.now(tz=timezone.utc)), conversation_id),
             )
+            if cursor.rowcount == 0:
+                raise KeyError(conversation_id)
+
+    def save_conversation_routing(self, conversation_id: str, routing: ConversationRoutingSettings) -> Conversation:
+        from .conversation_routing import merge_routing_metadata
+
+        conversation = self.get_conversation(conversation_id)
+        if conversation is None:
+            raise KeyError(conversation_id)
+        self.update_conversation_metadata(
+            conversation_id,
+            merge_routing_metadata(conversation.metadata, routing),
+        )
+        updated = self.get_conversation(conversation_id)
+        if updated is None:
+            raise KeyError(conversation_id)
+        return updated
+
+    def delete_conversation(self, conversation_id: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            return cursor.rowcount > 0
 
     def get_conversation(self, conversation_id: str) -> Conversation | None:
         with self._connect() as conn:
