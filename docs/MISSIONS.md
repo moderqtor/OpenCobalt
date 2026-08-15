@@ -63,7 +63,10 @@ All state lives in the shared `.opencobalt/ledger.db`:
   execution_state, approval/receipt linkage. Auto-created missions also store
   route-step metadata in `step_json`: primitive, order, reason, whether the
   step expects `ExecutionEngine`, whether it expects a receipt, and whether it
-  represents an approval expectation.
+  represents an approval expectation. Steps may also record optional
+  orchestration fields (capability role, context inputs, output artifact,
+  verification criteria, authority boundary, dependencies, fallback policy).
+  Ordinary Chat still cannot become a mutating Mission by itself.
 - `mission_events`: append-only (`mev-`), enforced by SQLite triggers
   that abort UPDATE and DELETE.
 - `mission_extractions`: append-only, versioned extraction records (`mex-`)

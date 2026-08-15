@@ -693,12 +693,12 @@ class PersonalAIStore:
             self._apply_v5(conn)
             self._apply_v6(conn)
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=5)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 5000")
-        return conn
+    def _connect(self):
+        from opencobalt.core.sqlite import closing_sqlite
+
+        return closing_sqlite(
+            self.db_path, timeout=5, foreign_keys=True, busy_timeout_ms=5000
+        )
 
     def _apply_v2(self, conn: sqlite3.Connection) -> None:
         needs_rebuild = any(
@@ -1121,6 +1121,13 @@ class PersonalAIStore:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM ai_route_decisions WHERE route_id = ?", (route_id,)
+            ).fetchone()
+        return self._decode_route(row) if row else None
+
+    def get_route_by_request_id(self, request_id: str) -> RouteRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM ai_route_decisions WHERE request_id = ?", (request_id,)
             ).fetchone()
         return self._decode_route(row) if row else None
 

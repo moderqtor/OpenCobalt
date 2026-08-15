@@ -255,6 +255,10 @@ class ProviderModelCatalog(BaseModel):
     receipt_id: str | None = None
     error: ProviderError | None = None
     limitations: list[str] = Field(default_factory=list)
+    cache_hit: bool = False
+    cache_source: Literal["live_discovery", "cache", "snapshot"] = "live_discovery"
+    discovered_at: datetime | None = None
+    age_ms: int | None = None
 
 
 _BROAD_READ_ONLY_CAPABILITIES = (
@@ -296,6 +300,16 @@ _ROUTING_PROFILES = {
         latency_category="low",
         task_capabilities=_BROAD_READ_ONLY_CAPABILITIES,
         capability_roles=["cheap_local", "fast_general"],
+    ),
+    "deterministic": ProviderRoutingProfile(
+        provider_family="deterministic",
+        adapter_type="local_runtime",
+        billing_classification="local",
+        cost_category="free",
+        quality_tier="weak",
+        latency_category="low",
+        task_capabilities=("chat",),
+        capability_roles=["cheap_local"],
     ),
     "codex": ProviderRoutingProfile(
         provider_family="openai",
@@ -412,7 +426,10 @@ class ChatProvider:
             limitations=list(status.limitations),
         )
 
-    def discover_models(self, *, local_only: bool = False) -> ProviderModelCatalog:
+    def discover_models(
+        self, *, local_only: bool = False, refresh: bool = False
+    ) -> ProviderModelCatalog:
+        _ = refresh
         return ProviderModelCatalog(provider_id=self.provider_id)
 
     def execute(
@@ -427,8 +444,7 @@ class ChatProvider:
         request: ProviderRequest,
         cancellation: CancellationToken | None = None,
     ) -> Iterator[ProviderEvent]:
-        result = self.execute(request, cancellation)
-        yield from _events_from_result(result, cancellation, chunk_size=64)
+        yield from _stream_execute_then_events(self, request, cancellation, chunk_size=64)
 
 
 class EngineBackedChatProvider(ChatProvider):
@@ -551,6 +567,9 @@ class EngineBackedChatProvider(ChatProvider):
             )
 
         selected_adapter = adapter or self.adapter
+        cancel_check = (
+            (lambda: cancellation.cancelled) if cancellation is not None else None
+        )
         try:
             outcome = self.engine.run_task(
                 task if task is not None else _provider_task(request),
@@ -564,6 +583,7 @@ class EngineBackedChatProvider(ChatProvider):
                 execution_context="answer_only_inference",
                 risk_subject=request.message,
                 adapter=selected_adapter,
+                cancel_check=cancel_check,
             )
         except (KeyError, ValueError) as exc:
             return _pre_execution_error(
@@ -634,7 +654,10 @@ class MockChatProvider(EngineBackedChatProvider):
             limitations=self.status().limitations,
         )
 
-    def discover_models(self, *, local_only: bool = False) -> ProviderModelCatalog:
+    def discover_models(
+        self, *, local_only: bool = False, refresh: bool = False
+    ) -> ProviderModelCatalog:
+        _ = local_only, refresh
         return ProviderModelCatalog(
             provider_id=self.provider_id,
             models=[
@@ -680,8 +703,111 @@ class MockChatProvider(EngineBackedChatProvider):
         request: ProviderRequest,
         cancellation: CancellationToken | None = None,
     ) -> Iterator[ProviderEvent]:
-        result = self.execute(request, cancellation)
-        yield from _events_from_result(result, cancellation, chunk_size=self.chunk_size)
+        yield from _stream_execute_then_events(
+            self, request, cancellation, chunk_size=self.chunk_size
+        )
+
+
+class DeterministicChatProvider(EngineBackedChatProvider):
+    """In-process arithmetic and conversion provider with a receipt-backed noop run."""
+
+    def __init__(self, engine: _EngineLike) -> None:
+        super().__init__(
+            provider_id="deterministic",
+            display_name="Deterministic local",
+            engine=engine,
+            adapter=NoopAdapter(),
+            routing_profile=_routing_profile("deterministic"),
+        )
+
+    def status(self) -> ProviderStatus:
+        return ProviderStatus(
+            provider_id=self.provider_id,
+            display_name=self.display_name,
+            runtime_id="noop",
+            installed=True,
+            authentication="not_required",
+            health="ready",
+            execution_supported=True,
+            capabilities=ProviderCapabilities(
+                completion=True,
+                streaming="completion_only",
+                cancellation="normalized_stream_only",
+                model_discovery=True,
+                usage_reporting=True,
+                receipt_linkage=True,
+                local_only_eligible=True,
+                requires_network=False,
+                answer_only_isolation=True,
+            ),
+            routing_profile=self.routing_profile.model_copy(deep=True),
+            limitations=[
+                "in-process arithmetic and unit conversion only; not a language model",
+                "unsupported prompts are rejected rather than guessed",
+            ],
+        )
+
+    def discover_models(
+        self, *, local_only: bool = False, refresh: bool = False
+    ) -> ProviderModelCatalog:
+        _ = local_only, refresh
+        return ProviderModelCatalog(
+            provider_id=self.provider_id,
+            models=[
+                ProviderModel(
+                    provider_id=self.provider_id,
+                    model_id="deterministic-v1",
+                    display_name="Deterministic v1",
+                    source="builtin",
+                    execution_location="local",
+                    locality_evidence=["in_process_ast"],
+                    quality_tier="weak",
+                    cost_category="free",
+                    latency_category="low",
+                    family="deterministic",
+                    profile_evidence="builtin_deterministic_v1",
+                )
+            ],
+            cache_source="live_discovery",
+        )
+
+    def execute(
+        self,
+        request: ProviderRequest,
+        cancellation: CancellationToken | None = None,
+    ) -> ProviderResult:
+        from opencobalt.personal_ai.deterministic import try_deterministic
+
+        parsed = try_deterministic(request.message)
+        if parsed is None:
+            return _pre_execution_error(
+                request,
+                self.provider_id,
+                category="invalid_request",
+                message="prompt is not a closed-form arithmetic or conversion task",
+                status="blocked",
+            )
+        result = self._execute_through_engine(
+            request,
+            cancellation=cancellation,
+            task=f"Deterministic {parsed.kind}: {parsed.expression} = {parsed.display}",
+            model_id=request.model_id or "deterministic-v1",
+        )
+        if result.status == "complete":
+            result.content = parsed.display
+            result.metadata = {
+                **result.metadata,
+                "deterministic": True,
+                "deterministic_kind": parsed.kind,
+                "expression": parsed.expression,
+            }
+            if result.usage.source == "unavailable":
+                result.usage = ProviderUsage(
+                    input_characters=len(request.message),
+                    output_characters=len(result.content),
+                    source="deterministic_characters",
+                )
+        return result
 
 
 class _OllamaModelCatalogAdapter:
@@ -842,6 +968,9 @@ class OllamaChatProvider(EngineBackedChatProvider):
             supports_model_discovery=True,
             routing_profile=_routing_profile("ollama"),
         )
+        from opencobalt.personal_ai.catalog_cache import TtlCache
+
+        self._catalog_cache: TtlCache[ProviderModelCatalog] = TtlCache()
 
     @property
     def _loopback(self) -> bool:
@@ -904,27 +1033,32 @@ class OllamaChatProvider(EngineBackedChatProvider):
                 message="Ollama execution requires an explicitly discovered model id",
                 status="blocked",
             )
-        catalog = self.discover_models(local_only=request.local_only)
-        admitted = {model.model_id for model in catalog.models}
-        if catalog.error is not None:
-            return _pre_execution_error(
-                request,
-                self.provider_id,
-                category="local_only_violation" if request.local_only else "unavailable",
-                message="Ollama local model provenance could not be verified",
-                status="blocked",
-            )
-        if request.model_id not in admitted:
-            return _pre_execution_error(
-                request,
-                self.provider_id,
-                category="local_only_violation" if request.local_only else "invalid_request",
-                message=(
-                    "requested Ollama model was not admitted by local model discovery; "
-                    "remote retrieval is disabled"
-                ),
-                status="blocked",
-            )
+        admitted_ids = request.metadata.get("admitted_model_ids")
+        snapshot_admitted = (
+            isinstance(admitted_ids, list) and request.model_id in admitted_ids
+        )
+        if not snapshot_admitted:
+            catalog = self.discover_models(local_only=request.local_only, refresh=False)
+            admitted = {model.model_id for model in catalog.models}
+            if catalog.error is not None:
+                return _pre_execution_error(
+                    request,
+                    self.provider_id,
+                    category="local_only_violation" if request.local_only else "unavailable",
+                    message="Ollama local model provenance could not be verified",
+                    status="blocked",
+                )
+            if request.model_id not in admitted:
+                return _pre_execution_error(
+                    request,
+                    self.provider_id,
+                    category="local_only_violation" if request.local_only else "invalid_request",
+                    message=(
+                        "requested Ollama model was not admitted by local model discovery; "
+                        "remote retrieval is disabled"
+                    ),
+                    status="blocked",
+                )
         generate_adapter = _OllamaGenerateAdapter(
             endpoint=self.endpoint,
             model_id=request.model_id,
@@ -936,7 +1070,32 @@ class OllamaChatProvider(EngineBackedChatProvider):
             adapter=generate_adapter,
         )
 
-    def discover_models(self, *, local_only: bool = False) -> ProviderModelCatalog:
+    def discover_models(
+        self, *, local_only: bool = False, refresh: bool = False
+    ) -> ProviderModelCatalog:
+        if not refresh:
+            hit = self._catalog_cache.get()
+            if hit is not None:
+                return hit.value.model_copy(
+                    update={
+                        "cache_hit": True,
+                        "cache_source": "cache",
+                        "age_ms": hit.age_ms,
+                        "discovered_at": hit.stored_at,
+                    }
+                )
+        catalog = self._discover_models_live(local_only=local_only)
+        self._catalog_cache.store(catalog, is_error=catalog.error is not None)
+        return catalog.model_copy(
+            update={
+                "cache_hit": False,
+                "cache_source": "live_discovery",
+                "age_ms": 0,
+                "discovered_at": catalog.discovered_at,
+            }
+        )
+
+    def _discover_models_live(self, *, local_only: bool = False) -> ProviderModelCatalog:
         request = ProviderRequest(
             message="discover installed Ollama models",
             local_only=local_only,
@@ -1105,6 +1264,7 @@ class ProviderRegistry:
 
         providers: list[ChatProvider] = [
             MockChatProvider(engine),
+            DeterministicChatProvider(engine),
             EngineBackedChatProvider(
                 provider_id="codex",
                 display_name="Codex CLI",
@@ -1167,32 +1327,70 @@ def _provider_task(request: ProviderRequest) -> str:
     )
 
 
+def _stream_execute_then_events(
+    provider: ChatProvider,
+    request: ProviderRequest,
+    cancellation: CancellationToken | None,
+    *,
+    chunk_size: int,
+) -> Iterator[ProviderEvent]:
+    """Emit provider_started before the blocking execute() call.
+
+    Completion-only providers otherwise appear frozen: route selected, no
+    provider-start event, until the subprocess returns.
+    """
+    if cancellation is not None and cancellation.cancelled:
+        yield ProviderEvent(
+            request_id=request.request_id,
+            provider_id=provider.provider_id,
+            sequence=1,
+            event_type="cancelled",
+            error=ProviderError(category="cancelled", message="request cancelled"),
+        )
+        return
+    yield ProviderEvent(
+        request_id=request.request_id,
+        provider_id=provider.provider_id,
+        sequence=1,
+        event_type="started",
+        metadata={"invocation": "pending"},
+    )
+    result = provider.execute(request, cancellation)
+    yield from _events_from_result(
+        result, cancellation, chunk_size=chunk_size, emit_started=False
+    )
+
+
 def _events_from_result(
     result: ProviderResult,
     cancellation: CancellationToken | None,
     *,
     chunk_size: int,
+    emit_started: bool = True,
 ) -> Iterator[ProviderEvent]:
     sequence = 1
     if cancellation is not None and cancellation.cancelled:
         yield ProviderEvent(
             request_id=result.request_id,
             provider_id=result.provider_id,
-            sequence=sequence,
+            sequence=1 if emit_started else 2,
             event_type="cancelled",
             error=ProviderError(category="cancelled", message="request cancelled"),
             receipt_id=result.receipt_id,
         )
         return
 
-    yield ProviderEvent(
-        request_id=result.request_id,
-        provider_id=result.provider_id,
-        sequence=sequence,
-        event_type="started",
-        receipt_id=result.receipt_id,
-    )
-    sequence += 1
+    if emit_started:
+        yield ProviderEvent(
+            request_id=result.request_id,
+            provider_id=result.provider_id,
+            sequence=sequence,
+            event_type="started",
+            receipt_id=result.receipt_id,
+        )
+        sequence += 1
+    else:
+        sequence = 2
 
     if result.status != "complete":
         event_type = "cancelled" if result.status == "cancelled" else "error"

@@ -18,6 +18,7 @@ from opencobalt.integrations.antigravity_integration import (
     build_antigravity_command,
     build_antigravity_models_command,
 )
+from opencobalt.personal_ai.catalog_cache import TtlCache
 from opencobalt.personal_ai.providers import (
     AuthenticationState,
     CancellationToken,
@@ -33,7 +34,6 @@ from opencobalt.personal_ai.providers import (
     ProviderToolEvent,
     _AdapterLike,
     _EngineLike,
-    _events_from_result,
     _normalize_outcome,
     _pre_execution_error,
     _public_error_text,
@@ -459,7 +459,7 @@ class AntigravityChatProvider(EngineBackedChatProvider):
             supports_model_discovery=True,
             routing_profile=_routing_profile("antigravity"),
         )
-        self._catalog_cache: ProviderModelCatalog | None = None
+        self._catalog_cache: TtlCache[ProviderModelCatalog] = TtlCache()
 
     def _runtime_capabilities(self) -> dict[str, Any]:
         if isinstance(self.adapter, AntigravityAdapter):
@@ -519,7 +519,7 @@ class AntigravityChatProvider(EngineBackedChatProvider):
         status = self.status()
         catalog = None
         if status.capabilities.model_discovery:
-            catalog = self.discover_models()
+            catalog = self.discover_models(refresh=True)
         verified = bool(catalog and catalog.models and catalog.error is None)
         authentication: AuthenticationState = "verified" if verified else status.authentication
         health: ProviderHealthState = "ready" if verified and status.execution_supported else status.health
@@ -537,7 +537,32 @@ class AntigravityChatProvider(EngineBackedChatProvider):
             limitations=limitations,
         )
 
-    def discover_models(self, *, local_only: bool = False) -> ProviderModelCatalog:
+    def discover_models(
+        self, *, local_only: bool = False, refresh: bool = False
+    ) -> ProviderModelCatalog:
+        if not refresh:
+            hit = self._catalog_cache.get()
+            if hit is not None:
+                return hit.value.model_copy(
+                    update={
+                        "cache_hit": True,
+                        "cache_source": "cache",
+                        "age_ms": hit.age_ms,
+                        "discovered_at": hit.stored_at,
+                    }
+                )
+        catalog = self._discover_models_live(local_only=local_only)
+        self._catalog_cache.store(catalog, is_error=catalog.error is not None)
+        return catalog.model_copy(
+            update={
+                "cache_hit": False,
+                "cache_source": "live_discovery",
+                "age_ms": 0,
+                "discovered_at": catalog.discovered_at,
+            }
+        )
+
+    def _discover_models_live(self, *, local_only: bool = False) -> ProviderModelCatalog:
         request = ProviderRequest(
             message="discover authenticated Antigravity models",
             local_only=local_only,
@@ -611,8 +636,8 @@ class AntigravityChatProvider(EngineBackedChatProvider):
             models=models,
             receipt_id=normalized.receipt_id,
             limitations=limitations,
+            discovered_at=_now(),
         )
-        self._catalog_cache = catalog
         return catalog
 
     def execute(
@@ -620,6 +645,14 @@ class AntigravityChatProvider(EngineBackedChatProvider):
         request: ProviderRequest,
         cancellation: CancellationToken | None = None,
     ) -> ProviderResult:
+        if cancellation is not None and cancellation.cancelled:
+            return _pre_execution_error(
+                request,
+                self.provider_id,
+                category="cancelled",
+                message="request cancelled before execution",
+                status="cancelled",
+            )
         if request.local_only:
             return _pre_execution_error(
                 request,
@@ -631,13 +664,21 @@ class AntigravityChatProvider(EngineBackedChatProvider):
         if not self._uses_isolated_print():
             return super().execute(request, cancellation)
 
-        catalog = self.discover_models(local_only=False)
+        catalog = self.discover_models(local_only=False, refresh=False)
         admitted = {model.model_id for model in catalog.models}
+        if (
+            request.model_id
+            and catalog.error is None
+            and request.model_id not in admitted
+            and catalog.cache_hit
+        ):
+            catalog = self.discover_models(local_only=False, refresh=True)
+            admitted = {model.model_id for model in catalog.models}
         if request.model_id and catalog.error is None and request.model_id not in admitted:
             return _pre_execution_error(
                 request,
                 self.provider_id,
-                category="invalid_request",
+                category="unavailable",
                 message="requested Antigravity model was not reported by authenticated discovery",
                 status="blocked",
             )
@@ -708,8 +749,9 @@ class AntigravityChatProvider(EngineBackedChatProvider):
         request: ProviderRequest,
         cancellation: CancellationToken | None = None,
     ):
-        result = self.execute(request, cancellation)
-        yield from _events_from_result(result, cancellation, chunk_size=64)
+        from opencobalt.personal_ai.providers import _stream_execute_then_events
+
+        yield from _stream_execute_then_events(self, request, cancellation, chunk_size=64)
 
 
 def _parse_json_object(raw_content: str) -> dict[str, Any] | None:

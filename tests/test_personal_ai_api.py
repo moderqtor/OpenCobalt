@@ -15,6 +15,7 @@ from opencobalt.personal_ai.api import _stream_ndjson
 from opencobalt.personal_ai.models import ChatExecution, StreamEvent
 from opencobalt.personal_ai.service import ChatLifecycleEvent, ChatRequest
 from opencobalt.personal_ai.store import PersonalAIStore
+from tests.test_chat_service import _real_mock_service
 
 
 @pytest.fixture
@@ -111,6 +112,27 @@ def test_ndjson_disconnect_does_not_abandon_live_pending_approval() -> None:
     assert "approval_required" in next(stream)
     stream.close()
     assert service.abandoned == []
+
+
+def test_ndjson_disconnect_releases_request_token_before_provider_execution(
+    tmp_path,
+) -> None:
+    service, _, _ = _real_mock_service(tmp_path)
+    conversation = service.create_conversation(title="Early disconnect")
+    stream = _stream_ndjson(
+        service,
+        ChatRequest(
+            conversation_id=conversation.conversation_id,
+            message="Explain this",
+            provider_override="mock",
+        ),
+    )
+    accepted = json.loads(next(stream))
+    assert json.loads(next(stream))["event_type"] == "phase_changed"
+
+    stream.close()
+
+    assert service.cancel(accepted["request_id"]) is False
 
 
 def test_context_is_keyed_by_resolved_ledger_path(
@@ -273,11 +295,10 @@ def test_mock_stream_persists_messages_route_execution_and_redacted_receipt(
     events = _stream_mock_chat(client, conversation["conversation_id"])
 
     event_types = [event["event_type"] for event in events]
-    assert event_types[:3] == [
-        "request_accepted",
-        "route_selected",
-        "execution_started",
-    ]
+    assert event_types[:2] == ["request_accepted", "phase_changed"]
+    assert event_types.index("route_selected") > event_types.index("phase_changed")
+    assert event_types.index("execution_started") > event_types.index("route_selected")
+    assert event_types.index("provider_started") < event_types.index("completed")
     assert event_types[-1] == "completed"
     assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
 
@@ -463,6 +484,7 @@ def test_local_only_override_cannot_route_to_cloud_cli(client: TestClient) -> No
     events = [json.loads(line) for line in response.text.splitlines() if line]
     assert [event["event_type"] for event in events] == [
         "request_accepted",
+        "phase_changed",
         "route_failed",
     ]
     assert events[-1]["payload"]["error"]["category"] == "policy_denied"
@@ -554,12 +576,17 @@ def test_closing_stream_finalizes_durable_cancellation(client: TestClient) -> No
 
     first = json.loads(next(stream))
     second = json.loads(next(stream))
-    started = json.loads(next(stream))
-    assert [first["event_type"], second["event_type"], started["event_type"]] == [
+    assert [first["event_type"], second["event_type"]] == [
         "request_accepted",
-        "route_selected",
-        "execution_started",
+        "phase_changed",
     ]
+    started = None
+    for line in stream:
+        event = json.loads(line)
+        if event["event_type"] == "execution_started":
+            started = event
+            break
+    assert started is not None
     stream.close()
 
     execution = context.store.get_execution(started["execution_id"])
@@ -590,9 +617,11 @@ def test_cancel_request_then_stream_close_preserves_user_intent(client: TestClie
         ),
     )
     started = None
-    for _ in range(3):
-        event = json.loads(next(stream))
-        started = event if event["event_type"] == "execution_started" else started
+    for line in stream:
+        event = json.loads(line)
+        if event["event_type"] == "execution_started":
+            started = event
+            break
     assert started is not None
 
     requested = client.post(f"/api/v1/executions/{started['execution_id']}/cancel")

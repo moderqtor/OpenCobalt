@@ -34,6 +34,7 @@ def _provider(
     authentication_state: str = "unknown",
     model_id: str | None = None,
     capability_roles: frozenset[str] = frozenset(),
+    billing_classification: str = "unknown",
 ) -> ProviderSnapshot:
     return ProviderSnapshot(
         provider_id=provider_id,
@@ -55,6 +56,7 @@ def _provider(
         readiness_state=readiness_state,
         authentication_state=authentication_state,
         capability_roles=capability_roles,
+        billing_classification=billing_classification,
     )
 
 
@@ -277,6 +279,26 @@ def test_route_output_is_persistence_compatible_and_never_reports_a_fallback_exe
     assert plan.candidates[0].route_id == plan.record.route_id
 
 
+@pytest.mark.parametrize("permission", ["deny", "ask"])
+def test_builtin_skill_recommendation_requires_allow_builtin(permission):
+    provider = _provider(
+        "planner",
+        local=True,
+        requires_network=False,
+        capabilities=frozenset({"chat", "planning"}),
+    )
+
+    plan = PersonalAIRouter().route(
+        _request(
+            "Plan next week",
+            settings=AISettings(skill_permissions=permission),
+        ),
+        [provider],
+    )
+
+    assert plan.record.selected_skills == []
+
+
 @pytest.mark.parametrize(
     ("prompt", "expected"),
     [
@@ -345,6 +367,38 @@ def test_cost_ceiling_is_an_eligibility_rule_with_a_visible_rejection_reason():
     assert expensive_candidate.rejection_reason == (
         "provider cost category 'high' exceeds configured ceiling 'low'"
     )
+
+
+def test_subscription_backed_standard_cost_uses_low_marginal_cost_for_ceiling():
+    router = PersonalAIRouter()
+    subscription = _provider(
+        "subscription",
+        local=False,
+        requires_network=True,
+        cost_category="standard",
+        billing_classification="subscription_backed",
+    )
+    fallback = _provider(
+        "fallback",
+        local=True,
+        requires_network=False,
+        cost_category="low",
+    )
+
+    plan = router.route(
+        _request(
+            "Explain this concept",
+            settings=AISettings(cost_ceiling_category="low"),
+        ),
+        [subscription, fallback],
+    )
+
+    candidate = next(
+        item for item in plan.candidates if item.provider_id == "subscription"
+    )
+    assert candidate.eligible is True
+    assert candidate.rejection_reason is None
+    assert candidate.score_components["cost_fit"] == 5
 
 
 def test_complex_implementation_rejects_a_weak_model_even_when_it_is_free():
@@ -455,6 +509,8 @@ def _cheap_local(**changes: object) -> ProviderSnapshot:
         latency_category="low",
         capabilities=frozenset({"chat", "coding", "research", "file_analysis"}),
         authentication_state="not_required",
+        billing_classification="local",
+        capability_roles=frozenset({"cheap_local", "fast_general"}),
     )
     values.update(changes)
     return _provider(**values)
@@ -470,6 +526,8 @@ def _strong_cloud(**changes: object) -> ProviderSnapshot:
         latency_category="high",
         capabilities=frozenset({"chat", "coding", "research", "file_analysis"}),
         authentication_state="unknown",
+        billing_classification="subscription_backed",
+        capability_roles=frozenset({"fast_general", "strong_reasoning", "research"}),
     )
     values.update(changes)
     return _provider(**values)
@@ -759,3 +817,40 @@ def test_evidence_questions_classify_as_research():
 
 def test_reflective_prompts_classify_as_personal_reflection():
     assert classify_task("I miss someone, and I am unsure why.") == "personal_reflection"
+
+
+def test_bounded_explanations_stay_cheap_instead_of_strong_reasoning():
+    prompts = (
+        "Explain the difference between TCP and UDP in three sentences.",
+        "What's the difference between RAM and storage briefly?",
+        "Explain HTTP in three sentences.",
+        "What is a mutex in one paragraph?",
+    )
+    for prompt in prompts:
+        plan = PersonalAIRouter().route(
+            _request(prompt, cognitive_policy="deep_analysis"),
+            [_strong_cloud(), _cheap_local()],
+        )
+        assert plan.task_complexity == "simple", prompt
+        assert plan.requirements.reasoning_quality == "low", prompt
+        assert plan.requirements.factual_sensitivity == "low", prompt
+        assert plan.capability_role in {"cheap_local", "fast_general"}, prompt
+        assert plan.record.selected_provider == "ollama", prompt
+
+
+def test_routing_matrix_keeps_high_stakes_and_light_tasks_apart():
+    cases = (
+        ("What is 8 plus 9?", "cheap_local"),
+        ("Explain the difference between TCP and UDP in three sentences.", "cheap_local"),
+        ("Walk through the tradeoffs of a consensus protocol across partitions and failure modes", "strong_reasoning"),
+        (
+            "What acetaminophen dosage and contraindications apply for an adult patient with fever?",
+            "strong_reasoning",
+        ),
+    )
+    for prompt, role in cases:
+        plan = PersonalAIRouter().route(
+            _request(prompt, cognitive_policy="deep_analysis"),
+            [_strong_cloud(), _cheap_local()],
+        )
+        assert plan.capability_role == role, prompt

@@ -300,6 +300,24 @@ class TestProcessRunner:
         assert result.status == "timeout"
         assert "timed out" in (result.error or "")
 
+    def test_cancel_check_stops_a_running_process(self, tmp_path):
+        runner = ProcessRunner(artifact_dir=tmp_path)
+        polls = {"n": 0}
+
+        def cancel_check():
+            polls["n"] += 1
+            return polls["n"] > 2
+
+        result = runner.run(
+            ["sleep", "30"],
+            plan_id="p1",
+            runtime="noop",
+            timeout_seconds=5,
+            cancel_check=cancel_check,
+        )
+        assert result.status == "failed"
+        assert result.error == "cancelled"
+
     def test_rejects_non_list_argv(self, tmp_path):
         runner = ProcessRunner(artifact_dir=tmp_path)
         with pytest.raises(ValueError):

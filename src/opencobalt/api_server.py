@@ -10,6 +10,7 @@ import importlib.metadata
 import json
 import re
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -17,18 +18,33 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from .agents.registry import list_agents
-from .core.benchmark import BenchmarkStore
-from .core.cost import CostTracker
-from .core.ledger import Ledger
 from .core.public_safety import scan_directory
 from .core.router import route_task
-from .integrations.registry import REGISTRY as _INTEGRATION_REGISTRY
+from .personal_ai.api import _CONTEXT_LOCK, _CONTEXTS
 from .personal_ai.api import router as personal_ai_router
 
 _START_TIME = time.time()
+_START_MONOTONIC = time.monotonic()
 
-app = FastAPI(title="OpenCobalt API", version="0.1.0")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    yield
+    with _CONTEXT_LOCK:
+        contexts = [item[1] for item in _CONTEXTS.values()]
+    failures: list[Exception] = []
+    for context in contexts:
+        try:
+            context.service.cancel_all()
+        except Exception as exc:
+            failures.append(exc)
+    if failures:
+        raise RuntimeError(
+            f"personal-AI shutdown cancellation failed: {failures[0]}"
+        ) from failures[0]
+
+
+app = FastAPI(title="OpenCobalt API", version="0.1.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -36,11 +52,12 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
-
 app.include_router(personal_ai_router)
 
 
-def _ledger() -> Ledger:
+def _ledger():
+    from .core.ledger import Ledger
+
     return Ledger(Path(".opencobalt") / "ledger.db")
 
 
@@ -57,6 +74,17 @@ def _count_tests() -> int | None:
         except OSError:
             pass
     return count
+
+
+@app.get("/api/ready")
+def get_ready() -> dict[str, Any]:
+    """The complete API is mounted without scanning the repo or provider catalogs."""
+    return {
+        "ready": True,
+        "phase": "ready",
+        "uptime_ms": int((time.monotonic() - _START_MONOTONIC) * 1000),
+        "personal_ai_mounted": True,
+    }
 
 
 @app.get("/api/status")
@@ -115,6 +143,8 @@ def get_sessions() -> list[dict[str, Any]]:
 @app.get("/api/agents")
 def get_agents() -> list[dict[str, Any]]:
     try:
+        from .agents.registry import list_agents
+
         profiles = list_agents()
     except Exception:
         return []
@@ -134,11 +164,15 @@ def get_agents() -> list[dict[str, Any]]:
 @app.get("/api/benchmarks")
 def get_benchmarks() -> list[dict[str, Any]]:
     try:
+        from .core.benchmark import BenchmarkStore
+
         board = BenchmarkStore(Path(".opencobalt") / "ledger.db").get_leaderboard(n=10)
     except Exception:
         return []
 
     try:
+        from .agents.registry import list_agents
+
         tier_map = {p.name: p.tier for p in list_agents()}
     except Exception:
         tier_map = {}
@@ -161,6 +195,8 @@ def get_benchmarks() -> list[dict[str, Any]]:
 @app.get("/api/integrations")
 def get_integrations() -> list[dict[str, Any]]:
     try:
+        from .integrations.registry import REGISTRY as _INTEGRATION_REGISTRY
+
         result = []
         for integration in _INTEGRATION_REGISTRY.values():
             p = integration.profile()
@@ -205,6 +241,8 @@ def get_memory() -> dict[str, Any]:
 @app.get("/api/cost")
 def get_cost() -> dict[str, Any]:
     try:
+        from .core.cost import CostTracker
+
         tracker = CostTracker(Path(".opencobalt") / "ledger.db")
         return {
             "monthly_total": tracker.monthly_spend(),

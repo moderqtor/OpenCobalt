@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from opencobalt.execution.runner import redact_text
 
+from .lifecycle import RequestLifecycle, outcome_status_for_phase, phase_label
 from .models import (
     ChatExecution,
     ChatMessage,
@@ -49,6 +50,7 @@ from .router import (
     classify_requirements,
     classify_risk,
     classify_task,
+    has_explicit_format_constraint,
     resolve_persona_for_provider,
 )
 from .store import PersonalAIStore
@@ -169,6 +171,7 @@ class ChatService:
         self.engine = engine
         self.approval_coordinator = approval_coordinator
         self._cancellations: dict[str, CancellationToken] = {}
+        self._request_tokens: dict[str, CancellationToken] = {}
         self._cancellation_lock = threading.Lock()
         ensure_builtin_personas(self.store)
 
@@ -189,6 +192,7 @@ class ChatService:
         cognitive_policy = self._cognitive_policy(persona_version, request.cognitive_policy)
         settings = self.store.get_settings()
         request_id = _uid("req")
+        lifecycle = RequestLifecycle(request_id)
         user_message = self.store.add_message(
             conversation.conversation_id,
             role="user",
@@ -201,6 +205,18 @@ class ChatService:
                 **request.metadata,
             },
         )
+        accepted = ChatLifecycleEvent(
+            event_type="request_accepted",
+            request_id=request_id,
+            conversation_id=conversation.conversation_id,
+            sequence=1,
+            payload={
+                "message_id": user_message.message_id,
+                "lifecycle": lifecycle.snapshot(),
+                "phase_label": phase_label(lifecycle.phase),
+            },
+        )
+        yield accepted
         routing_request = RoutingRequest(
             request_id=request_id,
             conversation_id=conversation.conversation_id,
@@ -216,10 +232,26 @@ class ChatService:
             model_override=request.model_override,
             requested_tools=tuple(request.requested_tools),
             requested_skills=tuple(request.requested_skills),
+            attachment_ids=tuple(request.attachment_ids),
             project_path=conversation.project_path,
+        )
+        cancellation = CancellationToken()
+        with self._cancellation_lock:
+            self._request_tokens[request_id] = cancellation
+        lifecycle.enter("checking_capabilities")
+        yield ChatLifecycleEvent(
+            event_type="phase_changed",
+            request_id=request_id,
+            conversation_id=conversation.conversation_id,
+            sequence=2,
+            payload={
+                "lifecycle": lifecycle.snapshot(),
+                "phase_label": phase_label(lifecycle.phase),
+            },
         )
         snapshots = self._provider_snapshots(routing_request, persona_version)
 
+        lifecycle.enter("routing")
         try:
             plan = self.router.route(
                 routing_request,
@@ -227,11 +259,12 @@ class ChatService:
                 persona_version=persona_version,
             )
         except NoEligibleRouteError as exc:
+            lifecycle.enter("blocked")
             route = self._persist_denied_route(
                 routing_request,
                 persona_version,
                 exc.candidates,
-                metadata=request.metadata,
+                metadata={**request.metadata, "lifecycle": lifecycle.snapshot()},
             )
             self.store.update_message(user_message.message_id, route_id=route.route_id)
             denied_message = self.store.add_message(
@@ -256,19 +289,11 @@ class ChatService:
                 },
             )
             yield ChatLifecycleEvent(
-                event_type="request_accepted",
-                request_id=request_id,
-                conversation_id=conversation.conversation_id,
-                route_id=route.route_id,
-                sequence=1,
-                payload={"message_id": user_message.message_id},
-            )
-            yield ChatLifecycleEvent(
                 event_type="route_failed",
                 request_id=request_id,
                 conversation_id=conversation.conversation_id,
                 route_id=route.route_id,
-                sequence=2,
+                sequence=3,
                 payload={
                     "error": {
                         "category": "policy_denied",
@@ -276,12 +301,23 @@ class ChatService:
                     },
                     "reasons": route.reasons,
                     "message": denied_message.model_dump(mode="json"),
+                    "lifecycle": lifecycle.snapshot(),
                 },
             )
+            with self._cancellation_lock:
+                self._request_tokens.pop(request_id, None)
             return
 
+        lifecycle.enter("starting_provider")
         route = plan.record.model_copy(
-            update={"metadata": {**plan.record.metadata, **request.metadata}}
+            update={
+                "metadata": {
+                    **plan.record.metadata,
+                    **request.metadata,
+                    "lifecycle": lifecycle.snapshot(),
+                },
+                "outcome_status": outcome_status_for_phase(lifecycle.phase),
+            }
         )
         self.store.save_route(route)
         for candidate in plan.candidates:
@@ -289,17 +325,74 @@ class ChatService:
         self.store.update_message(user_message.message_id, route_id=route.route_id)
 
         eligible_candidates = [candidate for candidate in plan.candidates if candidate.eligible]
-        yield from self._execute_route(
-            request=request,
-            routing_request=routing_request,
-            route=route,
-            candidates=eligible_candidates,
-            persona_version=persona_version,
-            cognitive_policy=cognitive_policy,
-            conversation=conversation,
-            user_message=user_message,
-            snapshots=snapshots,
-        )
+        try:
+            yield from self._execute_route(
+                request=request,
+                routing_request=routing_request,
+                route=route,
+                candidates=eligible_candidates,
+                persona_version=persona_version,
+                cognitive_policy=cognitive_policy,
+                conversation=conversation,
+                user_message=user_message,
+                snapshots=snapshots,
+                lifecycle=lifecycle,
+                cancellation=cancellation,
+                stream_sequence=2,
+            )
+        except Exception as exc:
+            current_route = self.store.get_route(route.route_id) or route
+            if current_route.outcome_status in {
+                "complete",
+                "failed",
+                "cancelled",
+                "blocked",
+                "policy_denied",
+            }:
+                raise
+            lifecycle.enter("failed")
+            error = ProviderError(
+                category="provider_error",
+                message=_safe_diagnostic(str(exc)) or "request failed before completion",
+            )
+            current_route = self._finish_route(
+                current_route,
+                status="failed",
+                receipt_id=None,
+                usage=ProviderUsage(),
+                actual_provider_id=current_route.selected_provider,
+                actual_model_id=current_route.selected_model,
+            )
+            failed_message = self._persist_terminal_assistant_message(
+                route=current_route,
+                execution=ChatExecution(
+                    request_id=request_id,
+                    route_id=current_route.route_id,
+                    conversation_id=conversation.conversation_id,
+                    provider_id=current_route.selected_provider,
+                    model_id=current_route.selected_model,
+                    status="failed",
+                ),
+                user_message=user_message,
+                status="failed",
+                content=f"OpenCobalt could not complete this request: {error.message}",
+                error=error,
+            )
+            yield ChatLifecycleEvent(
+                event_type="error",
+                request_id=request_id,
+                conversation_id=conversation.conversation_id,
+                route_id=current_route.route_id,
+                sequence=3,
+                payload={
+                    "error": error.model_dump(mode="json"),
+                    "message": failed_message.model_dump(mode="json"),
+                    "lifecycle": lifecycle.snapshot(),
+                },
+            )
+        finally:
+            with self._cancellation_lock:
+                self._request_tokens.pop(request_id, None)
 
     def has_live_pending_approval(self, execution_id: str) -> bool:
         coordinator = self.approval_coordinator
@@ -309,6 +402,8 @@ class ChatService:
         """Request cooperative cancellation and persist the request state."""
         with self._cancellation_lock:
             cancellation = self._cancellations.pop(execution_id, None)
+            if cancellation is None:
+                cancellation = self._request_tokens.pop(execution_id, None)
         if cancellation is None:
             return False
         cancellation.cancel()
@@ -324,6 +419,30 @@ class ChatService:
             )
         return True
 
+    def cancel_all(self) -> int:
+        """Cancel every in-flight request token. Used on API shutdown."""
+        with self._cancellation_lock:
+            tokens = list(self._cancellations.items()) + [
+                (key, token) for key, token in self._request_tokens.items()
+            ]
+        cancelled = 0
+        seen: set[int] = set()
+        for key, token in tokens:
+            if id(token) in seen:
+                continue
+            seen.add(id(token))
+            token.cancel()
+            cancelled += 1
+            execution = self.store.get_execution(key)
+            if execution is not None and execution.status in {"queued", "running"}:
+                now = _now()
+                self.store.save_execution(
+                    execution.model_copy(
+                        update={"status": "cancel_requested", "updated_at": now}
+                    )
+                )
+        return cancelled
+
     def abandon(self, execution_id: str) -> bool:
         """Finalize a disconnected stream without waiting for cooperative resumption.
 
@@ -336,11 +455,19 @@ class ChatService:
             return False
         with self._cancellation_lock:
             cancellation = self._cancellations.pop(execution_id, None)
+            request_token = self._request_tokens.pop(execution_id, None)
         if cancellation is not None:
             cancellation.cancel()
+        elif request_token is not None:
+            request_token.cancel()
 
         execution = self.store.get_execution(execution_id)
-        if execution is None or execution.status in {"complete", "failed", "cancelled"}:
+        if execution is None:
+            executions = self.store.list_executions(request_id=execution_id, limit=1)
+            execution = executions[0] if executions else None
+        if execution is None:
+            return self._abandon_unstarted_request(execution_id)
+        if execution.status in {"complete", "failed", "cancelled"}:
             return False
 
         cancellation_reason = (
@@ -417,7 +544,7 @@ class ChatService:
         self.store.append_stream_event(
             StreamEvent(
                 execution_id=execution.execution_id,
-                sequence=len(events) + 1,
+                sequence=self._next_stream_sequence(execution.execution_id),
                 event_type="cancelled",
                 payload={
                     "error": error.model_dump(mode="json"),
@@ -426,6 +553,51 @@ class ChatService:
                 },
             )
         )
+        return True
+
+    def _abandon_unstarted_request(self, request_id: str) -> bool:
+        """Cancel a request that disconnected before a provider execution existed."""
+        route = self.store.get_route_by_request_id(request_id)
+        if route is None:
+            return False
+        if route.outcome_status in {
+            "complete",
+            "failed",
+            "cancelled",
+            "blocked",
+            "policy_denied",
+        }:
+            return False
+        error = ProviderError(
+            category="cancelled",
+            message="client disconnected before the response completed",
+        )
+        route = self._finish_route(
+            route,
+            status="cancelled",
+            receipt_id=None,
+            usage=ProviderUsage(),
+        )
+        source = self.store.get_message(route.request_message_id)
+        if source is not None:
+            self._persist_terminal_assistant_message(
+                route=route,
+                execution=ChatExecution(
+                    request_id=request_id,
+                    route_id=route.route_id,
+                    conversation_id=route.conversation_id,
+                    provider_id=route.selected_provider,
+                    model_id=route.selected_model,
+                    status="cancelled",
+                ),
+                user_message=source,
+                status="cancelled",
+                content=(
+                    "The request ended because the client disconnected before a "
+                    "response completed."
+                ),
+                error=error,
+            )
         return True
 
     def rerun(
@@ -507,10 +679,13 @@ class ChatService:
         conversation: Conversation,
         user_message: ChatMessage,
         snapshots: Sequence[Any] | None = None,
+        lifecycle: RequestLifecycle | None = None,
+        cancellation: CancellationToken | None = None,
+        stream_sequence: int = 0,
     ) -> Iterator[ChatLifecycleEvent]:
-        stream_sequence = 0
+        request_lifecycle = lifecycle or RequestLifecycle(routing_request.request_id)
 
-        def lifecycle(
+        def emit(
             event_type: str,
             *,
             execution: ChatExecution | None,
@@ -518,6 +693,16 @@ class ChatService:
         ) -> ChatLifecycleEvent:
             nonlocal stream_sequence
             stream_sequence += 1
+            body = dict(payload or {})
+            body.setdefault("lifecycle", request_lifecycle.snapshot())
+            body.setdefault(
+                "phase_label",
+                phase_label(
+                    request_lifecycle.phase,
+                    provider_id=execution.provider_id if execution else route.selected_provider,
+                    model_id=execution.model_id if execution else route.selected_model,
+                ),
+            )
             return ChatLifecycleEvent(
                 event_type=event_type,
                 request_id=routing_request.request_id,
@@ -525,7 +710,7 @@ class ChatService:
                 route_id=route.route_id,
                 execution_id=execution.execution_id if execution else None,
                 sequence=stream_sequence,
-                payload=payload or {},
+                payload=body,
             )
 
         ordered = list(candidates)
@@ -542,7 +727,7 @@ class ChatService:
         if not ordered:
             raise RuntimeError("selected route has no eligible candidate")
 
-        if cognitive_policy in {"research", "research_synthesis"}:
+        if route.task_class == "research":
             yield from self._execute_research_route(
                 request=request,
                 routing_request=routing_request,
@@ -553,7 +738,7 @@ class ChatService:
                 conversation=conversation,
                 user_message=user_message,
                 snapshots=snapshots or [],
-                lifecycle=lifecycle,
+                lifecycle=emit,
             )
             return
 
@@ -630,19 +815,12 @@ class ChatService:
                 started_at=_now(),
             )
             self.store.save_execution(current)
-            cancellation = CancellationToken()
+            attempt_cancel = cancellation or CancellationToken()
             with self._cancellation_lock:
-                self._cancellations[current.execution_id] = cancellation
+                self._cancellations[current.execution_id] = attempt_cancel
 
             if attempt_index == 0:
-                accepted = lifecycle(
-                    "request_accepted",
-                    execution=current,
-                    payload={"message_id": user_message.message_id},
-                )
-                self._persist_lifecycle_event(current, accepted)
-                yield accepted
-                selected = lifecycle(
+                selected = emit(
                     "route_selected",
                     execution=current,
                     payload={
@@ -654,7 +832,7 @@ class ChatService:
                 yield selected
             else:
                 fallback = route.fallback_events[-1]
-                event = lifecycle(
+                event = emit(
                     "fallback_started",
                     execution=current,
                     payload=fallback,
@@ -662,13 +840,21 @@ class ChatService:
                 self._persist_lifecycle_event(current, event)
                 yield event
 
-            started = lifecycle(
+            if request_lifecycle.phase != "starting_provider":
+                request_lifecycle.enter("starting_provider")
+                route = self._touch_route_phase(route, request_lifecycle)
+            started = emit(
                 "execution_started",
                 execution=current,
                 payload={
                     "provider_id": candidate.provider_id,
                     "model_id": candidate.model_id,
                     "attempt": attempt_index + 1,
+                    "phase_label": phase_label(
+                        "starting_provider",
+                        provider_id=candidate.provider_id,
+                        model_id=candidate.model_id,
+                    ),
                 },
             )
             self._persist_lifecycle_event(current, started)
@@ -707,6 +893,12 @@ class ChatService:
                     "mission_id": route.metadata.get("coding_mission")
                     or route.metadata.get("coding_mission_id"),
                     "coding_mission_id": route.metadata.get("coding_mission_id"),
+                    "admitted_model_ids": [
+                        item.model_id
+                        for item in (snapshots or [])
+                        if getattr(item, "provider_id", None) == candidate.provider_id
+                        and getattr(item, "model_id", None)
+                    ],
                 },
             )
             attempt_content = ""
@@ -715,14 +907,22 @@ class ChatService:
             attempt_error: ProviderError | None = None
             terminal_type: str | None = None
             try:
-                provider_events = provider.stream(provider_request, cancellation)
+                provider_events = provider.stream(provider_request, attempt_cancel)
                 for provider_event in provider_events:
                     attempt_receipt = provider_event.receipt_id or attempt_receipt
                     if provider_event.event_type == "started":
                         normalized_type = "provider_started"
+                        if request_lifecycle.phase != "running":
+                            request_lifecycle.enter("running")
+                            route = self._touch_route_phase(route, request_lifecycle)
                         payload = {
                             "provider_id": provider_event.provider_id,
                             "receipt_id": provider_event.receipt_id,
+                            "phase_label": phase_label(
+                                "running",
+                                provider_id=candidate.provider_id,
+                                model_id=candidate.model_id,
+                            ),
                         }
                     elif provider_event.event_type == "text_delta":
                         delta = provider_event.text_delta or ""
@@ -845,7 +1045,7 @@ class ChatService:
                             payload=payload,
                         )
                     else:
-                        event = lifecycle(normalized_type, execution=current, payload=payload)
+                        event = emit(normalized_type, execution=current, payload=payload)
                         self._persist_lifecycle_event(current, event)
                         yield event
             except Exception as exc:  # provider boundary must become inspectable
@@ -907,7 +1107,7 @@ class ChatService:
                     error=final_error,
                     assistant_message_id=terminal_message.message_id,
                 )
-                cancelled = lifecycle(
+                cancelled = emit(
                     "cancelled",
                     execution=current,
                     payload={"error": final_error.model_dump(mode="json")},
@@ -971,7 +1171,7 @@ class ChatService:
                     error=final_error,
                     assistant_message_id=terminal_message.message_id,
                 )
-                error_event = lifecycle(
+                error_event = emit(
                     "error",
                     execution=current,
                     payload={
@@ -1020,6 +1220,13 @@ class ChatService:
         if current is None or not final_content.strip():
             raise RuntimeError("route execution ended without a terminal result")
 
+        request_lifecycle.enter("verifying")
+        verification = self._verification_record(
+            route.verification_strategy,
+            content=final_content,
+            receipt_id=final_receipt_id,
+        )
+        request_lifecycle.enter("persisting")
         assistant = self.store.add_message(
             conversation.conversation_id,
             role="assistant",
@@ -1057,11 +1264,7 @@ class ChatService:
             usage=final_usage,
             actual_provider_id=current.provider_id,
             actual_model_id=current.model_id,
-            verification=self._verification_record(
-                route.verification_strategy,
-                content=final_content,
-                receipt_id=final_receipt_id,
-            ),
+            verification=verification,
         )
         if captured_session_id:
             conversation.metadata = {
@@ -1104,7 +1307,9 @@ class ChatService:
                     )
                     saver(receipt)
         memory = self._propose_explicit_memory(request, user_message)
-        completed = lifecycle(
+        request_lifecycle.enter("complete")
+        route = self._touch_route_phase(route, request_lifecycle)
+        completed = emit(
             "completed",
             execution=current,
             payload={
@@ -1554,7 +1759,7 @@ class ChatService:
             provider_id: max(-10, 10 - index)
             for index, provider_id in enumerate(request.settings.provider_priority[:20])
         }
-        historical_signals = self._historical_success_signals()
+        historical_signals = self._historical_outcome_signals()
         effective_local_only = (
             request.settings.local_only_default
             if request.local_only is None
@@ -1600,6 +1805,8 @@ class ChatService:
             discovered: list[str] = []
             model_catalog_checked = False
             discovery_receipt_id: str | None = None
+            discovery_source: str | None = None
+            discovery_age_ms: int | None = None
             model_locations: dict[str, str] = {}
             model_evidence: dict[str, tuple[str, ...]] = {}
             model_records: dict[str, Any] = {}
@@ -1608,6 +1815,8 @@ class ChatService:
                     local_only=bool(effective_local_only)
                 )
                 discovery_receipt_id = catalog.receipt_id
+                discovery_source = catalog.cache_source
+                discovery_age_ms = catalog.age_ms
                 if catalog.error is not None:
                     available = False
                     unavailable_reason = (
@@ -1679,18 +1888,27 @@ class ChatService:
                             getattr(record, "latency_category", None) or profile.latency_category
                         ),
                         historical_success_signal=historical_signals.get(
-                            status.provider_id, 0
-                        ),
+                            status.provider_id, {}
+                        ).get("success", 0),
+                        observed_latency_signal=historical_signals.get(
+                            status.provider_id, {}
+                        ).get("latency", 0),
+                        cancellation_rate_signal=historical_signals.get(
+                            status.provider_id, {}
+                        ).get("cancel", 0),
                         provider_priority=priority,
                         readiness_state=status.health,
                         authentication_state=status.authentication,
                         unavailable_reason=unavailable_reason,
                         discovery_receipt_id=discovery_receipt_id,
+                        discovery_source=discovery_source,
+                        discovery_age_ms=discovery_age_ms,
                         execution_location=model_locations.get(model_id or "", "unknown"),
                         model_locality_evidence=model_evidence.get(model_id or "", ()),
                         display_name=getattr(record, "display_name", None),
                         model_family=getattr(record, "family", None),
                         profile_evidence=getattr(record, "profile_evidence", None),
+                        billing_classification=profile.billing_classification,
                     )
                 )
 
@@ -1715,21 +1933,47 @@ class ChatService:
         return snapshots
 
     def _historical_success_signals(self) -> dict[str, int]:
-        """Derive a small bounded routing signal from local outcome history."""
-        grouped: dict[str, list[str]] = {}
+        return {
+            provider_id: values.get("success", 0)
+            for provider_id, values in self._historical_outcome_signals().items()
+        }
+
+    def _historical_outcome_signals(self) -> dict[str, dict[str, int]]:
+        """Bounded routing signals from local executions. Not quality scores."""
+        grouped: dict[str, list[ChatExecution]] = {}
         for execution in self.store.list_executions(limit=200):
             outcomes = grouped.setdefault(execution.provider_id, [])
             if len(outcomes) < 20 and execution.status in {
                 "complete",
                 "failed",
-                "cancelled",
             }:
-                outcomes.append(execution.status)
-        signals: dict[str, int] = {}
-        for provider_id, outcomes in grouped.items():
-            successes = outcomes.count("complete")
-            failures = len(outcomes) - successes
-            signals[provider_id] = max(-10, min(10, 2 * (successes - failures)))
+                outcomes.append(execution)
+        signals: dict[str, dict[str, int]] = {}
+        for provider_id, executions in grouped.items():
+            statuses = [item.status for item in executions]
+            successes = statuses.count("complete")
+            failures = statuses.count("failed")
+            durations = []
+            for item in executions:
+                if item.status != "complete":
+                    continue
+                if item.started_at is None or item.finished_at is None:
+                    continue
+                durations.append(
+                    max(0, int((item.finished_at - item.started_at).total_seconds() * 1000))
+                )
+            latency_signal = 0
+            if durations:
+                median = sorted(durations)[len(durations) // 2]
+                if median < 1500:
+                    latency_signal = 2
+                elif median > 20_000:
+                    latency_signal = -2
+            signals[provider_id] = {
+                "success": max(-10, min(10, 2 * (successes - failures))),
+                "latency": latency_signal,
+                "cancel": 0,
+            }
         return signals
 
     def _persist_denied_route(
@@ -1865,17 +2109,49 @@ class ChatService:
         history = "\n".join(
             f"{message.role.title()}: {message.content[:3000]}" for message in prior
         )
-        sections = [
-            "OpenCobalt interaction policy:",
-            persona_policy,
-            "",
-            "Execution constraints:",
-            "Answer the request only. Do not modify files, run tools, or take external actions unless the route explicitly selected those capabilities and the user explicitly requested the action.",
-            f"Privacy classification: {route.privacy_classification}",
-            f"Local-only: {bool(route.metadata.get('local_only', False))}",
-        ]
+        task_class = route.task_class
+        answer_only = route.autonomy_level == "answer_only" and task_class not in {
+            "coding",
+            "repository_execution",
+            "tool_operation",
+        }
+        sections: list[str] = []
+        if has_explicit_format_constraint(user_message.content):
+            sections.extend(
+                [
+                    "User output constraint (highest priority):",
+                    "Obey the user's requested length and format exactly.",
+                    "Do not add headings, admonition blocks such as [!NOTE], preamble, or assistant pleasantries.",
+                    "Do not open with an offer to help. The requested format outranks persona warmth, verbosity, and cognitive-policy style.",
+                    "",
+                ]
+            )
+        sections.extend(
+            [
+                "OpenCobalt interaction policy:",
+                persona_policy,
+                "",
+                "Execution constraints:",
+            ]
+        )
+        if answer_only:
+            sections.append(
+                "This is an answer-only request. Do not produce tests, diffs, implementation plans, or engineering-report scaffolding unless the user asked for those."
+            )
+        sections.extend(
+            [
+                "Answer the request only. Do not modify files, run tools, or take external actions unless the route explicitly selected those capabilities and the user explicitly requested the action.",
+                f"Privacy classification: {route.privacy_classification}",
+                f"Local-only: {bool(route.metadata.get('local_only', False))}",
+            ]
+        )
         if route.persona_provider_mismatch:
             sections.append(f"Persona/provider disclosure: {route.persona_provider_mismatch}")
+        from opencobalt.personal_ai.builtin_skills import skill_policy_addendum
+
+        skill_text = skill_policy_addendum(list(route.selected_skills))
+        if skill_text:
+            sections.extend(["", skill_text])
         if history:
             sections.extend(["", "Recent conversation context:", history])
         from opencobalt.personal_ai.documents import render_attachment_context
@@ -1892,28 +2168,50 @@ class ChatService:
             ]
         records = [
             record
-            for record in (
-                self.store.get_attachment(item) for item in attachment_ids
-            )
+            for record in (self.store.get_attachment(item) for item in attachment_ids)
             if record is not None
         ]
         document_context = render_attachment_context(records, user_message.content)
         if document_context:
             sections.extend(["", document_context])
+        if has_explicit_format_constraint(user_message.content):
+            sections.extend(
+                [
+                    "",
+                    "Reminder: the user's length and format constraint still has priority over the policy text above.",
+                ]
+            )
         return "\n".join(sections)
+
+    def _next_stream_sequence(self, execution_id: str) -> int:
+        events = self.store.list_stream_events(execution_id)
+        return max((event.sequence for event in events), default=0) + 1
 
     def _persist_lifecycle_event(
         self, execution: ChatExecution, event: ChatLifecycleEvent
     ) -> None:
-        sequence = len(self.store.list_stream_events(execution.execution_id)) + 1
         self.store.append_stream_event(
             StreamEvent(
                 execution_id=execution.execution_id,
-                sequence=sequence,
+                sequence=self._next_stream_sequence(execution.execution_id),
                 event_type=event.event_type,
                 payload=event.payload,
             )
         )
+
+    def _touch_route_phase(
+        self, route: RouteRecord, lifecycle: RequestLifecycle
+    ) -> RouteRecord:
+        snapshot = lifecycle.snapshot()
+        finished = route.model_copy(
+            update={
+                "outcome_status": snapshot["outcome_status"],
+                "metadata": {**route.metadata, "lifecycle": snapshot},
+                "updated_at": _now(),
+            }
+        )
+        self.store.save_route(finished)
+        return finished
 
     def _persist_provider_terminal_event(
         self,
@@ -1923,7 +2221,7 @@ class ChatService:
         payload: dict[str, Any],
     ) -> None:
         """Record provider termination without exposing a premature client terminal."""
-        sequence = len(self.store.list_stream_events(execution.execution_id)) + 1
+        sequence = self._next_stream_sequence(execution.execution_id)
         self.store.append_stream_event(
             StreamEvent(
                 execution_id=execution.execution_id,

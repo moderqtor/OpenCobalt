@@ -116,13 +116,15 @@ class AuthStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path.expanduser().resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        from opencobalt.core.sqlite import closing_sqlite
+
+        with closing_sqlite(self.db_path) as conn:
             conn.executescript(_SCHEMA)
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        from opencobalt.core.sqlite import closing_sqlite
+
+        return closing_sqlite(self.db_path)
 
     def create_token(
         self,

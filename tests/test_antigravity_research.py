@@ -419,13 +419,12 @@ def test_invalid_antigravity_model_is_blocked():
     provider = AntigravityChatProvider(engine, IsolatedAgyAdapter())
     result = provider.execute(ProviderRequest(message="hello", model_id="not-a-real-model"))
     assert result.status == "blocked"
-    assert result.error.category == "invalid_request"
+    assert result.error.category == "unavailable"
     assert len(engine.calls) == 1
 
 
 def test_antigravity_cancellation_and_timeout():
     engine = FakeEngine(
-        _outcome(stdout=_catalog_stdout("gemini-3.6-flash-medium")),
         _outcome(stdout=_catalog_stdout("gemini-3.6-flash-medium")),
         _outcome(status="timeout", error="print timed out"),
     )
@@ -615,7 +614,6 @@ def test_execute_and_research_print_omit_unsupported_effort_flags():
     engine = FakeEngine(
         _outcome(stdout=_catalog_stdout("claude-sonnet-4-6")),
         _outcome(stdout=_print_stdout("391")),
-        _outcome(stdout=_catalog_stdout("claude-sonnet-4-6")),
         _outcome(stdout=_print_stdout("research answer")),
         _outcome(
             stdout=_catalog_stdout_records(

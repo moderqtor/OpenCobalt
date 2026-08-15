@@ -30,7 +30,7 @@ const CONTROL_PLANE_LABELS = {
   unavailable: "local API unavailable",
 };
 
-export function Navigation({ active, onSelect, open = false, onClose, status = "connecting" }) {
+export function Navigation({ active, onSelect, open = false, onClose, onCollapse, status = "connecting" }) {
   const navigationRef = useRef(null);
   useEffect(() => {
     if (!open) return undefined;
@@ -68,7 +68,7 @@ export function Navigation({ active, onSelect, open = false, onClose, status = "
   };
 
   return <nav ref={navigationRef} id="primary-navigation" className={`navigation ${open ? "is-open" : ""}`} aria-label="Primary navigation">
-    <div className="brand"><CobaltMark /><span>OpenCobalt</span><IconButton className="nav-close" label="Close navigation" onClick={onClose}><X size={17} /></IconButton></div>
+    <div className="brand"><CobaltMark /><span>OpenCobalt</span><IconButton className="nav-collapse" label="Collapse navigation" onClick={onCollapse}><PanelRight size={17} /></IconButton><IconButton className="nav-close" label="Close navigation" onClick={onClose}><X size={17} /></IconButton></div>
     <div className="nav-links">
       {NAVIGATION.map(([id, navLabel, Icon]) => (
         <button type="button" key={id} className={`nav-link ${active === id ? "is-active" : ""}`} aria-current={active === id ? "page" : undefined} onClick={() => select(id)}>
@@ -368,7 +368,7 @@ export function ConversationRail({ conversations, selectedId, onSelect, onCreate
   };
 
   return <aside ref={railRef} id="conversation-navigation" className={`conversation-rail ${mobileOpen ? "is-mobile-open" : ""}`} role={mobileOpen ? "dialog" : undefined} aria-modal={mobileOpen ? "true" : undefined} aria-label="Conversations">
-    <div className="rail-heading"><div><p className="eyebrow">Chat</p><h2>Conversations</h2></div><div className="rail-actions"><IconButton label="New conversation" aria-expanded={createOpen} aria-controls="conversation-create" onClick={() => setCreateOpen((current) => !current)} disabled={isCreating || disabled}><Plus size={17} /></IconButton><IconButton className="conversation-close" label="Close conversations" onClick={onClose}><X size={17} /></IconButton></div></div>
+    <div className="rail-heading"><div><p className="eyebrow">Chat</p><h2>Conversations</h2></div><div className="rail-actions"><IconButton label="New conversation" aria-expanded={createOpen} aria-controls="conversation-create" onClick={() => setCreateOpen((current) => !current)} disabled={isCreating || disabled}><Plus size={17} /></IconButton><IconButton className="conversation-close" label="Collapse conversations" onClick={onClose}><X size={17} /></IconButton></div></div>
     {createOpen && <form id="conversation-create" className="conversation-create" onSubmit={create}><label><span>Title</span><input value={draft.title} maxLength="200" onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} /></label><label><span>Repository path</span><input value={draft.project_path} maxLength="4096" placeholder="Absolute path to an existing local repository" onChange={(event) => setDraft((current) => ({ ...current, project_path: event.target.value }))} /></label><small>The path is canonicalized. Coding work stays inside this repository.</small><div><button type="button" className="text-button" onClick={() => setCreateOpen(false)}>Cancel</button><button type="submit" className="button primary" disabled={isCreating || !draft.title.trim()}>{isCreating ? "Creating…" : "Create"}</button></div></form>}
     <div className="conversation-list">{conversations.map((conversation) => {
       const conversationId = conversation.conversation_id || conversation.id;

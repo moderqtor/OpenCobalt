@@ -27,16 +27,30 @@ Capability roles currently used:
 - `coding_analysis`
 - `coding_agent`
 
-The router classifies from the prompt, cognitive policy, attached project
-path, and privacy/local-only flags. Mutating repo work becomes `coding_agent`
-only when a conversation `project_path` is set. Without that path, the same
-text does not grant coding-agent execution.
+Short low-stakes explanations (for example "Explain TCP vs UDP in three
+sentences") stay on `cheap_local` or `fast_general`. Arithmetic and obvious
+unit conversion can execute in-process through the `deterministic` provider.
+Medical, scientific, legal, and difficult multi-step reasoning keep
+`strong_reasoning`.
+
+The router classifies **task family from the prompt**, not from cognitive
+policy. An `implementation` policy may change depth or style. It does not
+turn "Explain DNS caching" into a coding request. Manual provider or model
+override is an execution constraint: it does not change task family,
+authority, risk, or verification strategy.
+
+The router also reads attached project path and privacy/local-only flags.
+Mutating repo work becomes `coding_agent` only when a conversation
+`project_path` is set. Without that path, the same text does not grant
+coding-agent execution.
 
 ## Scoring
 
 The recorded score is an integer sum of heuristic components, not a
 probability and not a calibrated quality model. Adapter quality and cost
-tiers are declared contracts (`statistically_calibrated=False`).
+tiers are declared contracts (`statistically_calibrated=False`). Outcome
+hooks reuse local execution history (success and latency) as
+bounded integers. They are not learned quality scores.
 
 Components that are actually populated today include:
 
@@ -51,6 +65,10 @@ Components that are actually populated today include:
 | tool_fit | Requested tools/skills vs provider support |
 | latency_fit | Declared latency category |
 | historical_success | Recent complete vs failed executions for that provider |
+| observed_latency | Bounded signal from recent execution durations, not a quality score |
+| cancellation_rate | Reserved; user, disconnect, and shutdown cancellations are neutral today |
+| deterministic_fit | Closed-form micro-tasks prefer the in-process deterministic provider |
+| billing_fit | Local or subscription-backed near-zero marginal cost vs per-call API billing |
 | provider_priority | User settings order |
 | readiness_evidence | Discovery evidence, not inferred availability |
 | reasoning_quality_fit | Reasoning effort vs provider strength |

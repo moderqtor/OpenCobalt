@@ -1,7 +1,6 @@
 """Simple key-value config store backed by the SQLite ledger."""
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 _SCHEMA = """
@@ -15,13 +14,15 @@ class Config:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path.expanduser().resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        from opencobalt.core.sqlite import closing_sqlite
+
+        with closing_sqlite(self.db_path) as conn:
             conn.executescript(_SCHEMA)
 
     def _connect(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        from opencobalt.core.sqlite import closing_sqlite
+
+        return closing_sqlite(self.db_path)
 
     def get(self, key: str, default: str | None = None) -> str | None:
         with self._connect() as conn:

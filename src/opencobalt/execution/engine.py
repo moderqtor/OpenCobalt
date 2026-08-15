@@ -125,6 +125,7 @@ class ExecutionEngine:
         execution_context: Literal["general_task", "answer_only_inference"] = "general_task",
         risk_subject: str | None = None,
         session_handler: Callable[..., Any] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> ExecutionOutcome:
         """Run the full receipt-backed slice for one task.
 
@@ -318,7 +319,9 @@ class ExecutionEngine:
 
         result: ExecutionResult | None = None
         if policy.allowed and not dry_run and not command_error:
-            result = self._execute(plan, step, receipt, session_handler=session_handler)
+            result = self._execute(
+                plan, step, receipt, session_handler=session_handler, cancel_check=cancel_check
+            )
         elif dry_run or command_error:
             step.status = "skipped"
             self.store.save_plan(plan)
@@ -492,6 +495,7 @@ class ExecutionEngine:
         step: ExecutionStep,
         receipt: WorkReceipt,
         session_handler: Callable[..., Any] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> ExecutionResult:
         step.status = "running"
         self._emit(
@@ -507,6 +511,7 @@ class ExecutionEngine:
                 runtime=plan.runtime,
                 cwd=plan.cwd,
                 timeout_seconds=step.timeout_seconds,
+                cancel_check=cancel_check,
             )
         else:
             result = self.runner.run(
@@ -516,6 +521,7 @@ class ExecutionEngine:
                 runtime=plan.runtime,
                 cwd=plan.cwd,
                 timeout_seconds=step.timeout_seconds,
+                cancel_check=cancel_check,
             )
         step.status = "succeeded" if result.status == "succeeded" else "failed"
         step.started_at = result.started_at

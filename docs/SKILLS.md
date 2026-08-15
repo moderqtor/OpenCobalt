@@ -28,8 +28,19 @@ command, adapt it to OpenCobalt policy:
 - No secret/auth access
 - Receipts and provenance when execution happens
 
-## Automatic Orchestration
+## Built-in Chat contracts
 
-The AutoOrchestrator may plan that a future worker should use a skill, but v1
-does not auto-invoke skills or external runtimes. Future branches should record
-skill selection in receipts or provenance when skill output affects execution.
+`src/opencobalt/personal_ai/builtin_skills.py` defines a small set of
+declarative prompt contracts (evidence audit, document synthesis, repository
+audit, architectural review, decision comparison, research claim
+verification, UI accessibility review, structured planning).
+
+These are not executable plugins and do not grant tools. When Skill permissions
+is `allow_builtin`, the router may record at most one matching contract on
+`route.selected_skills` and add system-policy guidance. `ask` and `deny` do not
+inject a built-in contract because Chat has no approval-resume flow for skills.
+Chat remains answer-only.
+
+The Skills page still lists installed package skills (`file-reader`,
+`diff-writer`, `context-injector`). Inspection does not execute imported
+code.

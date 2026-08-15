@@ -267,6 +267,13 @@ class MissionStep:
     requires_approval: bool = False
     expected_receipt: bool = False
     blocked_authority: list[str] = field(default_factory=list)
+    capability_role: str | None = None
+    context_inputs: list[str] = field(default_factory=list)
+    output_artifact: str | None = None
+    verification_criteria: str = ""
+    authority_boundary: str = "observe"
+    depends_on: list[str] = field(default_factory=list)
+    fallback_policy: str = "none"
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 
@@ -471,10 +478,10 @@ class MissionStore:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        from opencobalt.core.sqlite import closing_sqlite
+
+        return closing_sqlite(self.db_path)
 
     # --- Missions ---
 

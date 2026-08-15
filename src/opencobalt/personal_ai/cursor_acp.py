@@ -897,7 +897,10 @@ class CursorACPProvider(EngineBackedChatProvider):
             limitations=list(status.limitations),
         )
 
-    def discover_models(self, *, local_only: bool = False) -> ProviderModelCatalog:
+    def discover_models(
+        self, *, local_only: bool = False, refresh: bool = False
+    ) -> ProviderModelCatalog:
+        _ = refresh
         if local_only:
             return ProviderModelCatalog(
                 provider_id=self.provider_id,

@@ -6,7 +6,6 @@ Uses stdlib sqlite3 only. Additive new tables; no changes to existing schema.
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -123,10 +122,10 @@ class CostTracker:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        from opencobalt.core.sqlite import closing_sqlite
+
+        return closing_sqlite(self.db_path)
 
     def _init_schema(self) -> None:
         with self._connect() as conn:

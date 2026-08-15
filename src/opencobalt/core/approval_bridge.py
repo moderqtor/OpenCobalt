@@ -25,7 +25,6 @@ Approval states:
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -270,10 +269,10 @@ class ApprovalStore:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        from opencobalt.core.sqlite import closing_sqlite
+
+        return closing_sqlite(self.db_path)
 
     def save_request(self, request: ApprovalRequest) -> None:
         with self._connect() as conn:

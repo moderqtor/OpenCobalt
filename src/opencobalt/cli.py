@@ -2024,6 +2024,164 @@ def _ui_port_has_listener(port: int) -> bool:
         return False
 
 
+def _listener_command_line(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\x00", b" ").decode(
+            "utf-8", errors="replace"
+        ).strip()
+    except OSError:
+        pass
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except Exception:
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _opencobalt_owned_listener(port: int, label: str) -> tuple[int, str] | None:
+    """Identify an OpenCobalt-owned listener by command line, or None."""
+    import subprocess
+
+    try:
+        listed = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except Exception:
+        return None
+    pids = []
+    for line in listed.stdout.split():
+        try:
+            pids.append(int(line))
+        except ValueError:
+            continue
+    for pid in pids:
+        command = _listener_command_line(pid)
+        if not command:
+            continue
+        lowered = command.casefold()
+        if label == "API" and "uvicorn" in lowered and "opencobalt.api_server:app" in lowered:
+            return pid, command
+        if label == "UI" and "vite" in lowered and "opencobalt" in lowered:
+            return pid, command
+    return None
+
+
+def _listener_has_live_ui_launcher_ancestor(pid: int) -> bool:
+    """Protect listeners whose owning ``opencobalt ui`` launcher is still alive."""
+    import shlex
+    import subprocess
+
+    seen = {pid}
+    current = pid
+    for _ in range(16):
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(current), "-o", "ppid="],
+                capture_output=True,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+            parent = int(result.stdout.strip()) if result.returncode == 0 else 0
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return False
+        if parent <= 1 or parent in seen:
+            return False
+        seen.add(parent)
+        command = _listener_command_line(parent)
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = command.split()
+        for index, token in enumerate(tokens):
+            if Path(token).name == "opencobalt" and "ui" in tokens[index + 1 :]:
+                return True
+        current = parent
+    return False
+
+
+def _opencobalt_listener_is_healthy(port: int, label: str) -> bool:
+    """Confirm an owned listener serves the expected OpenCobalt surface."""
+    import json
+    import urllib.request
+
+    path = "/api/ready" if label == "API" else "/"
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}{path}", timeout=0.5
+        ) as response:
+            if not 200 <= int(response.status) < 300:
+                return False
+            body = response.read(32_768)
+    except (OSError, TimeoutError, ValueError):
+        return False
+    if label == "UI":
+        return b"<title>OpenCobalt</title>" in body
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("ready") is True
+
+
+def _reclaim_stale_opencobalt_listener(port: int, label: str) -> bool:
+    """Terminate only an owned, unhealthy listener with no live UI launcher."""
+    import os
+    import signal
+    import time
+
+    owned = _opencobalt_owned_listener(port, label)
+    if owned is None:
+        return False
+    pid, command = owned
+    if _listener_has_live_ui_launcher_ancestor(pid):
+        return False
+    if _opencobalt_listener_is_healthy(port, label):
+        return False
+    if (
+        _opencobalt_owned_listener(port, label) != owned
+        or _listener_has_live_ui_launcher_ancestor(pid)
+        or _opencobalt_listener_is_healthy(port, label)
+    ):
+        return False
+    err.print(
+        f"  [dim]Reclaiming stale OpenCobalt {label} listener pid {pid}: {command[:160]}[/dim]"
+    )
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if not _ui_port_has_listener(port) and _can_bind_ui_port(port):
+            return True
+        time.sleep(0.05)
+    if (
+        _opencobalt_owned_listener(port, label) != owned
+        or _listener_has_live_ui_launcher_ancestor(pid)
+        or _opencobalt_listener_is_healthy(port, label)
+    ):
+        return False
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    time.sleep(0.1)
+    return _can_bind_ui_port(port)
+
+
 def _require_available_ui_port(
     label: str,
     port: int,
@@ -2037,8 +2195,22 @@ def _require_available_ui_port(
         err.print(f"\n[{_RED}]{label} port must be between 1 and 65535.[/{_RED}]\n")
         raise typer.Exit(1)
     deadline = time.monotonic() + release_timeout_seconds
+    if _ui_port_has_listener(port):
+        if _reclaim_stale_opencobalt_listener(port, label) and _can_bind_ui_port(port):
+            return
+        occupant = _opencobalt_owned_listener(port, label)
+        detail = (
+            f" Occupying process {occupant[0]}: {occupant[1][:160]}"
+            if occupant
+            else " The occupying process is not an OpenCobalt-owned listener."
+        )
+        err.print(
+            f"\n[{_RED}]{label} port {port} is already in use.[/{_RED}]  "
+            f"Choose another port and try again.{detail}\n"
+        )
+        raise typer.Exit(1) from None
     while not _can_bind_ui_port(port):
-        if _ui_port_has_listener(port) or time.monotonic() >= deadline:
+        if time.monotonic() >= deadline:
             err.print(
                 f"\n[{_RED}]{label} port {port} is already in use.[/{_RED}]  "
                 "Choose another port and try again.\n"
@@ -2047,7 +2219,7 @@ def _require_available_ui_port(
         time.sleep(0.1)
 
 
-def _stop_ui_processes(processes: list, *, timeout_seconds: float = 5.0) -> None:
+def _stop_ui_processes(processes: list, *, timeout_seconds: float = 3.0) -> None:
     """Terminate launcher-owned process groups and wait for their ports to release."""
     import os
     import signal
@@ -2084,6 +2256,70 @@ def _stop_ui_processes(processes: list, *, timeout_seconds: float = 5.0) -> None
                 process.wait(timeout=1)
             except subprocess.TimeoutExpired:
                 pass
+
+
+_API_READY_TIMEOUT_SECONDS = 45.0
+_API_READY_PROGRESS_SECONDS = 2.0
+
+
+def _wait_for_api_readiness(
+    api_proc,
+    vite_proc,
+    api_port: int,
+    *,
+    timeout_seconds: float = _API_READY_TIMEOUT_SECONDS,
+) -> None:
+    """Wait while the API child is alive. Do not treat slow init as a crash.
+
+    Probes ``/api/ready``, which must not scan the repository or discover
+    providers. Distinguishes a dead child from an initializing listener.
+    """
+    import time as _time
+    import urllib.error
+    import urllib.request
+
+    deadline = _time.monotonic() + timeout_seconds
+    started = _time.monotonic()
+    last_progress = started
+    ready_url = f"http://127.0.0.1:{api_port}/api/ready"
+    while True:
+        if api_proc.poll() is not None:
+            err.print(
+                f"\n[{_RED}]API server failed to start.[/{_RED}]  "
+                f"Run: pip install -e '.[server]'\n"
+            )
+            vite_proc.terminate()
+            raise typer.Exit(1)
+        if vite_proc.poll() is not None:
+            err.print(
+                f"\n[{_RED}]UI server failed to start.[/{_RED}]  "
+                "Run: npm install --prefix ui\n"
+            )
+            api_proc.terminate()
+            raise typer.Exit(1)
+        try:
+            response = urllib.request.urlopen(ready_url, timeout=1)
+            response.close()
+            elapsed_ms = int((_time.monotonic() - started) * 1000)
+            console.print(f"  [dim]API ready after {elapsed_ms} ms.[/dim]")
+            return
+        except (urllib.error.URLError, OSError, TimeoutError):
+            now = _time.monotonic()
+            if now >= deadline:
+                elapsed = int(now - started)
+                err.print(
+                    f"\n[{_RED}]API process is still initializing after {elapsed}s.[/{_RED}]  "
+                    "The child is alive; /api/ready did not respond. "
+                    "This is not treated as a crash. Retry, or inspect the API process.\n"
+                )
+                raise typer.Exit(1) from None
+            if now - last_progress >= _API_READY_PROGRESS_SECONDS:
+                elapsed = int(now - started)
+                console.print(
+                    f"  [dim]API process is alive, waiting for listen ({elapsed}s)...[/dim]"
+                )
+                last_progress = now
+            _time.sleep(0.2)
 
 
 @app.command("ui")
@@ -2134,7 +2370,8 @@ def ui_shell(
     try:
         api_proc = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "opencobalt.api_server:app",
-             "--port", str(api_port), "--log-level", "warning"],
+             "--port", str(api_port), "--log-level", "warning",
+             "--timeout-graceful-shutdown", "2"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=os.name == "posix",
@@ -2157,39 +2394,7 @@ def ui_shell(
         console.print(f"  [{_GREEN}]Dashboard running at[/{_GREEN}]  http://localhost:{port}")
         console.print("  [dim]Ctrl+C to stop.[/dim]\n")
 
-        # Open the browser only after the API is actually ready. Child failures and
-        # transient loopback resets remain bounded and produce a useful CLI error.
-        import urllib.error
-        import urllib.request
-        readiness_deadline = _time.monotonic() + 10
-        while True:
-            if api_proc.poll() is not None:
-                err.print(
-                    f"\n[{_RED}]API server failed to start.[/{_RED}]  "
-                    f"Run: pip install -e '.[server]'\n"
-                )
-                vite_proc.terminate()
-                raise typer.Exit(1)
-            if vite_proc.poll() is not None:
-                err.print(
-                    f"\n[{_RED}]UI server failed to start.[/{_RED}]  "
-                    "Run: npm install --prefix ui\n"
-                )
-                api_proc.terminate()
-                raise typer.Exit(1)
-            try:
-                response = urllib.request.urlopen(
-                    f"http://127.0.0.1:{api_port}/api/status", timeout=1
-                )
-                response.close()
-                break
-            except (urllib.error.URLError, OSError):
-                if _time.monotonic() >= readiness_deadline:
-                    err.print(
-                        f"\n[{_RED}]API server did not become ready within 10 seconds.[/{_RED}]\n"
-                    )
-                    raise typer.Exit(1) from None
-                _time.sleep(0.1)
+        _wait_for_api_readiness(api_proc, vite_proc, api_port)
 
         if not no_browser:
             webbrowser.open(f"http://localhost:{port}")
@@ -2290,7 +2495,7 @@ def desktop_shell(
     _time.sleep(1)
 
     try:
-        urllib.request.urlopen(f"http://127.0.0.1:{api_port}/api/status", timeout=3)
+        urllib.request.urlopen(f"http://127.0.0.1:{api_port}/api/ready", timeout=3)
     except urllib.error.URLError:
         server.should_exit = True
         thread.join(timeout=5)

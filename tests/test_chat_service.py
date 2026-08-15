@@ -159,11 +159,12 @@ def test_engine_backed_mock_chat_persists_messages_route_execution_and_receipt(t
         )
     )
 
-    assert [event.event_type for event in events[:3]] == [
-        "request_accepted",
-        "route_selected",
-        "execution_started",
-    ]
+    types = [event.event_type for event in events]
+    assert types[:2] == ["request_accepted", "phase_changed"]
+    assert types.index("route_selected") > types.index("phase_changed")
+    assert types.index("execution_started") > types.index("route_selected")
+    assert types.index("provider_started") > types.index("execution_started")
+    assert types.index("provider_started") < types.index("completed")
     assert any(event.event_type == "text_delta" for event in events)
     assert events[-1].event_type == "completed"
     messages = store.list_messages(conversation.conversation_id)
@@ -193,11 +194,10 @@ def test_engine_backed_mock_chat_persists_messages_route_execution_and_receipt(t
     assert execution.status == "complete"
     assert execution.work_receipt_id == route.receipt_id
     persisted_events = store.list_stream_events(execution.execution_id)
-    assert [event.event_type for event in persisted_events[:3]] == [
-        "request_accepted",
-        "route_selected",
-        "execution_started",
-    ]
+    persisted_types = [event.event_type for event in persisted_events]
+    assert persisted_types[0] == "route_selected"
+    assert "execution_started" in persisted_types
+    assert "provider_started" in persisted_types
     assert persisted_events[-1].event_type == "completed"
 
 
@@ -268,6 +268,41 @@ def test_task_specific_verifier_is_not_claimed_when_only_integrity_was_checked(t
     assert route.verification_strategy == "tests_and_diff"
     assert route.metadata["verification"]["status"] == "not_performed"
     assert route.metadata["verification"]["integrity_check"] == "passed"
+
+
+def test_format_constraint_outranks_persona_and_implementation_policy(tmp_path):
+    service, store, _ = _real_mock_service(tmp_path)
+    conversation = service.create_conversation(title="Format")
+    captured = {}
+    provider = service.providers.get("mock")
+    original = provider.execute
+
+    def wrapped(request, cancellation=None):
+        captured["policy"] = request.system_policy
+        captured["message"] = request.message
+        return original(request, cancellation)
+
+    provider.execute = wrapped
+    list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Explain why DNS caching improves performance in three sentences.",
+                cognitive_policy="implementation",
+                provider_override="mock",
+            )
+        )
+    )
+    policy = captured["policy"]
+    assert captured["message"].startswith("Explain why DNS caching")
+    assert policy.index("User output constraint") < policy.index("OpenCobalt interaction policy")
+    assert "admonition blocks" in policy
+    assert "answer-only request" in policy
+    assert "tests, diffs" in policy
+    route = store.list_routes(conversation_id=conversation.conversation_id)[0]
+    assert route.task_class == "general_reasoning"
+    assert route.verification_strategy != "tests_and_diff"
+    assert route.autonomy_level == "answer_only"
 
 
 def test_development_mock_is_used_only_when_no_real_provider_is_routable(tmp_path):
@@ -487,7 +522,7 @@ def test_settings_default_local_only_reaches_discovery_and_execution_boundary(tm
         "catalog_reported_sha256_digest",
     ]
     assert any("model discovery receipt: receipt-discovery" in reason for reason in route.reasons)
-    assert discovery_calls == [True, True]
+    assert discovery_calls == [True]
     assert engine.calls[0][1]["runtime"] == "ollama-generate"
 
 
@@ -605,9 +640,13 @@ def test_durable_cancellation_stops_mock_stream_and_marks_execution(tmp_path):
         )
     )
     assert next(stream).event_type == "request_accepted"
-    assert next(stream).event_type == "route_selected"
-    started = next(stream)
-    assert started.event_type == "execution_started"
+    assert next(stream).event_type == "phase_changed"
+    started = None
+    for event in stream:
+        if event.event_type == "execution_started":
+            started = event
+            break
+    assert started is not None
 
     assert service.cancel(started.execution_id) is True
     assert service.cancel(started.execution_id) is False
@@ -616,11 +655,34 @@ def test_durable_cancellation_stops_mock_stream_and_marks_execution(tmp_path):
     assert remaining[-1].event_type == "cancelled"
     assert store.get_execution(started.execution_id).status == "cancelled"
     assert service.cancel("missing-execution") is False
+    signals = service._historical_outcome_signals()
+    assert signals.get("mock", {}).get("success", 0) == 0
+    assert signals.get("mock", {}).get("cancel", 0) == 0
 
 
-@pytest.mark.parametrize("yield_count", [1, 2])
+def test_pre_execution_request_cancellation_is_idempotent(tmp_path):
+    service, _, _ = _real_mock_service(tmp_path)
+    conversation = service.create_conversation(title="Early cancellation")
+    stream = iter(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Explain this",
+                provider_override="mock",
+            )
+        )
+    )
+    accepted = next(stream)
+    assert next(stream).event_type == "phase_changed"
+
+    assert service.cancel(accepted.request_id) is True
+    assert service.cancel(accepted.request_id) is False
+    stream.close()
+
+
+@pytest.mark.parametrize("stop_type", ["execution_started", "provider_started"])
 def test_abandon_before_execution_started_creates_durable_terminal_state(
-    tmp_path, yield_count
+    tmp_path, stop_type
 ):
     service, store, _ = _real_mock_service(tmp_path)
     conversation = service.create_conversation(title="Disconnected stream")
@@ -634,8 +696,10 @@ def test_abandon_before_execution_started_creates_durable_terminal_state(
         )
     )
     last = None
-    for _ in range(yield_count):
-        last = next(stream)
+    for event in stream:
+        last = event
+        if event.event_type == stop_type:
+            break
     assert last is not None and last.execution_id is not None
 
     assert service.abandon(last.execution_id) is True

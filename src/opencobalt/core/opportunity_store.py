@@ -10,7 +10,6 @@ query them without decoding JSON.
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,10 +60,10 @@ class OpportunityStore:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        from opencobalt.core.sqlite import closing_sqlite
+
+        return closing_sqlite(self.db_path)
 
     # --- Runs ---
 

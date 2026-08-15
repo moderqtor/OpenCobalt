@@ -68,6 +68,11 @@ class TaskRequirements:
     consequence: SensitivityLevel = "low"
     freshness: FreshnessNeed = "none"
     citations_required: bool = False
+    latency_preference: Literal["low", "standard", "high"] = "standard"
+    cost_preference: Literal["minimize", "balanced", "quality_first"] = "balanced"
+    mutation_authority: Literal["none", "staged", "explicit"] = "none"
+    deterministic_solvable: bool = False
+    likely_tool_solvable: bool = False
 
 
 @dataclass(frozen=True)
@@ -105,11 +110,22 @@ class ProviderSnapshot:
     model_family: str | None = None
     profile_evidence: str | None = None
     capability_roles: frozenset[str] = field(default_factory=frozenset)
+    discovery_source: str | None = None
+    discovery_age_ms: int | None = None
+    observed_latency_signal: int = 0
+    cancellation_rate_signal: int = 0
+    billing_classification: Literal[
+        "local", "subscription_backed", "api_billed", "unknown"
+    ] = "unknown"
 
     def __post_init__(self) -> None:
         """Reject unbounded evidence while normalizing capability collections."""
         if not -10 <= self.historical_success_signal <= 10:
             raise ValueError("historical_success_signal must be between -10 and 10")
+        if not -10 <= self.observed_latency_signal <= 10:
+            raise ValueError("observed_latency_signal must be between -10 and 10")
+        if not -10 <= self.cancellation_rate_signal <= 10:
+            raise ValueError("cancellation_rate_signal must be between -10 and 10")
         if not 0 <= self.quota_pressure <= 10:
             raise ValueError("quota_pressure must be between 0 and 10")
         if not -10 <= self.provider_priority <= 10:
@@ -138,6 +154,7 @@ class RoutingRequest:
     model_override: str | None = None
     requested_tools: tuple[str, ...] = ()
     requested_skills: tuple[str, ...] = ()
+    attachment_ids: tuple[str, ...] = ()
     project_path: str | None = None
 
 
@@ -232,6 +249,24 @@ class PersonalAIRouter:
         )
         selected_tools = sorted(set(request.requested_tools) & snapshot.tool_names)
         selected_skills = _selected_skills(request, snapshot)
+        if (
+            not selected_skills
+            and request.settings.skill_permissions == "allow_builtin"
+        ):
+            from opencobalt.personal_ai.builtin_skills import recommend_builtin_skill
+
+            recommended = recommend_builtin_skill(
+                task_class=task_class,
+                capability_role=capability_role,
+                citations_required=requirements.citations_required,
+                has_attachments=bool(request.attachment_ids),
+                has_repository=bool(request.project_path),
+            )
+            if recommended is not None:
+                selected_skills = [recommended.skill_id]
+                reasons = list(selected.reasons)
+                reasons.append(f"recommended skill contract: {recommended.skill_id}")
+                selected = selected.model_copy(update={"reasons": reasons})
         reasons = list(selected.reasons)
         if request.provider_override:
             reasons.append("manual provider override honored")
@@ -299,7 +334,14 @@ class PersonalAIRouter:
                 "answer_consequence": requirements.consequence,
                 "freshness_requirement": requirements.freshness,
                 "citations_required": requirements.citations_required,
+                "latency_preference": requirements.latency_preference,
+                "cost_preference": requirements.cost_preference,
+                "mutation_authority": requirements.mutation_authority,
+                "deterministic_solvable": requirements.deterministic_solvable,
+                "likely_tool_solvable": requirements.likely_tool_solvable,
                 "provider_discovery_receipt_id": snapshot.discovery_receipt_id,
+                "discovery_source": snapshot.discovery_source,
+                "discovery_age_ms": snapshot.discovery_age_ms,
                 "model_execution_location": snapshot.execution_location,
                 "model_locality_evidence": list(snapshot.model_locality_evidence),
             },
@@ -341,7 +383,10 @@ class PersonalAIRouter:
             "capability_fit": _capability_fit(snapshot, task_class, capability_role),
             "role_fit": role_points,
             "cost_fit": _cost_fit(
-                snapshot.cost_category, request.settings.cost_ceiling_category, demanding=demanding
+                snapshot.cost_category,
+                request.settings.cost_ceiling_category,
+                demanding=demanding,
+                billing_classification=snapshot.billing_classification,
             ),
             "persona_affinity": _persona_affinity(snapshot, persona_version),
             "privacy_fit": _privacy_fit(snapshot, privacy),
@@ -349,6 +394,8 @@ class PersonalAIRouter:
             "tool_fit": _tool_fit(snapshot, request.requested_tools),
             "latency_fit": _latency_fit(snapshot, complexity, demanding=demanding),
             "historical_success": snapshot.historical_success_signal,
+            "observed_latency": snapshot.observed_latency_signal,
+            "cancellation_rate": snapshot.cancellation_rate_signal,
             "quota_pressure": -snapshot.quota_pressure,
             "provider_priority": snapshot.provider_priority,
             "readiness_evidence": _readiness_evidence(snapshot),
@@ -357,6 +404,12 @@ class PersonalAIRouter:
             "factual_sensitivity_fit": factual_points,
             "freshness_fit": freshness_points,
             "citation_requirement_fit": citation_points,
+            "deterministic_fit": (
+                24
+                if requirements.deterministic_solvable and snapshot.provider_id == "deterministic"
+                else (-20 if snapshot.provider_id == "deterministic" else 0)
+            ),
+            "billing_fit": _billing_fit(snapshot, requirements, capability_role),
         }
         rejection = _rejection_reason(
             request=request,
@@ -365,6 +418,7 @@ class PersonalAIRouter:
             capability_role=capability_role,
             risk=risk,
             local_only=local_only,
+            requirements=requirements,
         )
         reasons = [
             f"execution boundary: {'discovered' if snapshot.available else 'unavailable'}",
@@ -390,11 +444,14 @@ class PersonalAIRouter:
             ("tool fit", components["tool_fit"]),
             ("latency fit", components["latency_fit"]),
             ("historical success", components["historical_success"]),
+            ("observed latency", components["observed_latency"]),
+            ("cancellation rate", components["cancellation_rate"]),
             ("quota pressure", components["quota_pressure"]),
             ("provider priority", components["provider_priority"]),
             ("model economy", components["model_economy"]),
             ("freshness requirement", components["freshness_fit"]),
             ("citation requirement", components["citation_requirement_fit"]),
+            ("deterministic fit", components["deterministic_fit"]),
         ):
             if value:
                 reasons.append(f"{label}: {value:+d}")
@@ -441,44 +498,119 @@ def label_authentication(value: str) -> str:
 
 
 def classify_task(prompt: str, cognitive_policy: str = "fast_answer") -> TaskClass:
-    """Classify a request by explicit keywords, from highest consequence first."""
+    """Classify semantic task family from the prompt, not from cognitive policy.
+
+    ``cognitive_policy`` is accepted for call-site compatibility. It may change
+    depth and verification rigor elsewhere. It does not redefine task family.
+    """
+    _ = cognitive_policy
     text = prompt.lower()
-    if _contains(text, "security", "vulnerability", "credential", "secret", "api key", "token"):
-        return "security_review"
-    if _contains(text, "medical", "legal", "financial", "investment", "hire", "firing"):
+    if _contains(text, "security", "vulnerability", "credential", "secret", "api key"):
+        if not _is_explanatory_request(text):
+            return "security_review"
+    if _is_consequential_decision_request(text):
         return "consequential_decision"
     if _contains(text, "multi-step", "multi step", "mission"):
         return "multi_step_mission"
     if _contains(text, "csv", "dataset", "spreadsheet", "data analysis"):
         return "data_analysis"
-    if _contains(text, "pdf", "file", "document", "logfile", "log file") or _has_term(text, "log"):
+    if _contains(text, "pdf", "document", "logfile", "log file") or (
+        _has_term(text, "log") and not _is_explanatory_request(text)
+    ):
         return "file_analysis"
-    if _contains(text, "repository", "repo", "codebase", "pull request", "git", "diff"):
+    if _has_term(text, "file") and not _is_explanatory_request(text):
+        return "file_analysis"
+    if _contains(
+        text,
+        "repository",
+        "repo",
+        "codebase",
+        "pull request",
+        "code review",
+        "code-review",
+        "review this code",
+    ) or (_has_term(text, "git") and not _is_explanatory_request(text)):
         return "repository_execution"
-    if _contains(text, "run", "execute", "use tool", "call tool"):
+    if _contains(text, "diff") and not _is_explanatory_request(text):
+        return "repository_execution"
+    if _contains(text, "use tool", "call tool") or (
+        not _is_explanatory_request(text) and _contains(text, "run", "execute")
+    ):
         return "tool_operation"
-    if _contains(text, "implement", "code", "bug", "parser", "test", "refactor"):
+    if _is_coding_intent(text):
         return "coding"
-    if _contains(text, "research", "sources", "literature", "compare evidence", "what evidence", "evidence supports", "evidence against", "evidence weakens", "cite sources"):
+    if _contains(
+        text,
+        "research",
+        "literature",
+        "compare evidence",
+        "what evidence",
+        "evidence supports",
+        "evidence against",
+        "evidence weakens",
+        "cite sources",
+        "with citations",
+        "strongest evidence",
+        "evidence for",
+    ) or (_contains(text, "sources") and not _is_explanatory_request(text)):
         return "research"
     if _contains(text, "edit", "revise", "proofread"):
         return "editing"
-    if _contains(text, "write", "rewrite", "draft", "email"):
+    if _contains(text, "write", "rewrite", "draft", "email") and not _is_explanatory_request(text):
         return "writing"
-    if _contains(text, "plan", "roadmap", "prioritize"):
+    if _contains(text, "plan", "roadmap", "prioritize") and not _is_explanatory_request(text):
         return "planning"
     if _contains(text, "brainstorm", "creative", "story", "ideas"):
         return "creative_ideation"
     if _contains(text, "reflect", "emotion", "feel", "relationship", "i miss", "lonely", "loneliness", "grief"):
         return "personal_reflection"
-    return {
-        "implementation": "coding",
-        "research_synthesis": "research",
-        "research": "research",
-        "creative_divergence": "creative_ideation",
-        "emotional_reflection": "personal_reflection",
-        "decision_support": "planning",
-    }.get(cognitive_policy, "general_reasoning")
+    return "general_reasoning"
+
+
+def _is_explanatory_request(text: str) -> bool:
+    """True when the user asked for an explanation, not an action."""
+    return bool(
+        re.search(
+            r"\b(explain|what is|what's|whats|what are|difference between|"
+            r"how does|why does|how do|why do|how is|what does)\b",
+            text,
+        )
+    )
+
+
+def _is_coding_intent(text: str) -> bool:
+    """True for implementation work, not incidental uses of 'code' or 'test'."""
+    if _is_explanatory_request(text) and not _contains(
+        text, "implement", "refactor", "write tests", "write a function", "write a parser"
+    ):
+        return False
+    return _contains(
+        text,
+        "implement",
+        "refactor",
+        "write tests",
+        "add tests",
+        "unit test",
+        "write a parser",
+        "write a function",
+        "write a method",
+        "fix this bug",
+        "fix the bug",
+        "code this",
+        "change the code",
+        "source code for",
+    ) or (
+        _contains(text, "parser")
+        and _contains(text, "write", "implement", "build", "add")
+    )
+
+
+def _is_consequential_decision_request(text: str) -> bool:
+    if _contains(text, "hire", "firing", "should i", "prescribe", "invest in"):
+        return True
+    if _is_explanatory_request(text):
+        return False
+    return _contains(text, "medical", "legal", "financial", "investment")
 
 
 def classify_complexity(
@@ -488,12 +620,12 @@ def classify_complexity(
     reasoning_effort: str = "medium",
 ) -> Complexity:
     text = prompt.lower()
-    if _is_lightweight_task(prompt):
+    if _is_lightweight_task(prompt) or _is_bounded_explanation(prompt):
         return "simple"
     if reasoning_effort in {"high", "xhigh"}:
         return "complex"
     if task_class in {"security_review", "consequential_decision", "multi_step_mission"} or _contains(
-        text, "comprehensive", "architecture", "multiple", "system-wide"
+        text, "comprehensive", "architecture", "multiple", "system-wide", "failure modes", "consensus"
     ):
         return "complex"
     if cognitive_policy in {
@@ -529,6 +661,24 @@ def classify_requirements(
         prompt, text, task_class, complexity, domain, factual, cognitive_policy
     )
     consequence = _classify_consequence(text, task_class, domain)
+    lightweight = _is_lightweight_task(prompt) or _is_bounded_explanation(prompt)
+    from opencobalt.personal_ai.deterministic import try_deterministic
+
+    deterministic_solvable = try_deterministic(prompt) is not None
+    if lightweight and domain == "general" and factual != "high":
+        latency_preference: Literal["low", "standard", "high"] = "low"
+        cost_preference: Literal["minimize", "balanced", "quality_first"] = "minimize"
+    elif reasoning == "high" or factual == "high":
+        latency_preference = "high"
+        cost_preference = "quality_first"
+    else:
+        latency_preference = "standard"
+        cost_preference = "balanced"
+    mutation_authority: Literal["none", "staged", "explicit"] = "none"
+    if _is_mutating_repository_work(text, task_class):
+        mutation_authority = "staged"
+    if task_class in {"security_review", "consequential_decision"}:
+        mutation_authority = "explicit"
     return TaskRequirements(
         domain=domain,
         factual_sensitivity=factual,
@@ -536,6 +686,11 @@ def classify_requirements(
         consequence=consequence,
         freshness=freshness,
         citations_required=citations_required,
+        latency_preference=latency_preference,
+        cost_preference=cost_preference,
+        mutation_authority=mutation_authority,
+        deterministic_solvable=deterministic_solvable,
+        likely_tool_solvable=task_class in {"tool_operation", "data_analysis"},
     )
 
 
@@ -583,9 +738,14 @@ def _rejection_reason(
     capability_role: CapabilityRole,
     risk: RiskClassification,
     local_only: bool,
+    requirements: TaskRequirements | None = None,
 ) -> str | None:
     if not snapshot.available:
         return snapshot.unavailable_reason or "provider is unavailable"
+    if snapshot.provider_id == "deterministic" and not (
+        requirements is not None and requirements.deterministic_solvable
+    ):
+        return "deterministic provider is only eligible for closed-form micro-tasks"
     if local_only and (not snapshot.local or snapshot.requires_network):
         return "strict local-only policy excludes network/cloud provider"
     if request.provider_override and snapshot.provider_id != request.provider_override:
@@ -612,9 +772,20 @@ def _rejection_reason(
     missing_tools = sorted(set(request.requested_tools) - snapshot.tool_names)
     if missing_tools:
         return f"provider does not support required tools: {', '.join(missing_tools)}"
-    if _cost_rank(snapshot.cost_category) > _cost_rank(request.settings.cost_ceiling_category):
+    effective_cost = _effective_cost_category(
+        snapshot.cost_category, snapshot.billing_classification
+    )
+    if _cost_rank(effective_cost) > _cost_rank(request.settings.cost_ceiling_category):
+        if effective_cost == snapshot.cost_category:
+            category = f"provider cost category '{snapshot.cost_category}'"
+        else:
+            category = (
+                f"provider effective cost category '{effective_cost}' "
+                f"(declared '{snapshot.cost_category}', billing "
+                f"'{snapshot.billing_classification}')"
+            )
         return (
-            f"provider cost category '{snapshot.cost_category}' exceeds configured ceiling "
+            f"{category} exceeds configured ceiling "
             f"'{request.settings.cost_ceiling_category}'"
         )
     if task_class in {"security_review", "consequential_decision", "repository_execution"} and (
@@ -656,12 +827,28 @@ def _capability_fit(
     return 20 if _task_capability(task_class) in snapshot.capabilities else -40
 
 
-def _cost_fit(cost_category: str, ceiling: str, *, demanding: bool = False) -> int:
+def _cost_fit(
+    cost_category: str,
+    ceiling: str,
+    *,
+    demanding: bool = False,
+    billing_classification: str = "unknown",
+) -> int:
+    effective = _effective_cost_category(cost_category, billing_classification)
     if demanding:
-        base = {"free": 2, "low": 2, "standard": 2, "high": -4}[cost_category]
+        base = {"free": 2, "low": 2, "standard": 2, "high": -4}[effective]
     else:
-        base = {"free": 8, "low": 5, "standard": 2, "high": -4}[cost_category]
-    return base if _cost_rank(cost_category) <= _cost_rank(ceiling) else base - 10
+        base = {"free": 8, "low": 5, "standard": 2, "high": -4}[effective]
+    return base if _cost_rank(effective) <= _cost_rank(ceiling) else base - 10
+
+
+def _effective_cost_category(cost_category: str, billing_classification: str) -> str:
+    effective = cost_category
+    if billing_classification == "subscription_backed" and cost_category == "standard":
+        effective = "low"
+    if billing_classification == "api_billed" and cost_category in {"free", "low"}:
+        effective = "standard"
+    return effective
 
 
 def _cost_rank(value: str) -> int:
@@ -779,12 +966,34 @@ def _model_economy(
         "consequential_decision",
     } or complexity == "complex":
         return {"strong": 4, "standard": 0, "weak": -6}[snapshot.quality_tier]
+    if snapshot.billing_classification == "api_billed":
+        return -10
+    if snapshot.billing_classification == "subscription_backed" and snapshot.quality_tier != "weak":
+        return 6
     if snapshot.cost_category == "high":
         return -10
     if snapshot.cost_category == "low" and snapshot.quality_tier != "weak":
         return 8
     if snapshot.cost_category == "free":
-        return 6
+        return 4 if snapshot.quality_tier == "weak" else 6
+    return 0
+
+
+def _billing_fit(
+    snapshot: ProviderSnapshot,
+    requirements: TaskRequirements,
+    capability_role: CapabilityRole,
+) -> int:
+    """Prefer local/subscription near-zero marginal cost over per-call API billing."""
+    billing = snapshot.billing_classification
+    if billing == "api_billed" and not _quality_sensitive(requirements):
+        return -8
+    if billing == "subscription_backed":
+        if capability_role in {"cheap_local", "fast_general"} and snapshot.quality_tier != "weak":
+            return 4
+        return 2
+    if billing == "local":
+        return 3 if capability_role == "cheap_local" else 1
     return 0
 
 
@@ -906,11 +1115,75 @@ def _is_lightweight_task(prompt: str) -> bool:
         )
     ):
         return True
+    if _is_domain_sensitive_prompt(text):
+        return False
     if _contains(text, "extract", "extraction") and word_count <= 40:
         return True
     if _contains(text, "summarize", "summary") and word_count <= 25:
         return True
     return False
+
+
+def _is_domain_sensitive_prompt(text: str) -> bool:
+    """True when the prompt names scientific, medical, legal, or architectural work."""
+    return _contains(
+        text,
+        "pharmacology",
+        "pathophysiology",
+        "diagnosis",
+        "patient",
+        "dosage",
+        "contraindication",
+        "legal",
+        "hypothesis",
+        "architecture",
+        "mechanism",
+        "randomized",
+        "receptor",
+        "antagonism",
+        "synapse",
+        "synaptic",
+        "neurotransmitter",
+        "circuit-level",
+        "neuron",
+        "enzyme",
+        "clinical",
+        "therapeutic",
+    )
+
+
+def _is_bounded_explanation(prompt: str) -> bool:
+    """Short low-stakes explanations should not consume strong_reasoning.
+
+    Structural: length, explanation framing, and an explicit brevity bound.
+    Domain-sensitive prompts are excluded even when they are short.
+    """
+    text = prompt.strip().lower()
+    if not text:
+        return False
+    word_count = len(text.split())
+    if word_count > 24:
+        return False
+    if _is_domain_sensitive_prompt(text):
+        return False
+    if not re.search(r"\b(explain|what is|what's|difference between)\b", text):
+        return False
+    if re.search(r"\bin\s+\d+\s+sentences?\b", text) or _contains(
+        text, "briefly", "in short", "in one paragraph", "three sentences", "two sentences"
+    ):
+        return True
+    return False
+
+
+def has_explicit_format_constraint(prompt: str) -> bool:
+    """True when the user named a length or format the model must obey."""
+    text = prompt.strip().lower()
+    if not text:
+        return False
+    return bool(
+        re.search(r"\bin\s+\d+\s+sentences?\b", text)
+        or _contains(text, "briefly", "in short", "in one paragraph", "three sentences", "two sentences")
+    )
 
 
 def _classify_domain(text: str, task_class: TaskClass) -> DomainClass:
@@ -986,13 +1259,13 @@ def _classify_factual_sensitivity(
     cognitive_policy: str,
     citations_required: bool,
 ) -> SensitivityLevel:
-    if _is_lightweight_task(text):
+    if _is_lightweight_task(text) or _is_bounded_explanation(text):
         return "low"
     if task_class in {"research", "consequential_decision", "security_review"} or citations_required:
         return "high"
     if domain in {"scientific", "medical", "legal", "financial"}:
         return "high"
-    if cognitive_policy in {"research", "research_synthesis"}:
+    if cognitive_policy in {"research", "research_synthesis"} and task_class == "research":
         return "high"
     if _contains(text, "evidence", "established", "speculative", "distinguish", "cite"):
         return "high"
@@ -1010,7 +1283,7 @@ def _classify_reasoning_quality(
     factual: SensitivityLevel,
     cognitive_policy: str,
 ) -> QualityNeed:
-    if _is_lightweight_task(prompt):
+    if _is_lightweight_task(prompt) or _is_bounded_explanation(prompt):
         return "low"
     if complexity == "simple" and domain == "general" and factual != "high":
         return "low"
@@ -1028,7 +1301,7 @@ def _classify_reasoning_quality(
             and complexity != "simple"
         )
         or task_class in {"research", "security_review", "consequential_decision"}
-        or _contains(text, "distinguish", "hypothesis", "speculative", "nuance", "tradeoff")
+        or _contains(text, "distinguish", "hypothesis", "speculative", "nuance", "tradeoff", "tradeoffs", "failure modes")
     ):
         return "high"
     return "standard"
@@ -1126,6 +1399,8 @@ def classify_capability_role(
         complexity == "simple" and requirements.reasoning_quality == "low"
     ):
         return "cheap_local"
+    if _is_bounded_explanation(prompt) and requirements.domain == "general":
+        return "fast_general"
     if (
         requirements.reasoning_quality == "high"
         or requirements.domain in {"scientific", "medical", "philosophical", "legal"}

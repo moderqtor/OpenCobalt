@@ -87,11 +87,10 @@ class DailyStore:
         self.clock = clock or SystemClock()
         self._init_db()
 
-    def _get_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON;")
-        return conn
+    def _get_conn(self):
+        from opencobalt.core.sqlite import closing_sqlite
+
+        return closing_sqlite(self.db_path, foreign_keys=True)
 
     def _init_db(self) -> None:
         """Initialize database schema idempotently."""

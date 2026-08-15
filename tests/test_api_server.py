@@ -6,6 +6,9 @@ throwaway directory and do not touch the real .opencobalt/ledger.db.
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("fastapi", reason="fastapi not installed; pip install 'opencobalt[server]'")
@@ -61,6 +64,45 @@ class TestStatus:
         data = _get("/api/status", tmp_path, monkeypatch)
         assert data["test_count"] is None
         assert data["test_count_evidence"] == "tests_directory_unavailable"
+
+
+class TestReady:
+    def test_personal_ai_routes_are_mounted_before_serving_requests(self):
+        assert str(app.url_path_for("list_conversations")) == "/api/v1/conversations"
+
+    def test_ready_does_not_scan_the_repository(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        def boom(_root, **kwargs):
+            raise AssertionError("readiness must not scan the repository")
+
+        monkeypatch.setattr("opencobalt.api_server.scan_directory", boom)
+        monkeypatch.chdir(tmp_path)
+        response = client.get("/api/ready")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ready"] is True
+        assert data["phase"] == "ready"
+        assert data["personal_ai_mounted"] is True
+        assert "uptime_ms" in data
+
+    def test_shutdown_cancellation_failure_is_not_hidden(self, tmp_path, monkeypatch):
+        from opencobalt.personal_ai.api import _CONTEXTS
+
+        class BrokenService:
+            def cancel_all(self):
+                raise RuntimeError("cancel failed")
+
+        key = Path(tmp_path / "ledger.db")
+        monkeypatch.setitem(
+            _CONTEXTS,
+            key,
+            ((None, None), SimpleNamespace(service=BrokenService())),
+        )
+
+        with pytest.raises(RuntimeError, match="cancel failed"):
+            with TestClient(app):
+                pass
 
 
 # ---------------------------------------------------------------------------
