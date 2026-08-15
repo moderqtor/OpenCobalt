@@ -33,23 +33,23 @@ Starting the UI and inspecting existing records requires no provider credential.
 
 ## Pages
 
-Chat is the default page. Primary navigation is Work first, then System
-behind a disclosure.
+Chat is the default page. Primary navigation is Work, then Context, then
+System behind a disclosure.
 
 | Area | Page | Purpose |
 |---|---|---|
 | Work | Chat | The daily surface. Write a goal. Automatic routing is the default. Manual provider, persona, privacy, and local-only controls stay under Controls. |
 | Work | Missions | Durable research and coding work that can resume later. Ordinary Chat does not become a Mission. |
-| Context | Memory | Curated facts you chose to keep. This is not conversation history. A chat request beginning with `Remember that ...` creates a proposal for review. |
+| Context | Memory | Saved facts you chose to keep. This is not conversation history. A chat request beginning with `Remember that ...` creates a proposal for review. |
 | System | Routes | Route history and the inspector for why a provider was selected, fallback, receipt integrity, and reruns. |
-| System | Ledger | Normalized execution receipts. Receipt integrity is not a proof of factual truth. |
+| System | Ledger | Execution records kept on this machine. Receipt integrity is not a proof of factual truth. |
 | System | Skills | Installed local skill records. Listing or inspecting a skill does not execute it. |
 | System | Providers | Separate evidence for installation, authentication, health, models, and execution support. |
 | System | Settings | Local defaults for Chat, privacy, approvals, and personas. These defaults do not grant authority. |
 
 Pages remain hash-linkable, such as `http://localhost:5173/#providers`. System pages stay available; they are no longer equal primary destinations.
 
-Creating a conversation is immediate. The title starts as "New conversation" and is replaced by the first message unless you already named it. A repository path is optional and can be attached after the conversation exists. The path is still canonicalized and cannot escape the startup workspace.
+New Chat work starts locally: the plus control focuses the composer without creating an empty record. The conversation is stored when the first message is sent. The title starts as "New conversation" and is replaced by that first message unless you already named it. A repository path is optional under Controls after the conversation exists. The path is still canonicalized and cannot escape the startup workspace.
 
 ## Shared local state
 
@@ -69,7 +69,7 @@ Chat keeps Automatic vs Manual mode, the last manual provider/model, reasoning e
 
 Persona and approach stay under Controls. They are not part of the routing preset.
 
-Desktop Chat layout is a horizontal grid: primary navigation, a bounded conversation column, then the active chat. The optional route inspector remains an overlay. Collapsing the conversation column gives that space to chat. At narrow widths the conversation list is a drawer over chat rather than a stacked full-width section.
+Desktop Chat layout is a horizontal grid: primary navigation, a bounded conversation column, then the active chat. The optional route inspector remains an overlay. Collapsing the conversation column gives that space to chat. Below 1180px the conversation list is a drawer over chat. Below 1024px primary navigation is also a drawer.
 
 Provider prompts concatenate a system policy and the current user message. The policy includes persona controls, execution constraints, at most the last ten prior messages truncated to 3000 characters each, and attachment excerpts. The current user message is not repeated inside that history. A first short request therefore has a small OpenCobalt-owned payload; large input-token reports on such requests are mostly provider/runtime baseline context.
 

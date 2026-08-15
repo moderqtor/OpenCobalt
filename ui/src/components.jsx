@@ -8,6 +8,9 @@ import {
 export const WORK_NAVIGATION = [
   ["chat", "Chat", MessageSquareText],
   ["missions", "Missions", Layers3],
+];
+
+export const CONTEXT_NAVIGATION = [
   ["memory", "Memory", BrainCircuit],
 ];
 
@@ -19,7 +22,7 @@ export const SYSTEM_NAVIGATION = [
   ["settings", "Settings", Settings2],
 ];
 
-export const NAVIGATION = [...WORK_NAVIGATION, ...SYSTEM_NAVIGATION];
+export const NAVIGATION = [...WORK_NAVIGATION, ...CONTEXT_NAVIGATION, ...SYSTEM_NAVIGATION];
 const SYSTEM_IDS = new Set(SYSTEM_NAVIGATION.map(([id]) => id));
 
 export function CobaltMark() {
@@ -82,6 +85,12 @@ export function Navigation({ active, onSelect, open = false, onClose, onCollapse
     <div className="nav-links">
       <p className="nav-section-label">Work</p>
       {WORK_NAVIGATION.map(([id, navLabel, Icon]) => (
+        <button type="button" key={id} className={`nav-link ${active === id ? "is-active" : ""}`} aria-current={active === id ? "page" : undefined} onClick={() => select(id)}>
+          <Icon aria-hidden="true" size={16} /><span>{navLabel}</span>
+        </button>
+      ))}
+      <p className="nav-section-label">Context</p>
+      {CONTEXT_NAVIGATION.map(([id, navLabel, Icon]) => (
         <button type="button" key={id} className={`nav-link ${active === id ? "is-active" : ""}`} aria-current={active === id ? "page" : undefined} onClick={() => select(id)}>
           <Icon aria-hidden="true" size={16} /><span>{navLabel}</span>
         </button>
@@ -149,6 +158,13 @@ function scoreComponentEntries(components) {
 function visibleReasons(reasons) {
   if (!Array.isArray(reasons)) return [];
   return reasons.map((reason) => String(reason || "").trim()).filter(Boolean);
+}
+
+function userFacingReason(reason) {
+  const text = String(reason || "").trim();
+  if (!text || /^execution boundary:/i.test(text)) return "";
+  if (/^[a-z][a-z ]*: [+-]?\d+$/i.test(text)) return "";
+  return text.replace(/^readiness evidence:\s*[+-]?\d+\s*/i, "").replace(/^\(|\)$/g, "").trim();
 }
 
 function compactId(value) {
@@ -344,7 +360,7 @@ export function RouteInspector({ route, candidates = [], providers = [], persona
   );
 
   const billing = billingLabel(route);
-  const summaryReasons = reasons.slice(0, 3);
+  const summaryReasons = reasons.map(userFacingReason).filter(Boolean).slice(0, 3);
 
   return <div ref={dialogRef} className="route-inspector" role="dialog" aria-modal="true" aria-labelledby="route-inspector-title" tabIndex="-1">
     <div className="inspector-heading"><div><p className="eyebrow">{receipt ? "How this was handled" : "Route decision"}</p><h2 id="route-inspector-title">Details</h2></div><IconButton label="Close inspector" onClick={onClose}><X size={17} /></IconButton></div>

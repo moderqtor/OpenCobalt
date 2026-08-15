@@ -9,12 +9,21 @@ API = Path("ui/src/api.js").read_text()
 
 
 def test_primary_navigation_promotes_work_and_discloses_system():
-    work = COMPONENTS[COMPONENTS.index("export const WORK_NAVIGATION") : COMPONENTS.index("export const SYSTEM_NAVIGATION")]
-    system = COMPONENTS[COMPONENTS.index("export const SYSTEM_NAVIGATION") : COMPONENTS.index("export const NAVIGATION")]
+    work = COMPONENTS[
+        COMPONENTS.index("export const WORK_NAVIGATION") : COMPONENTS.index("export const CONTEXT_NAVIGATION")
+    ]
+    context = COMPONENTS[
+        COMPONENTS.index("export const CONTEXT_NAVIGATION") : COMPONENTS.index("export const SYSTEM_NAVIGATION")
+    ]
+    system = COMPONENTS[
+        COMPONENTS.index("export const SYSTEM_NAVIGATION") : COMPONENTS.index("export const NAVIGATION")
+    ]
     assert '["chat", "Chat"' in work
     assert '["missions", "Missions"' in work
-    assert '["memory", "Memory"' in work
+    assert '["memory", "Memory"' not in work
+    assert '["memory", "Memory"' in context
     assert '["routes", "Routes"' not in work
+    assert '["routes", "Routes"' not in context
     assert '["routes", "Routes"' in system
     assert '["ledger", "Ledger"' in system
     assert '["skills", "Skills"' in system
@@ -22,6 +31,7 @@ def test_primary_navigation_promotes_work_and_discloses_system():
     assert '["settings", "Settings"' in system
     assert 'className="nav-system"' in COMPONENTS
     assert "<summary>System</summary>" in COMPONENTS
+    assert ">Context</p>" in COMPONENTS
 
 
 def test_composer_keeps_automatic_primary_and_hides_advanced_controls():
@@ -35,6 +45,7 @@ def test_composer_keeps_automatic_primary_and_hides_advanced_controls():
     advanced_index = composer.index("id=\"composer-advanced\"")
     assert persona_index > advanced_index
     assert "Cognitive policy" not in composer
+    assert "Attach a local repository" in composer
 
 
 def test_chat_provenance_is_compact_and_avoids_receipt_ids():
@@ -48,6 +59,9 @@ def test_chat_provenance_is_compact_and_avoids_receipt_ids():
     assert "Continue as Mission" in COMPONENTS
     assert "Receipt integrity passed" in COMPONENTS
     assert "does not prove the answer is factually true" in COMPONENTS
+    assert "function userFacingReason" in COMPONENTS
+    assert "Compare last two answers" in APP
+    assert "Compare with previous" not in APP
 
 
 def test_missions_connect_to_conversations_without_fake_autonomy():
@@ -61,3 +75,11 @@ def test_missions_connect_to_conversations_without_fake_autonomy():
 
 def test_conversation_patch_client_exists():
     assert "updateConversation:" in API
+
+
+def test_narrow_viewports_overlay_rail_and_navigation():
+    assert 'useViewportFlag("(max-width: 1180px)")' in APP
+    assert "@media (max-width: 1180px)" in CSS
+    assert "@media (max-width: 1024px)" in CSS
+    assert "@media (min-width: 1181px)" in CSS
+    assert "inset: 0 auto 0 228px" in CSS

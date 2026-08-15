@@ -26,12 +26,15 @@ def test_desktop_select_does_not_collapse_the_conversation_rail():
 
 
 def test_new_conversation_ui_does_not_copy_active_chat_routing():
-    create = _function_body(APP, "const createConversation = async (input = {}) => {", "const ensureConversation")
+    start = _function_body(APP, "const startConversation = () => {", "const ensureConversation")
     ensure = _function_body(APP, "const ensureConversation = async () => {", "const persistConversationRouting")
-    assert "updateConversationRouting" not in create
+    assert "api.createConversation" not in start
+    assert "updateConversationRouting" not in start
     assert "updateConversationRouting" not in ensure
-    assert "routingPatchFromControls" not in create
+    assert "routingPatchFromControls" not in start
     assert "routingPatchFromControls" not in ensure
+    assert "setDrafting(true)" in start
+    assert "setDrafting(false)" in ensure
     assert "created: true" in ensure
     persist = _function_body(APP, "const persistConversationRouting = (nextControls, conversationId) => {", "const updateControls")
     assert "write_seq: seq" in persist
@@ -45,7 +48,8 @@ def test_new_conversation_ui_does_not_copy_active_chat_routing():
 def test_new_conversation_is_instant_without_title_or_repo_form():
     assert "id=\"conversation-create\"" not in COMPONENTS
     assert 'onClick={() => onCreate({})}' in COMPONENTS
-    assert "Attach repository" in APP
+    assert "startConversation" in APP
+    assert "Attach a local repository" in APP
     assert 'placeholder="Ask OpenCobalt"' in APP
     assert "Write a goal. OpenCobalt will choose how to handle it." in APP
 

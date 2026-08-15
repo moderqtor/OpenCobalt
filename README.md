@@ -86,12 +86,11 @@ it for local-only Chat and some research roles.
 
 ## First use
 
-1. Open Chat.
+1. Open Chat and start typing, or click New.
 2. Write the goal. Automatic routing is on unless you choose Manual.
-3. Open Controls only for persona, approach, privacy, local-only, or a
-   manual provider.
-4. Attach a repository only when the work is about that repo.
-5. Open Details on a response, or Missions, when you want the decision
+3. Open Controls only for persona, approach, privacy, local-only, a
+   manual provider, or an optional repository path.
+4. Open Details on a response, or Missions, when you want the decision
    record. Routes, Ledger, Skills, Providers, and Settings stay under
    System.
 
