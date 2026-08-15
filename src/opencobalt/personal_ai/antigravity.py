@@ -7,7 +7,10 @@ discovered ``agy`` capabilities into the normalized provider boundary.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -42,7 +45,7 @@ from opencobalt.personal_ai.providers import (
     _safe_model_identifier,
 )
 
-_SCRATCH_ROOT = Path(".opencobalt") / "scratch" / "antigravity"
+_SCRATCH_MARKER = ".opencobalt-antigravity-scratch"
 
 
 def _now() -> datetime:
@@ -187,17 +190,74 @@ def parse_antigravity_payload(
     return _normalize_result_envelope(payload, tool_events=[])
 
 
-def antigravity_scratch_dir(request_id: str) -> Path:
-    """Return an isolated working directory that is not the OpenCobalt repository."""
+def _attached_repository_root(start: Path) -> Path:
+    resolved = start.expanduser().resolve()
+    for candidate in (resolved, *resolved.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return resolved
+
+
+def _antigravity_scratch_root(*, repository_root: Path | None = None) -> Path:
+    repository = _attached_repository_root(repository_root or Path.cwd())
+    uid = getattr(os, "getuid", lambda: 0)()
+    root = (
+        Path(tempfile.gettempdir()).expanduser().resolve()
+        / f"opencobalt-{uid}"
+        / "antigravity"
+    ).resolve()
+    if root == repository or root.is_relative_to(repository):
+        raise RuntimeError(
+            "Antigravity scratch root resolves inside the attached repository"
+        )
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root.chmod(0o700)
+    return root
+
+
+def antigravity_scratch_dir(
+    request_id: str,
+    *,
+    repository_root: Path | None = None,
+) -> Path:
+    """Create a private per-invocation directory outside the attached repository."""
     safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", request_id)[:80] or "request"
-    root = Path.cwd() / _SCRATCH_ROOT
-    path = root / safe_id
-    path.mkdir(parents=True, exist_ok=True)
-    (path / ".opencobalt-scratch").write_text(
-        "OpenCobalt Antigravity answer-only scratch directory.\n",
-        encoding="utf-8",
-    )
+    root = _antigravity_scratch_root(repository_root=repository_root)
+    path = Path(tempfile.mkdtemp(prefix=f"{safe_id}-", dir=str(root))).resolve()
+    path.chmod(0o700)
+    marker = path / _SCRATCH_MARKER
+    marker.write_text("OpenCobalt Antigravity scratch workspace.\n", encoding="utf-8")
+    marker.chmod(0o600)
     return path
+
+
+def _cleanup_antigravity_scratch(path: Path) -> None:
+    """Best-effort removal limited to a marked per-invocation scratch directory."""
+    resolved = path.expanduser().resolve()
+    marker = resolved / _SCRATCH_MARKER
+    if not marker.is_file() or resolved.parent.name != "antigravity":
+        return
+    try:
+        shutil.rmtree(resolved)
+    except OSError:
+        pass
+
+
+def _is_managed_external_scratch(
+    path: Path | None,
+    *,
+    repository_root: Path | None = None,
+) -> bool:
+    if path is None:
+        return False
+    resolved = path.expanduser().resolve()
+    repository = _attached_repository_root(repository_root or Path.cwd())
+    return bool(
+        resolved.parent.name == "antigravity"
+        and (resolved / _SCRATCH_MARKER).is_file()
+        and resolved != repository
+        and not resolved.is_relative_to(repository)
+    )
 
 
 def print_timeout_flag(timeout_seconds: int) -> str:
@@ -333,7 +393,7 @@ class _AntigravityPrintAdapter:
 
     display_name = "Google Antigravity isolated print"
     executable = "agy"
-    isolates_answer_only_inference = True
+    isolates_answer_only_inference = False
 
     def __init__(
         self,
@@ -348,8 +408,13 @@ class _AntigravityPrintAdapter:
         json_schema: str | None = None,
         conversation_id: str | None = None,
         research: bool = False,
+        scratch_path: Path | None = None,
     ) -> None:
         self._capabilities = capabilities
+        self.isolates_answer_only_inference = bool(
+            _capability_supported(capabilities, "sandbox_mode", "terminal_sandbox")
+            and _is_managed_external_scratch(scratch_path)
+        )
         self.model_id = model_id
         self.effort = mapped_effort(effort)
         self.explicit_effort_supported = explicit_effort_supported
@@ -469,8 +534,11 @@ class AntigravityChatProvider(EngineBackedChatProvider):
         return details if isinstance(details, dict) else {}
 
     def _uses_isolated_print(self) -> bool:
-        return getattr(self.adapter, "executable", None) == "agy" and _capability_supported(
-            self._runtime_capabilities(), "json_output"
+        capabilities = self._runtime_capabilities()
+        return (
+            getattr(self.adapter, "executable", None) == "agy"
+            and _capability_supported(capabilities, "json_output")
+            and _capability_supported(capabilities, "sandbox_mode", "terminal_sandbox")
         )
 
     def status(self) -> ProviderStatus:
@@ -499,8 +567,8 @@ class AntigravityChatProvider(EngineBackedChatProvider):
         ]
         if status.execution_supported and isolated:
             status.limitations.append(
-                "answer-only Chat uses an isolated scratch workspace, discovered "
-                "--sandbox when available, JSON print output, and never enables "
+                "answer-only Chat requires a managed external scratch workspace, "
+                "discovered --sandbox support, JSON print output, and never enables "
                 "--dangerously-skip-permissions"
             )
             status.limitations.append(
@@ -586,18 +654,22 @@ class AntigravityChatProvider(EngineBackedChatProvider):
                     message="Antigravity JSON model catalog was not discovered",
                 ),
             )
-        outcome = self.engine.run_task(
-            "inspect authenticated Antigravity model catalog",
-            runtime=catalog_adapter.runtime_id,
-            model=None,
-            execute=True,
-            approved=False,
-            timeout_seconds=30,
-            cwd=str(antigravity_scratch_dir("models")),
-            unsafe_skip_permissions=False,
-            execution_context="answer_only_inference",
-            adapter=catalog_adapter,
-        )
+        scratch = antigravity_scratch_dir("models")
+        try:
+            outcome = self.engine.run_task(
+                "inspect authenticated Antigravity model catalog",
+                runtime=catalog_adapter.runtime_id,
+                model=None,
+                execute=True,
+                approved=False,
+                timeout_seconds=30,
+                cwd=str(scratch),
+                unsafe_skip_permissions=False,
+                execution_context="answer_only_inference",
+                adapter=catalog_adapter,
+            )
+        finally:
+            _cleanup_antigravity_scratch(scratch)
         normalized = _normalize_outcome(
             request=request,
             provider_id="antigravity-catalog",
@@ -728,14 +800,18 @@ class AntigravityChatProvider(EngineBackedChatProvider):
                 else None
             ),
             research=research,
+            scratch_path=scratch,
         )
-        result = self._execute_through_engine(
-            request,
-            cancellation=cancellation,
-            adapter=adapter,
-            model_id=request.model_id,
-            cwd=str(scratch),
-        )
+        try:
+            result = self._execute_through_engine(
+                request,
+                cancellation=cancellation,
+                adapter=adapter,
+                model_id=request.model_id,
+                cwd=str(scratch),
+            )
+        finally:
+            _cleanup_antigravity_scratch(scratch)
         if result.status == "complete" and not result.content.strip():
             result.status = "failed"
             result.error = ProviderError(

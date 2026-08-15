@@ -30,9 +30,9 @@ Research retrieval is a normalized `DocumentAcquisitionPipeline`
 does not depend on whether a document came from PubMed, a PDF, Crossref, a
 government host, or a user upload.
 
-Current resolver behavior:
+Current acquisition behavior:
 
-- Generic public HTTPS HTML: redirects, canonical URL, title, and primary
+- Generic public HTTPS HTML: bounded redirects, canonical URL, title, and primary
   content extraction. Navigation and search chrome are stripped when possible.
 - PDF: bounded download, `%PDF` verification, and text extraction with page
   provenance when `pypdf` is installed.
@@ -42,10 +42,20 @@ Current resolver behavior:
   govinfo, and similar public hosts. No paper-specific URLs are hardcoded.
 - User uploads: conversation attachments become `user_document` sources.
 
-Fetch goes through `ExecutionEngine` over HTTPS with SSRF rejection for
-localhost, private IPs, credentials, file URLs, and non-HTTPS schemes.
+Fetch goes through `ExecutionEngine` over HTTPS. Before each connection,
+OpenCobalt resolves the hostname and rejects the entire destination if any
+IPv4 or IPv6 answer is loopback, private, link-local, multicast, reserved,
+unspecified, or otherwise non-public. Curl is pinned to the approved address
+set with proxy use disabled, so a later resolver answer cannot select a
+different destination. Curl does not follow redirects: OpenCobalt processes at
+most three hops and validates the scheme, credentials, hostname, and resolved
+addresses again on every hop. Malformed URLs, credentials, non-HTTPS schemes,
+redirect loops, and public-to-private redirects fail closed.
+
 Caps: 8 primary sources plus 6 follow-ups; truncated excerpts; 150 KB fetch
 bound. Search-index and asset URLs are excluded from document extraction.
+Trusted-source classification uses exact hostname or subdomain boundaries;
+lookalike hosts containing a trusted name receive no source-quality boost.
 
 A later Research Mission in the same conversation can reuse previously
 retrieved sources when the question overlaps. Excluded sources are skipped.
@@ -61,6 +71,13 @@ limitations when the source provides them. Uncertainty is folded into
 limitations. If the extractor returns nothing, retrieved excerpts can still
 be stored as linked evidence.
 
+All retrieved source fields and source-derived evidence are labeled as
+untrusted data in extractor, reviewer, and synthesis prompts. Those prompts
+instruct models not to follow source directives, change the research question,
+tools, schema, policy, or authority, and to extract only substantive evidence.
+The control plane never grants authority from retrieved text. This boundary
+does not claim perfect semantic prompt-injection prevention.
+
 Excluded sources are omitted from later reuse and from synthesis input.
 
 A citation is marked `verified_link` only when it points at evidence whose
@@ -73,7 +90,7 @@ orchestrator always records that limitation.
 
 Research LLM steps are assigned heuristically to eligible Chat providers:
 
-- Eligible today: Antigravity, Ollama, Mock
+- Eligible today: Antigravity, Ollama, and explicitly enabled development Mock
 - Planner and extractor prefer a non-weak cost-ordered candidate
 - Synthesizer prefers the strongest eligible model
 - Reviewer is optional and only used when a distinct strong model exists

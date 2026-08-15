@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -32,7 +35,11 @@ from opencobalt.execution import (
     max_risk,
     verify_artifact,
 )
-from opencobalt.execution.models import NormalizedInvocation, RuntimeCapabilitySnapshot
+from opencobalt.execution.models import (
+    ExecutionResult,
+    NormalizedInvocation,
+    RuntimeCapabilitySnapshot,
+)
 
 
 def _engine(tmp_path: Path) -> ExecutionEngine:
@@ -1677,6 +1684,94 @@ class TestExecutionEngine:
         )
         engine.run_task("hello", runtime="noop")
         assert "task.received" in seen
+
+    def test_concurrent_runs_on_one_engine_keep_receipts_and_events_isolated(
+        self, tmp_path
+    ):
+        class OverlapRunner:
+            def __init__(self, artifact_dir: Path) -> None:
+                self.artifact_dir = artifact_dir
+                self.entered: dict[str, threading.Event] = {}
+                self.release: dict[str, threading.Event] = {}
+
+            def run(self, argv, *, plan_id, step_id, runtime, cwd, timeout_seconds, **_):
+                marker = argv[-1]
+                entered = self.entered.setdefault(marker, threading.Event())
+                release = self.release.setdefault(marker, threading.Event())
+                entered.set()
+                if marker.startswith("run-a"):
+                    assert release.wait(timeout=5), f"timed out releasing {marker}"
+                self.artifact_dir.mkdir(parents=True, exist_ok=True)
+                stdout_path = self.artifact_dir / f"{marker}.stdout"
+                stdout_path.write_text(marker, encoding="utf-8")
+                now = datetime.now(tz=timezone.utc)
+                return ExecutionResult(
+                    plan_id=plan_id,
+                    step_id=step_id,
+                    runtime=runtime,
+                    command_argv=list(argv),
+                    cwd=cwd,
+                    return_code=0,
+                    stdout_path=str(stdout_path),
+                    stdout_preview=marker,
+                    started_at=now,
+                    finished_at=now,
+                    duration_ms=0,
+                    status="succeeded",
+                )
+
+        runner = OverlapRunner(tmp_path / "artifacts")
+        engine = ExecutionEngine(
+            store=ExecutionStore(tmp_path / "ledger.db"),
+            runner=runner,
+            events_path=tmp_path / "events.jsonl",
+        )
+
+        for index in range(3):
+            marker_a = f"run-a-{index}"
+            marker_b = f"run-b-{index}"
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                future_a = pool.submit(
+                    engine.run_task,
+                    marker_a,
+                    runtime="noop",
+                    execute=True,
+                )
+                assert runner.entered.setdefault(marker_a, threading.Event()).wait(timeout=5)
+                outcome_b = pool.submit(
+                    engine.run_task,
+                    marker_b,
+                    runtime="noop",
+                    execute=True,
+                ).result(timeout=5)
+                runner.release.setdefault(marker_a, threading.Event()).set()
+                outcome_a = future_a.result(timeout=5)
+
+            for own, other in ((outcome_a, outcome_b), (outcome_b, outcome_a)):
+                receipt = own.receipt
+                assert receipt.normalized_receipt is not None
+                assert receipt.normalized_receipt.event_count == len(own.events)
+                assert {event.event_id for event in receipt.adapter_events} == {
+                    event["id"] for event in own.events
+                }
+                assert receipt.provenance_refs == [
+                    own.plan.plan_id,
+                    own.result.execution_id,
+                    *receipt.artifact_ids,
+                ]
+                own_blob = repr(own.model_dump(mode="json"))
+                assert other.plan.plan_id not in own_blob
+                assert other.result.execution_id not in own_blob
+                assert not set(other.receipt.artifact_ids).intersection(receipt.artifact_ids)
+
+                artifacts = [engine.store.get_artifact(item) for item in receipt.artifact_ids]
+                assert all(artifact is not None for artifact in artifacts)
+                expected_marker = marker_a if own is outcome_a else marker_b
+                assert any(
+                    Path(artifact.path).read_text(encoding="utf-8") == expected_marker
+                    for artifact in artifacts
+                    if artifact is not None and artifact.artifact_type == "stdout"
+                )
 
 
 def engine_receipt_exists(tmp_path: Path, receipt_id: str) -> bool:

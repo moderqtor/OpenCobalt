@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -98,6 +99,11 @@ _CONTEXTS: dict[Path, tuple[tuple[int | None, int | None], APIContext]] = {}
 _CONTEXT_LOCK = threading.RLock()
 
 
+def _development_mock_enabled() -> bool:
+    """Require an explicit development/test opt-in for the synthetic provider."""
+    return os.environ.get("OPENCOBALT_ENABLE_DEVELOPMENT_MOCK") == "1"
+
+
 def _workspace_token(db_path: Path) -> tuple[int | None, int | None]:
     """Identify a ledger by parent and file inodes so deleted dirs cannot be reused."""
     try:
@@ -155,7 +161,7 @@ def _api_context() -> APIContext:
         service = ChatService(
             store=store,
             providers=providers,
-            enable_mock=True,
+            enable_mock=_development_mock_enabled(),
             missions=missions,
             engine=engine,
             approval_coordinator=approvals,
@@ -1559,6 +1565,9 @@ def list_providers() -> list[ProviderView]:
     result: list[ProviderView] = []
     for provider_status in context.providers.discover():
         preference = preferences.get(provider_status.provider_id)
+        enabled = preference.enabled if preference is not None else True
+        if provider_status.provider_id == "mock" and not context.service.enable_mock:
+            enabled = False
         successful = next(
             (
                 execution.finished_at
@@ -1582,7 +1591,7 @@ def list_providers() -> list[ProviderView]:
         result.append(
             ProviderView(
                 **provider_status.model_dump(),
-                enabled=preference.enabled if preference is not None else True,
+                enabled=enabled,
                 priority=preference.priority if preference is not None else 50,
                 cost_policy=(
                     preference.cost_policy if preference is not None else "prefer_subscription"

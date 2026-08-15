@@ -151,6 +151,12 @@ level, approval requirement, the runtime capability snapshot, the command
 plan, the normalized invocation, the normalized adapter receipt, and the IDs
 of all hashed output artifacts.
 
+Event collection is invocation-local. Concurrent `run_task()` or replay calls
+on one `ExecutionEngine` share the durable store and configured event sink, but
+not the per-run event buffer used to build normalized receipts. One run's event
+count, provenance references, plan, execution, and artifacts therefore cannot
+be populated from another overlapping run.
+
 `opencobalt receipts verify <id>` recomputes the SHA-256 of every referenced
 artifact. Statuses: `unverified` (nothing attached, e.g. dry-run),
 `verified` (all hashes match), `partial` (some match), `failed` (none match).

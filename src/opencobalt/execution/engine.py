@@ -82,11 +82,17 @@ class ExecutionEngine:
         self.runner = runner or ProcessRunner()
         self.events_path = events_path or _DEFAULT_EVENTS_PATH
         self.event_sink = event_sink
-        self._events: list[dict[str, Any]] = []
 
     # --- Events ---
 
-    def _emit(self, event_type: str, subject_id: str, message: str, **metadata: Any) -> None:
+    def _emit(
+        self,
+        events: list[dict[str, Any]],
+        event_type: str,
+        subject_id: str,
+        message: str,
+        **metadata: Any,
+    ) -> None:
         event = make_event(
             event_type=event_type,
             subject_type="execution",
@@ -95,7 +101,7 @@ class ExecutionEngine:
             source="execution-engine",
             metadata=metadata,
         )
-        self._events.append(event)
+        events.append(event)
         try:
             append_event(event, path=self.events_path)
         except OSError:
@@ -132,10 +138,11 @@ class ExecutionEngine:
         Defaults to dry-run: nothing executes unless execute=True and the
         policy gate allows it. Every path writes a receipt.
         """
-        self._events = []
+        events: list[dict[str, Any]] = []
         dry_run = not execute
         redacted_task = redact_text(task)
         self._emit(
+            events,
             EVENT_TASK_RECEIVED,
             redacted_task[:80],
             f"task received: {redacted_task[:120]}",
@@ -151,13 +158,14 @@ class ExecutionEngine:
             route_reason = decision.reasoning
             risk_from_route = str(decision.metadata.get("risk_level", "green"))
             self._emit(
+                events,
                 EVENT_ROUTE_SELECTED, selected, f"router selected {selected}",
                 reasoning=decision.reasoning, score=decision.score,
             )
         else:
             selected = runtime
             route_reason = f"runtime explicitly requested: {selected}"
-            self._emit(EVENT_ROUTE_SELECTED, selected, route_reason)
+            self._emit(events, EVENT_ROUTE_SELECTED, selected, route_reason)
         runtime = selected
 
         if adapter is None:
@@ -220,6 +228,7 @@ class ExecutionEngine:
         )
         if unsafe_skip_permissions:
             self._emit(
+                events,
                 EVENT_POLICY_CHECKED, runtime,
                 "WARNING: unsafe permission-skip override requested",
                 unsafe_override=True,
@@ -239,6 +248,7 @@ class ExecutionEngine:
         if command_error:
             limitations.append(command_error)
             self._emit(
+                events,
                 EVENT_POLICY_CHECKED,
                 runtime,
                 f"adapter skipped: {command_error}",
@@ -284,6 +294,7 @@ class ExecutionEngine:
         )
         self.store.save_plan(plan)
         self._emit(
+            events,
             EVENT_PLAN_CREATED, plan.plan_id,
             f"plan created for {runtime} (risk {risk})",
             command_argv=redact_argv(command_argv), dry_run=dry_run,
@@ -292,6 +303,7 @@ class ExecutionEngine:
         # 5. Policy gate.
         policy = check_execution(risk, dry_run=dry_run, execute=execute, approved=approved)
         self._emit(
+            events,
             EVENT_POLICY_CHECKED, plan.plan_id,
             f"policy: {'allowed' if policy.allowed else 'blocked'} ({policy.reason})",
             allowed=policy.allowed,
@@ -320,7 +332,12 @@ class ExecutionEngine:
         result: ExecutionResult | None = None
         if policy.allowed and not dry_run and not command_error:
             result = self._execute(
-                plan, step, receipt, session_handler=session_handler, cancel_check=cancel_check
+                events,
+                plan,
+                step,
+                receipt,
+                session_handler=session_handler,
+                cancel_check=cancel_check,
             )
         elif dry_run or command_error:
             step.status = "skipped"
@@ -328,17 +345,19 @@ class ExecutionEngine:
 
         self.store.save_receipt(receipt)
         self._emit(
+            events,
             EVENT_RECEIPT_CREATED, receipt.receipt_id,
             f"receipt created ({'executed' if result else 'not executed'})",
             verification_status=receipt.verification_status,
         )
 
         if receipt.artifact_ids:
-            self.verify_receipt(receipt.receipt_id)
+            self.verify_receipt(receipt.receipt_id, events=events)
             refreshed = self.store.get_receipt(receipt.receipt_id)
             if refreshed is not None:
                 receipt = refreshed
         receipt = self._finalize_receipt(
+            events=events,
             receipt=receipt,
             plan=plan,
             invocation=invocation,
@@ -353,7 +372,7 @@ class ExecutionEngine:
             result=result,
             receipt=receipt,
             route_reason=route_reason,
-            events=list(self._events),
+            events=list(events),
         )
 
     def replay_plan(
@@ -370,7 +389,7 @@ class ExecutionEngine:
         command is never re-routed or rebuilt, only re-gated: dry-run by
         default, red risk needs approval, black risk stays blocked.
         """
-        self._events = []
+        events: list[dict[str, Any]] = []
         original = self.store.get_plan(plan_id)
         if original is None:
             raise KeyError(f"unknown plan: {plan_id}")
@@ -419,6 +438,7 @@ class ExecutionEngine:
         )
         self.store.save_plan(plan)
         self._emit(
+            events,
             EVENT_PLAN_REPLAYED, plan.plan_id,
             f"replaying plan {plan_id} as {plan.plan_id} (risk {risk})",
             source_plan_id=plan_id,
@@ -428,6 +448,7 @@ class ExecutionEngine:
 
         policy = check_execution(risk, dry_run=dry_run, execute=execute, approved=approved)
         self._emit(
+            events,
             EVENT_POLICY_CHECKED, plan.plan_id,
             f"policy: {'allowed' if policy.allowed else 'blocked'} ({policy.reason})",
             allowed=policy.allowed, risk_level=policy.risk_level,
@@ -453,7 +474,7 @@ class ExecutionEngine:
 
         result: ExecutionResult | None = None
         if policy.allowed and not dry_run:
-            result = self._execute(plan, steps[0], receipt)
+            result = self._execute(events, plan, steps[0], receipt)
         elif dry_run:
             for step in steps:
                 step.status = "skipped"
@@ -461,17 +482,19 @@ class ExecutionEngine:
 
         self.store.save_receipt(receipt)
         self._emit(
+            events,
             EVENT_RECEIPT_CREATED, receipt.receipt_id,
             f"receipt created ({'executed' if result else 'not executed'})",
             verification_status=receipt.verification_status,
         )
 
         if receipt.artifact_ids:
-            self.verify_receipt(receipt.receipt_id)
+            self.verify_receipt(receipt.receipt_id, events=events)
             refreshed = self.store.get_receipt(receipt.receipt_id)
             if refreshed is not None:
                 receipt = refreshed
         receipt = self._finalize_receipt(
+            events=events,
             receipt=receipt,
             plan=plan,
             invocation=invocation,
@@ -486,11 +509,12 @@ class ExecutionEngine:
             result=result,
             receipt=receipt,
             route_reason=route_reason,
-            events=list(self._events),
+            events=list(events),
         )
 
     def _execute(
         self,
+        events: list[dict[str, Any]],
         plan: ExecutionPlan,
         step: ExecutionStep,
         receipt: WorkReceipt,
@@ -499,6 +523,7 @@ class ExecutionEngine:
     ) -> ExecutionResult:
         step.status = "running"
         self._emit(
+            events,
             EVENT_EXECUTION_STARTED, plan.plan_id,
             f"executing: {' '.join(step.command_argv[:4])}...",
         )
@@ -531,14 +556,21 @@ class ExecutionEngine:
         receipt.execution_id = result.execution_id
 
         self._emit(
+            events,
             EVENT_EXECUTION_OUTPUT, result.execution_id,
             f"captured {len(result.stdout_preview)} preview chars",
             return_code=result.return_code,
         )
         if result.status == "succeeded":
-            self._emit(EVENT_EXECUTION_SUCCEEDED, result.execution_id, "execution succeeded")
+            self._emit(
+                events,
+                EVENT_EXECUTION_SUCCEEDED,
+                result.execution_id,
+                "execution succeeded",
+            )
         else:
             self._emit(
+                events,
                 EVENT_EXECUTION_FAILED, result.execution_id,
                 f"execution {result.status}: {result.error or 'unknown error'}",
             )
@@ -558,6 +590,7 @@ class ExecutionEngine:
             self.store.save_artifact(artifact)
             receipt.artifact_ids.append(artifact.artifact_id)
             self._emit(
+                events,
                 EVENT_ARTIFACT_CREATED, artifact.artifact_id,
                 f"{stream} artifact hashed ({artifact.size_bytes} bytes)",
                 sha256=artifact.sha256,
@@ -567,6 +600,7 @@ class ExecutionEngine:
     def _finalize_receipt(
         self,
         *,
+        events: list[dict[str, Any]],
         receipt: WorkReceipt,
         plan: ExecutionPlan,
         invocation,
@@ -588,7 +622,7 @@ class ExecutionEngine:
         receipt.capability_snapshot_hash = capability_snapshot.snapshot_hash
         receipt.normalized_invocation = invocation
         receipt.adapter_events = events_for_receipt(
-            events=self._events,
+            events=events,
             invocation_id=invocation.invocation_id,
             adapter_id=invocation.adapter_id,
         )
@@ -604,19 +638,25 @@ class ExecutionEngine:
             verification_status=receipt.verification_status,
             limitations=receipt.limitations,
             provenance_refs=receipt.provenance_refs,
-            event_count=len(self._events),
+            event_count=len(events),
         )
         self.store.save_receipt(receipt)
         return receipt
 
     # --- Verification ---
 
-    def verify_receipt(self, receipt_id: str) -> str:
+    def verify_receipt(
+        self,
+        receipt_id: str,
+        *,
+        events: list[dict[str, Any]] | None = None,
+    ) -> str:
         """Recompute hashes for all artifacts a receipt references.
 
         Returns the new verification status: verified, failed, partial,
         or unverified (no artifacts attached).
         """
+        invocation_events = events if events is not None else []
         receipt = self.store.get_receipt(receipt_id)
         if receipt is None:
             raise KeyError(f"unknown receipt: {receipt_id}")
@@ -638,22 +678,30 @@ class ExecutionEngine:
 
         if all(outcomes):
             status = "verified"
-            self._emit(EVENT_VERIFICATION_PASSED, receipt_id, "all artifact hashes match")
+            self._emit(
+                invocation_events,
+                EVENT_VERIFICATION_PASSED,
+                receipt_id,
+                "all artifact hashes match",
+            )
         elif any(outcomes):
             status = "partial"
             self._emit(
+                invocation_events,
                 EVENT_VERIFICATION_FAILED, receipt_id,
                 "some artifact hashes failed verification",
             )
         else:
             status = "failed"
             self._emit(
+                invocation_events,
                 EVENT_VERIFICATION_FAILED, receipt_id,
                 "all artifact hashes failed verification",
             )
         if not verify_normalized_integrity(receipt, artifacts):
             status = "failed"
             self._emit(
+                invocation_events,
                 EVENT_VERIFICATION_FAILED, receipt_id,
                 "normalized receipt integrity failed",
             )

@@ -92,9 +92,14 @@ Known dynamically discoverable help evidence:
 ## Personal AI Chat boundary
 
 Ordinary Chat does not use the generic repository-cwd Antigravity adapter.
-When local help proves JSON print support, Chat invokes `agy` in an isolated
-scratch directory under `.opencobalt/scratch/antigravity/`, with `--sandbox`
-when discovered, `--output-format json`, and never `--dangerously-skip-permissions`.
+Chat admission requires discovered JSON print and `--sandbox` support. Each
+invocation uses a private mode-0700 directory under the OS temporary root,
+outside the attached repository, with `--sandbox`, JSON output, and never
+`--dangerously-skip-permissions`. The directory is removed after the bounded
+invocation on a best-effort basis. This reduces repository discovery and
+mutation exposure; it is not an OpenCobalt-provided OS sandbox. If either the
+managed external workspace or Antigravity's sandbox flag cannot be proven,
+`ExecutionEngine` does not classify the invocation as answer-only isolated.
 Headless permission prompts are not auto-approved.
 
 Authenticated models are discovered from the JSON catalog. Identifier suffixes
