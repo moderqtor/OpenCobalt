@@ -235,6 +235,27 @@ class ConversationCreate(BaseModel):
         return value
 
 
+class ConversationUpdate(BaseModel):
+    title: str | None = Field(default=None, max_length=200)
+    project_path: str | None = Field(default=None, max_length=4096)
+
+    @field_validator("title")
+    @classmethod
+    def _valid_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not value.strip():
+            raise ValueError("conversation title cannot be blank")
+        return value.strip()
+
+    @field_validator("project_path")
+    @classmethod
+    def _valid_project_path(cls, value: str | None) -> str | None:
+        if value is not None and "\x00" in value:
+            raise ValueError("project path cannot contain a null byte")
+        return value
+
+
 class RouteListItem(RouteRecord):
     actual_provider: str | None = None
     actual_model: str | None = None
@@ -937,6 +958,27 @@ def get_conversation(conversation_id: str) -> Conversation:
     if conversation is None:
         raise _not_found("conversation", conversation_id)
     return conversation
+
+
+@router.patch("/conversations/{conversation_id}", response_model=Conversation)
+def update_conversation(conversation_id: str, request: ConversationUpdate) -> Conversation:
+    context = _api_context()
+    conversation = context.store.get_conversation(conversation_id)
+    if conversation is None:
+        raise _not_found("conversation", conversation_id)
+    kwargs: dict[str, Any] = {}
+    if "title" in request.model_fields_set and request.title is not None:
+        kwargs["title"] = request.title
+    if "project_path" in request.model_fields_set:
+        kwargs["project_path"] = (
+            _canonical_project_path(request.project_path) if request.project_path else None
+        )
+    if not kwargs:
+        return conversation
+    try:
+        return context.store.update_conversation(conversation_id, **kwargs)
+    except KeyError as exc:
+        raise _not_found("conversation", conversation_id) from exc
 
 
 @router.get(

@@ -29,6 +29,7 @@ from .models import (
 )
 
 _DEFAULT_DB = Path(".opencobalt") / "ledger.db"
+_UNSET = object()
 
 _SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS personal_ai_schema_versions (
@@ -824,7 +825,7 @@ class PersonalAIStore:
     def create_conversation(
         self,
         *,
-        title: str = "New conversation",
+        title: str = "New conversation",  # matches DEFAULT_CONVERSATION_TITLE
         project_path: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Conversation:
@@ -938,6 +939,35 @@ class PersonalAIStore:
 
         self._mutate_conversation_metadata(conversation_id, mutator)
         return holder["routing"]
+
+    def update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: str | None = None,
+        project_path: Any = _UNSET,
+    ) -> Conversation:
+        """Update title and/or repository path. Omitted fields stay unchanged."""
+        conversation = self.get_conversation(conversation_id)
+        if conversation is None:
+            raise KeyError(conversation_id)
+        next_title = conversation.title if title is None else Conversation(title=title).title
+        next_path = conversation.project_path if project_path is _UNSET else project_path
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE conversations SET title = ?, project_path = ?, updated_at = ? "
+                "WHERE conversation_id = ?",
+                (
+                    next_title,
+                    next_path,
+                    _iso(datetime.now(tz=timezone.utc)),
+                    conversation_id,
+                ),
+            )
+        updated = self.get_conversation(conversation_id)
+        if updated is None:
+            raise KeyError(conversation_id)
+        return updated
 
     def delete_conversation(self, conversation_id: str) -> bool:
         with self._connect() as conn:

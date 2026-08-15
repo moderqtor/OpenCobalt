@@ -140,6 +140,7 @@ export async function streamChat(payload, onEvent, signal) {
 export const api = {
   conversations: () => request("/conversations").then((value) => listOf(value, ["conversations", "items", "data", "results"])),
   createConversation: (input = {}) => request("/conversations", jsonOptions("POST", input)),
+  updateConversation: (conversationId, input = {}) => request(`/conversations/${encodeURIComponent(conversationId)}`, jsonOptions("PATCH", input)).then((value) => recordOf(value, "conversation")),
   conversation: (conversationId) => request(`/conversations/${encodeURIComponent(conversationId)}`).then((value) => recordOf(value, "conversation")),
   conversationRouting: (conversationId) => request(`/conversations/${encodeURIComponent(conversationId)}/routing`).then((value) => recordOf(value, "conversation routing")),
   updateConversationRouting: (conversationId, input = {}) => request(`/conversations/${encodeURIComponent(conversationId)}/routing`, jsonOptions("PATCH", input)).then((value) => recordOf(value, "conversation routing")),

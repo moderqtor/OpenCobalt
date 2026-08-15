@@ -27,16 +27,16 @@ Then open http://localhost:5173. The UI still needs the local API.
 
 ## Pages
 
-| Page | Purpose |
-|---|---|
-| Chat | Durable conversations and the default goal surface |
-| Routes | Inspectable routing history |
-| Missions | Research and coding Missions |
-| Skills | Local skill inventory |
-| Memory | Explicit memory records |
-| Ledger | Execution receipts |
-| Providers | Installation, health, and execution evidence |
-| Settings | Local defaults and persona editing |
+| Area | Page | Purpose |
+|---|---|---|
+| Work | Chat | Durable conversations and the default goal surface |
+| Work | Missions | Research and coding Missions |
+| Context | Memory | Explicit saved facts, distinct from chat history |
+| System | Routes | Inspectable routing history |
+| System | Ledger | Execution receipts |
+| System | Skills | Local skill inventory |
+| System | Providers | Installation, health, and execution evidence |
+| System | Settings | Local defaults and persona editing |
 
 ## Desktop
 

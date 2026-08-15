@@ -19,6 +19,19 @@ def _uid(prefix: str) -> str:
 
 ControlLevel = Literal["very_low", "low", "balanced", "high", "very_high"]
 MessageRole = Literal["user", "assistant", "system", "tool"]
+DEFAULT_CONVERSATION_TITLE = "New conversation"
+
+
+def derive_conversation_title(message: str, *, limit: int = 72) -> str:
+    """First-message title for daily Chat. Does not call a model."""
+    text = " ".join((message or "").split())
+    if not text:
+        return DEFAULT_CONVERSATION_TITLE
+    if len(text) <= limit:
+        return text[:200]
+    clipped = text[:limit].rsplit(" ", 1)[0] or text[:limit]
+    titled = f"{clipped.rstrip('.,;:!?')}…"
+    return titled[:200]
 
 
 class CommunicationControls(BaseModel):
@@ -72,7 +85,7 @@ class ConversationRoutingSettings(BaseModel):
 
 class Conversation(BaseModel):
     conversation_id: str = Field(default_factory=lambda: _uid("conv"))
-    title: str = "New conversation"
+    title: str = DEFAULT_CONVERSATION_TITLE
     project_path: str | None = None
     archived: bool = False
     created_at: datetime = Field(default_factory=_now)

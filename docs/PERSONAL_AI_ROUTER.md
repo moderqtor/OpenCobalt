@@ -31,20 +31,25 @@ The command starts the local API on `http://localhost:8000` and Vite on `http://
 
 Starting the UI and inspecting existing records requires no provider credential. Sending a request through a cloud CLI may require that CLI's own network access and authentication.
 
-## The eight pages
+## Pages
 
-| Page | Purpose |
-|---|---|
-| Chat | Durable conversations, document attachments, persona and cognitive controls, automatic or manual provider selection, privacy and local-only controls, normalized lifecycle events, and cancellation. |
-| Routes | Route history and an inspector for candidates, heuristic components, reasons, selected and actual provider, model, persona, privacy, controlled reruns, and receipt linkage. |
-| Missions | Existing durable mission records, including Research and coding-agent work. Simple Chat questions do not create missions. |
-| Skills | Searchable and filterable installed local skill records. Listing, inspecting, or toggling a pinned imported skill does not execute its code. |
-| Memory | Curated memory with source, reason, scope, sensitivity, status, editing, pinning, and confirmed deletion controls. A chat request beginning with `Remember that ...` creates a proposal for review rather than silently activating memory. |
-| Ledger | Normalized execution receipts kept in the local shared ledger. |
-| Providers | Separate evidence for installation, authentication, health, models, limitations, local eligibility, and execution support. |
-| Settings | Local defaults for routing, persona, providers, approval, cost, privacy, skills, memory, verification, and theme; versioned persona editing; and explicit data export/retention controls. These defaults shape routing; they do not grant authority. |
+Chat is the default page. Primary navigation is Work first, then System
+behind a disclosure.
 
-Pages are hash-linkable, such as `http://localhost:5173/#providers`. Chat is the default page.
+| Area | Page | Purpose |
+|---|---|---|
+| Work | Chat | The daily surface. Write a goal. Automatic routing is the default. Manual provider, persona, privacy, and local-only controls stay under Controls. |
+| Work | Missions | Durable research and coding work that can resume later. Ordinary Chat does not become a Mission. |
+| Context | Memory | Curated facts you chose to keep. This is not conversation history. A chat request beginning with `Remember that ...` creates a proposal for review. |
+| System | Routes | Route history and the inspector for why a provider was selected, fallback, receipt integrity, and reruns. |
+| System | Ledger | Normalized execution receipts. Receipt integrity is not a proof of factual truth. |
+| System | Skills | Installed local skill records. Listing or inspecting a skill does not execute it. |
+| System | Providers | Separate evidence for installation, authentication, health, models, and execution support. |
+| System | Settings | Local defaults for Chat, privacy, approvals, and personas. These defaults do not grant authority. |
+
+Pages remain hash-linkable, such as `http://localhost:5173/#providers`. System pages stay available; they are no longer equal primary destinations.
+
+Creating a conversation is immediate. The title starts as "New conversation" and is replaced by the first message unless you already named it. A repository path is optional and can be attached after the conversation exists. The path is still canonicalized and cannot escape the startup workspace.
 
 ## Shared local state
 
@@ -62,7 +67,7 @@ The shared database means a reset affects more than chat: conversations, persona
 
 Chat keeps Automatic vs Manual mode, the last manual provider/model, reasoning effort, fallback, privacy, and local-only on the conversation record (`metadata.routing` in SQLite). The browser is a cache. Switching to Automatic does not destroy the last manual preset for that conversation. New conversations follow Settings defaults, normally Automatic, and do not inherit another chat's provider. If a stored provider or model later becomes unavailable, OpenCobalt keeps the stored values and labels them stale instead of substituting another model.
 
-Persona and cognitive policy stay composer/request controls. They are not part of this routing preset.
+Persona and approach stay under Controls. They are not part of the routing preset.
 
 Desktop Chat layout is a horizontal grid: primary navigation, a bounded conversation column, then the active chat. The optional route inspector remains an overlay. Collapsing the conversation column gives that space to chat. At narrow widths the conversation list is a drawer over chat rather than a stacked full-width section.
 
@@ -126,7 +131,7 @@ When fallback is enabled, OpenCobalt skips remaining models from the same failed
 
 The built-in persona set is Analytical, Reflective, Exploratory, Builder, Provider Native, ChatGPT Native, Claude Native, and Gemini Native. Personas are versioned interaction policies and routing priors. They do not reproduce hidden prompts or turn one provider into another. When a native-family persona runs on a different provider family, the route records an approximation disclosure. Settings can duplicate a built-in, edit the custom profile's bounded controls and affinities, render a sample policy without provider execution, and identify every later version separately.
 
-Each routed request persists its user message, candidates, and route. Once an execution attempt exists, OpenCobalt also persists the attempt and execution lifecycle events; a successful attempt adds the assistant message and receipt linkage. The route inspector exposes why a provider was selected, the selected and actual provider, the requested and actual persona, privacy and autonomy classifications, and receipt linkage. Route records also retain any explicit fallback transitions for provenance.
+Each routed request persists its user message, candidates, and route. Once an execution attempt exists, OpenCobalt also persists the attempt and execution lifecycle events; a successful attempt adds the assistant message and receipt linkage. Chat shows a compact used-provider line on the response. The inspector summary shows why the route was chosen, the provider and model actually used, privacy, cost class, fallback, outcome, and whether an execution was recorded. Routing internals, authority, lifecycle events, and record IDs remain behind disclosure. Route records also retain any explicit fallback transitions for provenance.
 
 Every real or simulated completion is delegated through `ExecutionEngine`. A successful execution links a work receipt; a provider or policy failure can also carry a failure receipt when the engine was reached. A request rejected before execution has a route record but no fabricated receipt. The route inspector can rerun with a different persona, executable provider, reasoning effort, or strict local-only constraint; the new attempt receives a new route record rather than rewriting history.
 

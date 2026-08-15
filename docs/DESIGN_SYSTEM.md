@@ -6,68 +6,51 @@ surface; the CLI is a control plane over the same ledger.
 
 ## Principles
 
-1. Dark-native. The primary mode is dark. Not a toggle -- the product lives in dark.
+1. Dark-native by default, with an explicit light/system theme in Settings.
 2. Typographic hierarchy does the work. No unnecessary borders, shadows, or gradients.
 3. One accent color used sparingly: active state, CTA, system identity only.
-4. Breathing room. Generous padding. Content does not feel cramped.
-5. Status at a glance. The UI answers "what is running, what is healthy, what just happened" without interaction.
+4. Breathing room where focus matters. Density only where it carries information.
+5. Status at a glance when trust is at stake. Failures stay visible.
 6. Progressive disclosure. Chat is the default surface. Routing, receipts, and
    execution details appear when the user inspects them.
 
+Live CSS tokens in `ui/src/index.css` are authoritative. Older GitHub-dark hex
+values and "monospace throughout" guidance below this file's previous revisions
+are stale.
+
 ## Color Palette
 
-### Backgrounds
+Current workspace tokens:
 
-| Token | Hex | Use |
-|-------|-----|-----|
-| `bg.base` | `#0D1117` | Page and app background |
-| `bg.surface` | `#161B22` | Cards, panels, sidebars |
-| `bg.elevated` | `#1C2333` | Modals, dropdowns, hover states |
-| `bg.subtle` | `#21262D` | Input fields, code blocks |
-
-### Text
-
-| Token | Hex | Use |
-|-------|-----|-----|
-| `text.primary` | `#E6EDF3` | Primary content |
-| `text.secondary` | `#8B949E` | Labels, metadata, captions |
-| `text.tertiary` | `#484F58` | Placeholders, disabled |
-| `text.inverse` | `#0D1117` | Text on cobalt accent |
-
-### Accent (use sparingly)
-
-| Token | Hex | Use |
-|-------|-----|-----|
-| `cobalt.500` | `#3B7CF4` | Primary accent, active nav, CTA |
-| `cobalt.400` | `#5A93F5` | Hover, focus ring |
-| `cobalt.600` | `#2563EB` | Pressed state |
-| `cobalt.900` | `#1E3A8A` | Accent background tints |
-| `cobalt.muted` | `#1F3A5F` | Subtle borders on dark surfaces |
-
-### Semantic
-
-| Token | Hex | Use |
-|-------|-----|-----|
-| `status.up` | `#22C55E` | Service healthy, test passing |
-| `status.down` | `#EF4444` | Error, offline, test failing |
-| `status.warn` | `#F59E0B` | Warning, partial, unknown |
-| `semantic.purple` | `#8B5CF6` | Agents, debate, multi-model |
-| `semantic.teal` | `#06B6D4` | Synthesis, knowledge, context |
+| Token | Dark | Use |
+|-------|------|-----|
+| `--canvas` / `--iron` | `#0b0e12` | Page background |
+| `--surface` / `--graphite` | `#151a21` | Nav, composer, cards |
+| `--surface-raised` | `#1b222b` | Hover, elevated |
+| `--ink` / `--fog` | `#e8edf2` | Primary text |
+| `--muted` | `#9aa6b5` | Secondary text |
+| `--quiet` | `#8592a1` | Captions |
+| `--line` | `#2a333e` | Borders |
+| `--cobalt` | `#5b7fff` | Accent |
+| `--amber` | `#d6a84b` | Warning |
+| `--green` | `#66b88a` | Healthy / complete |
+| `--coral` | `#df7272` | Error |
 
 ## Typography
 
-Stack: `"Berkeley Mono", "JetBrains Mono", "Fira Code", monospace`
+Interface copy uses `--sans`: `"Avenir Next", Avenir, "Helvetica Neue", Arial, sans-serif`.
 
-This is a tool for developers. Monospace throughout -- not Inter with monospace only in code blocks.
+Use `--mono` (`"SF Mono", "Cascadia Code", "Roboto Mono", ui-monospace, monospace`) for IDs, receipts, routes, timestamps, model identifiers, and code.
 
-| Scale | Size | Weight | Use |
-|-------|------|--------|-----|
-| `type.display` | 28px | 700 | Page titles |
-| `type.heading` | 20px | 600 | Section headings |
-| `type.label` | 14px | 500 | Column headers, nav labels |
-| `type.body` | 14px | 400 | Primary content |
-| `type.caption` | 12px | 400 | Metadata, timestamps |
-| `type.code` | 13px | 400 | Code, IDs, paths |
+Do not set the whole product in Times New Roman or in monospace.
+
+| Scale | Size | Use |
+|-------|------|-----|
+| Page title | 22-28px | Settings and collection pages |
+| Chat title | 17-18px | Conversation header |
+| Body | 15px | Conversation and forms |
+| Caption | 11-12px | Status, helper text |
+| Meta | 10px mono | IDs and timestamps |
 
 ## Spacing
 
@@ -103,7 +86,7 @@ Before any UI screenshot or demo:
 - [ ] No default Tailwind color classes visible in the design
 - [ ] Status fields show real local state, not hardcoded demo values
 - [ ] Empty states have clear, honest messaging (not hidden)
-- [ ] Command palette placeholder is visible and keyboard-accessible
+- [ ] Composer can be focused from the keyboard
 
 ## Screenshot Capture Instructions
 
