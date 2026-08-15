@@ -21,8 +21,70 @@ from tests.test_chat_service import _real_mock_service
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENCOBALT_ENABLE_DEVELOPMENT_MOCK", "1")
     with TestClient(app) as test_client:
         yield test_client
+
+
+def test_normal_api_context_disables_mock_unless_explicitly_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opencobalt.personal_ai.api import _CONTEXTS, _api_context
+
+    normal_root = tmp_path / "normal"
+    normal_root.mkdir()
+    monkeypatch.chdir(normal_root)
+    monkeypatch.delenv("OPENCOBALT_ENABLE_DEVELOPMENT_MOCK", raising=False)
+    normal = _api_context()
+    assert normal.service.enable_mock is False
+
+    development_root = tmp_path / "development"
+    development_root.mkdir()
+    monkeypatch.chdir(development_root)
+    monkeypatch.setenv("OPENCOBALT_ENABLE_DEVELOPMENT_MOCK", "1")
+    development = _api_context()
+    assert development.service.enable_mock is True
+
+    for context in (normal, development):
+        _CONTEXTS.pop(context.db_path, None)
+
+
+def test_normal_api_reports_no_eligible_provider_instead_of_mock_answer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opencobalt.personal_ai.api import _CONTEXTS, _api_context
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENCOBALT_ENABLE_DEVELOPMENT_MOCK", raising=False)
+    with TestClient(app) as normal_client:
+        conversation = _conversation(normal_client, "No provider workspace")
+        context = _api_context()
+        mock_status = context.providers.get("mock").status()
+        monkeypatch.setattr(context.providers, "discover", lambda: [mock_status])
+        provider_response = normal_client.get("/api/v1/providers")
+        assert provider_response.status_code == 200
+        assert provider_response.json()[0]["provider_id"] == "mock"
+        assert provider_response.json()[0]["enabled"] is False
+
+        response = normal_client.post(
+            "/api/v1/chat/stream",
+            json={
+                "conversation_id": conversation["conversation_id"],
+                "message": "Explain why caching helps.",
+                "persona_id": "analytical",
+            },
+        )
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.splitlines() if line]
+    assert events[-1]["event_type"] == "route_failed"
+    assert events[-1]["payload"]["error"]["category"] == "policy_denied"
+    assert "Mock response" not in response.text
+    route = context.store.get_route(events[-1]["route_id"])
+    assert route.selected_provider == "none"
+    _CONTEXTS.pop(context.db_path, None)
 
 
 def _conversation(client: TestClient, title: str = "API conversation") -> dict:

@@ -7,8 +7,10 @@ import ipaddress
 import json
 import re
 import shutil
+import socket
+import subprocess
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -27,6 +29,8 @@ from opencobalt.personal_ai.documents import (
 _FETCH_BYTES = 150_000
 _EXCERPT_CHARS = 8_000
 _MAX_FOLLOWUPS = 6
+_MAX_REDIRECTS = 3
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _ASSET_SUFFIXES = {
     ".css",
     ".js",
@@ -70,43 +74,160 @@ PREFERRED_SOURCE_HOSTS = {
     "api.crossref.org",
     "doi.org",
 }
+_LITERATURE_ROOTS = {
+    "doi.org",
+    "crossref.org",
+    "pubmed.ncbi.nlm.nih.gov",
+    "ncbi.nlm.nih.gov",
+    "nih.gov",
+}
+_GOVERNMENT_ROOTS = {
+    "cms.gov",
+    "medicare.gov",
+    "cdc.gov",
+    "fda.gov",
+    "ssa.gov",
+    "govinfo.gov",
+    "federalregister.gov",
+}
+_REVIEW_ROOTS = {"cochranelibrary.com", "uspreventiveservicestaskforce.org"}
+_JOURNALISM_ROOTS = {"nytimes.com", "washingtonpost.com", "reuters.com", "bbc.com"}
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+\b", re.IGNORECASE)
+Resolver = Callable[[str, int], Sequence[str]]
+_MINIMUM_HARD_LIMIT_CURL = (8, 4, 0)
 
 
 def _now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
-def is_public_https_url(url: str) -> bool:
+def _normalized_hostname(host: str) -> str:
+    value = host.rstrip(".").casefold()
+    try:
+        return value.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise ValueError("invalid URL hostname") from exc
+
+
+def _validated_https_target_parts(url: str) -> tuple[str, int]:
     try:
         parsed = urlsplit(url)
-    except ValueError:
-        return False
+        port = parsed.port or 443
+    except ValueError as exc:
+        raise ValueError("malformed HTTPS URL") from exc
     if parsed.scheme != "https" or not parsed.hostname:
-        return False
+        raise ValueError("URL must use HTTPS and include a hostname")
     if parsed.username or parsed.password or parsed.fragment:
-        return False
+        raise ValueError("URL credentials and fragments are not allowed")
     if len(url) > 2000:
-        return False
-    host = parsed.hostname.lower()
+        raise ValueError("URL exceeds the maximum length")
+    host = _normalized_hostname(parsed.hostname)
     if host in {"localhost"} or host.endswith(".local"):
-        return False
+        raise ValueError("local hostnames are not public HTTPS destinations")
+    if not 1 <= port <= 65535:
+        raise ValueError("invalid HTTPS destination port")
+    if "." not in host:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError as exc:
+            raise ValueError("hostname must be fully qualified") from exc
+    return host, port
+
+
+def _is_global_address(value: str) -> bool:
     try:
-        address = ipaddress.ip_address(host)
+        address = ipaddress.ip_address(value)
     except ValueError:
-        return "." in host
-    return not (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_reserved
+        return False
+    return bool(
+        address.is_global
+        and not address.is_private
+        and not address.is_loopback
+        and not address.is_link_local
+        and not address.is_multicast
+        and not address.is_reserved
+        and not address.is_unspecified
     )
 
 
+def is_public_https_url(url: str) -> bool:
+    """Syntactic preflight; acquisition separately resolves and pins DNS."""
+    try:
+        host, _port = _validated_https_target_parts(url)
+    except ValueError:
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return _is_global_address(host)
+
+
 def normalized_host(host: str) -> str:
-    value = host.lower()
+    try:
+        value = _normalized_hostname(host)
+    except ValueError:
+        return ""
     return value[4:] if value.startswith("www.") else value
+
+
+def host_matches_trusted_root(host: str, trusted_root: str) -> bool:
+    """Return whether a hostname belongs to a configured trusted root."""
+    try:
+        candidate = _normalized_hostname(host)
+        root = _normalized_hostname(trusted_root)
+    except ValueError:
+        return False
+    return candidate == root or candidate.endswith(f".{root}")
+
+
+@dataclass(frozen=True)
+class ResolvedHttpsTarget:
+    url: str
+    host: str
+    port: int
+    addresses: tuple[str, ...]
+
+
+def _resolve_host_addresses(host: str, port: int) -> list[str]:
+    try:
+        records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"HTTPS hostname resolution failed: {exc}") from exc
+    return [str(record[4][0]) for record in records]
+
+
+def resolve_public_https_target(
+    url: str,
+    *,
+    resolver: Resolver = _resolve_host_addresses,
+) -> ResolvedHttpsTarget:
+    host, port = _validated_https_target_parts(url)
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        raw_addresses = resolver(host, port)
+    else:
+        raw_addresses = [str(literal)]
+    addresses: list[str] = []
+    for raw in raw_addresses:
+        try:
+            address = ipaddress.ip_address(str(raw).split("%", 1)[0])
+        except ValueError as exc:
+            raise ValueError("hostname resolution returned an invalid address") from exc
+        if not _is_global_address(str(address)):
+            raise ValueError(f"hostname resolved to non-public address {address}")
+        rendered = str(address)
+        if rendered not in addresses:
+            addresses.append(rendered)
+    if not addresses:
+        raise ValueError("HTTPS hostname resolution returned no addresses")
+    return ResolvedHttpsTarget(
+        url=url,
+        host=host,
+        port=port,
+        addresses=tuple(addresses),
+    )
 
 
 def canonical_url(url: str) -> str:
@@ -118,17 +239,41 @@ def canonical_url(url: str) -> str:
     return f"{parsed.scheme}://{host}{path}" + (f"?{parsed.query}" if parsed.query else "")
 
 
+def redirect_network_identity(url: str) -> tuple[str, int, str, str]:
+    """Identify a redirect hop without applying source-deduplication rules."""
+    host, port = _validated_https_target_parts(url)
+    parsed = urlsplit(url)
+    return host, port, parsed.path or "/", parsed.query
+
+
+def _curl_version(executable: str) -> str:
+    try:
+        result = subprocess.run(
+            [executable, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.splitlines()[0] if result.returncode == 0 and result.stdout else ""
+
+
+def _curl_enforces_hard_max_filesize(version: str) -> bool:
+    match = re.match(r"^curl\s+(\d+)\.(\d+)\.(\d+)(?:\s|$)", version.strip())
+    return bool(match and tuple(int(item) for item in match.groups()) >= _MINIMUM_HARD_LIMIT_CURL)
+
+
 def classify_source_type(url: str) -> str:
-    host = (urlsplit(url).hostname or "").lower()
-    if "doi.org" in host or "crossref.org" in host:
+    host = urlsplit(url).hostname or ""
+    if any(host_matches_trusted_root(host, root) for root in _LITERATURE_ROOTS):
         return "primary_literature"
-    if any(token in host for token in ("pubmed", "nih.gov", "ncbi.nlm.nih.gov")):
-        return "primary_literature"
-    if any(token in host for token in ("cms.gov", "medicare.gov", "cdc.gov", "fda.gov", "govinfo.gov", "federalregister.gov")):
+    if any(host_matches_trusted_root(host, root) for root in _GOVERNMENT_ROOTS):
         return "government_policy"
-    if "cochrane" in host or "guideline" in host:
+    if any(host_matches_trusted_root(host, root) for root in _REVIEW_ROOTS):
         return "review"
-    if any(token in host for token in ("nytimes", "washingtonpost", "reuters", "bbc")):
+    if any(host_matches_trusted_root(host, root) for root in _JOURNALISM_ROOTS):
         return "journalism"
     return "unknown"
 
@@ -169,16 +314,28 @@ class HttpsGetAdapter:
 
     def __init__(
         self,
-        url: str,
+        target: ResolvedHttpsTarget,
         *,
         timeout_seconds: int = 20,
-        output_path: Path | None = None,
+        output_path: Path,
+        headers_path: Path,
+        curl_version: str | None = None,
     ) -> None:
-        self.url = url
+        self.target = target
+        self.url = target.url
         self.timeout_seconds = timeout_seconds
         self.output_path = output_path
+        self.headers_path = headers_path
         self.executable = shutil.which("curl") or "curl"
-        self._available = shutil.which("curl") is not None
+        self._executable_available = shutil.which("curl") is not None
+        self.curl_version = (
+            _curl_version(self.executable) if curl_version is None else curl_version
+        )
+        self.hard_size_limit_supported = bool(
+            self._executable_available
+            and _curl_enforces_hard_max_filesize(self.curl_version)
+        )
+        self._available = self.hard_size_limit_supported
 
     def discover_capabilities(self) -> RuntimeCapabilitySnapshot:
         return RuntimeCapabilitySnapshot(
@@ -194,9 +351,21 @@ class HttpsGetAdapter:
             requires_network=True,
             requires_credentials=False,
             max_safe_risk="yellow",
-            limitations=[] if self._available else ["curl is required for source retrieval"],
+            limitations=(
+                []
+                if self._available
+                else [
+                    "curl 8.4.0 or newer is required to enforce the hard response-size limit"
+                    if self._executable_available
+                    else "curl is required for source retrieval"
+                ]
+            ),
             verifiability_level="partial" if self._available else "unavailable",
-            capability_details={"url_scheme": "https"},
+            capability_details={
+                "url_scheme": "https",
+                "curl_version": self.curl_version,
+                "hard_response_size_limit": self.hard_size_limit_supported,
+            },
         ).with_hash()
 
     def build_command(self, task: str, options: Any = None) -> list[str]:
@@ -209,14 +378,10 @@ class HttpsGetAdapter:
             "--silent",
             "--show-error",
             "--fail-with-body",
-            "--location",
-            "--max-redirs",
-            "3",
+            "--noproxy",
+            "*",
             "--proto",
             "=https",
-            "--proto-redir",
-            "=https",
-            "--compressed",
             "--max-filesize",
             str(_FETCH_BYTES),
             "--connect-timeout",
@@ -225,9 +390,25 @@ class HttpsGetAdapter:
             str(self.timeout_seconds),
             "--header",
             "User-Agent: OpenCobaltResearch/1.0 (https://github.com/moderqtor/OpenCobalt)",
+            "--header",
+            "Accept-Encoding: identity",
+            "--dump-header",
+            str(self.headers_path),
+            "--output",
+            str(self.output_path),
+            "--write-out",
+            "%{http_code}",
         ]
-        if self.output_path is not None:
-            command.extend(["--output", str(self.output_path)])
+        rendered_addresses = ",".join(
+            f"[{address}]" if ":" in address else address
+            for address in self.target.addresses
+        )
+        command.extend(
+            [
+                "--resolve",
+                f"{self.target.host}:{self.target.port}:{rendered_addresses}",
+            ]
+        )
         command.extend(["--url", self.url])
         return command
 
@@ -292,8 +473,22 @@ class RetrievedDocument:
 class DocumentAcquisitionPipeline:
     """Fetch a URL or uploaded document into one RetrievedDocument."""
 
-    def __init__(self, engine: Any) -> None:
+    def __init__(
+        self,
+        engine: Any,
+        *,
+        resolver: Resolver = _resolve_host_addresses,
+        max_redirects: int = _MAX_REDIRECTS,
+        curl_version: str | None = None,
+    ) -> None:
         self.engine = engine
+        self.resolver = resolver
+        self.max_redirects = max(0, min(int(max_redirects), _MAX_REDIRECTS))
+        self.curl_version = (
+            _curl_version(shutil.which("curl") or "curl")
+            if curl_version is None
+            else curl_version
+        )
 
     def acquire_url(self, url: str) -> RetrievedDocument:
         created = _now()
@@ -411,50 +606,154 @@ class DocumentAcquisitionPipeline:
             quality_assessment=source_quality_hint(url),
             retrieval_adapter=adapter or guess_adapter(url),
         )
-        output_path = None
-        tmpdir = None
-        try:
-            tmpdir = Path(tempfile.mkdtemp(prefix="oc-fetch-"))
-            output_path = tmpdir / "body"
-            fetch = HttpsGetAdapter(url, output_path=output_path)
-            try:
-                outcome = self.engine.run_task(
-                    f"retrieve research source {url}",
-                    runtime=fetch.runtime_id,
-                    execute=True,
-                    approved=False,
-                    timeout_seconds=fetch.timeout_seconds,
-                    unsafe_skip_permissions=False,
-                    execution_context="answer_only_inference",
-                    adapter=fetch,
+        current_url = url
+        seen: set[tuple[str, int, str, str]] = set()
+        with tempfile.TemporaryDirectory(prefix="oc-fetch-") as directory:
+            tmpdir = Path(directory)
+            for redirect_count in range(self.max_redirects + 1):
+                try:
+                    target = resolve_public_https_target(
+                        current_url,
+                        resolver=self.resolver,
+                    )
+                except ValueError as exc:
+                    document.retrieval_status = "rejected"
+                    document.excerpt = str(exc)[:300]
+                    document.limitations.append(str(exc)[:300])
+                    return document
+                key = redirect_network_identity(current_url)
+                if key in seen:
+                    document.retrieval_status = "failed"
+                    document.excerpt = "fetch failed: redirect loop detected"
+                    document.limitations.append("redirect loop detected")
+                    return document
+                seen.add(key)
+
+                output_path = tmpdir / f"body-{redirect_count}"
+                headers_path = tmpdir / f"headers-{redirect_count}"
+                fetch = HttpsGetAdapter(
+                    target,
+                    output_path=output_path,
+                    headers_path=headers_path,
+                    curl_version=self.curl_version,
                 )
-            except (KeyError, ValueError) as exc:
-                document.retrieval_status = "failed"
-                document.excerpt = str(exc)[:300]
-                document.limitations.append(str(exc)[:300])
-                return document
-            result = getattr(outcome, "result", None)
-            if result is None or str(getattr(result, "status", "")) != "succeeded":
-                document.retrieval_status = "failed"
-                document.excerpt = str(getattr(result, "error", None) or "fetch failed")[:300]
-                return document
-            payload = _read_payload(result, output_path)
-            return normalize_payload(url, payload, adapter=document.retrieval_adapter)
-        finally:
-            if tmpdir is not None:
-                for child in tmpdir.glob("*"):
-                    child.unlink(missing_ok=True)
-                tmpdir.rmdir()
+                if not fetch.hard_size_limit_supported:
+                    document.retrieval_status = "failed"
+                    document.excerpt = (
+                        "fetch failed: curl cannot enforce the hard response-size limit"
+                    )
+                    document.limitations.append(
+                        "curl 8.4.0 or newer is required to enforce the hard response-size limit"
+                    )
+                    return document
+                output_path.write_bytes(b"")
+                headers_path.write_bytes(b"")
+                try:
+                    outcome = self.engine.run_task(
+                        f"retrieve research source {current_url}",
+                        runtime=fetch.runtime_id,
+                        execute=True,
+                        approved=False,
+                        timeout_seconds=fetch.timeout_seconds,
+                        unsafe_skip_permissions=False,
+                        execution_context="answer_only_inference",
+                        adapter=fetch,
+                    )
+                except (KeyError, ValueError) as exc:
+                    document.retrieval_status = "failed"
+                    document.excerpt = str(exc)[:300]
+                    document.limitations.append(str(exc)[:300])
+                    return document
+                result = getattr(outcome, "result", None)
+                if result is None or str(getattr(result, "status", "")) != "succeeded":
+                    document.retrieval_status = "failed"
+                    document.excerpt = str(getattr(result, "error", None) or "fetch failed")[:300]
+                    return document
+
+                status, location = _response_metadata(result, headers_path)
+                if status in _REDIRECT_STATUSES:
+                    if redirect_count >= self.max_redirects:
+                        document.retrieval_status = "failed"
+                        document.excerpt = "fetch failed: redirect limit exceeded"
+                        document.limitations.append("redirect limit exceeded")
+                        return document
+                    if not location:
+                        document.retrieval_status = "failed"
+                        document.excerpt = "fetch failed: redirect omitted Location"
+                        document.limitations.append("redirect omitted Location")
+                        return document
+                    current_url = urljoin(current_url, location)
+                    continue
+                if status is None or not 200 <= status < 300:
+                    document.retrieval_status = "failed"
+                    document.excerpt = f"fetch failed: HTTP status {status or 'unknown'}"
+                    document.limitations.append(document.excerpt)
+                    return document
+
+                try:
+                    oversized = output_path.stat().st_size > _FETCH_BYTES
+                except OSError:
+                    oversized = False
+                if oversized:
+                    document.retrieval_status = "failed"
+                    document.excerpt = "fetch failed: response exceeded hard size limit"
+                    document.limitations.append("response exceeded hard size limit")
+                    return document
+
+                payload = _read_payload(result, output_path)
+                normalized = normalize_payload(
+                    current_url,
+                    payload,
+                    adapter=document.retrieval_adapter,
+                )
+                if canonical_url(current_url) != canonical_url(url):
+                    normalized.limitations.append(
+                        f"retrieved after {redirect_count} validated HTTPS redirect(s)"
+                    )
+                return normalized
+
+        document.retrieval_status = "failed"
+        document.excerpt = "fetch failed: redirect processing ended unexpectedly"
+        document.limitations.append(document.excerpt)
+        return document
+
+
+def _response_metadata(result: Any, headers_path: Path) -> tuple[int | None, str | None]:
+    raw_headers = ""
+    try:
+        raw_headers = headers_path.read_text(encoding="iso-8859-1")[:65_536]
+    except OSError:
+        pass
+    statuses = re.findall(r"(?im)^HTTP/\S+\s+(\d{3})\b", raw_headers)
+    status = int(statuses[-1]) if statuses else None
+    preview = str(getattr(result, "stdout_preview", "") or "").strip()
+    if status is None and re.fullmatch(r"\d{3}", preview):
+        status = int(preview)
+    blocks = re.split(r"\r?\n\r?\n", raw_headers.strip()) if raw_headers else []
+    location = None
+    if blocks:
+        match = re.search(r"(?im)^Location:\s*([^\r\n]+)", blocks[-1])
+        if match:
+            location = match.group(1).strip()
+    return status, location
 
 
 def guess_adapter(url: str) -> str:
     host = normalized_host(urlsplit(url).hostname or "")
     path = urlsplit(url).path.lower()
-    if host in {"eutils.ncbi.nlm.nih.gov", "pubmed.ncbi.nlm.nih.gov"} or "pubmed" in host:
+    if any(
+        host_matches_trusted_root(host, root)
+        for root in {"eutils.ncbi.nlm.nih.gov", "pubmed.ncbi.nlm.nih.gov"}
+    ):
         return "pubmed"
-    if host in {"api.crossref.org", "doi.org"} or path.endswith(".pdf"):
-        return "doi_crossref" if "crossref" in host or host == "doi.org" else "pdf"
-    if host in PREFERRED_SOURCE_HOSTS and classify_source_type(url) == "government_policy":
+    if any(
+        host_matches_trusted_root(host, root)
+        for root in {"api.crossref.org", "doi.org"}
+    ):
+        return "doi_crossref"
+    if path.endswith(".pdf"):
+        return "pdf"
+    if any(host_matches_trusted_root(host, root) for root in _GOVERNMENT_ROOTS):
         return "government_https"
     return "https_html"
 
@@ -652,11 +951,16 @@ def looks_like_search_index(url: str) -> bool:
     query = parsed.query.lower()
     if "esearch.fcgi" in path or "search" in path.split("/"):
         return True
-    if host.endswith("api.crossref.org") and "query.bibliographic" in query:
+    if (
+        host_matches_trusted_root(host, "api.crossref.org")
+        and "query.bibliographic" in query
+    ):
         return True
     if "term=" in query or "keys=" in query:
         return True
-    if host.endswith("pubmed.ncbi.nlm.nih.gov") and not re.fullmatch(r"/\d+/?", parsed.path):
+    if host_matches_trusted_root(
+        host, "pubmed.ncbi.nlm.nih.gov"
+    ) and not re.fullmatch(r"/\d+/?", parsed.path):
         return bool(query)
     return False
 
@@ -720,7 +1024,7 @@ def _is_preferred_document_url(url: str) -> bool:
     if looks_like_asset_url(url) or path in {"", "/"}:
         return False
     host = normalized_host(parsed.hostname or "")
-    if host not in PREFERRED_SOURCE_HOSTS:
+    if not any(host_matches_trusted_root(host, root) for root in PREFERRED_SOURCE_HOSTS):
         return False
     if host == "pubmed.ncbi.nlm.nih.gov":
         return bool(re.fullmatch(r"/\d+/?", parsed.path))
