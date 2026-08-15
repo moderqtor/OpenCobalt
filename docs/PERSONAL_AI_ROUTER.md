@@ -58,6 +58,16 @@ That path is relative to the directory where `opencobalt ui` is started. Use the
 
 The shared database means a reset affects more than chat: conversations, personal-AI routes, missions, approvals, receipts, and other ledger-backed state can live in the same file. A conversation workspace path is canonicalized when it is created and must be the startup workspace or one of its existing subdirectories; it cannot escape that boundary and become an arbitrary provider working directory.
 
+## Conversation routing presets
+
+Chat keeps Automatic vs Manual mode, the last manual provider/model, reasoning effort, fallback, privacy, and local-only on the conversation record (`metadata.routing` in SQLite). The browser is a cache. Switching to Automatic does not destroy the last manual preset for that conversation. New conversations follow Settings defaults, normally Automatic, and do not inherit another chat's provider. If a stored provider or model later becomes unavailable, OpenCobalt keeps the stored values and labels them stale instead of substituting another model.
+
+Persona and cognitive policy stay composer/request controls. They are not part of this routing preset.
+
+Desktop Chat layout is a horizontal grid: primary navigation, a bounded conversation column, then the active chat. The optional route inspector remains an overlay. Collapsing the conversation column gives that space to chat. At narrow widths the conversation list is a drawer over chat rather than a stacked full-width section.
+
+Provider prompts concatenate a system policy and the current user message. The policy includes persona controls, execution constraints, at most the last ten prior messages truncated to 3000 characters each, and attachment excerpts. The current user message is not repeated inside that history. A first short request therefore has a small OpenCobalt-owned payload; large input-token reports on such requests are mostly provider/runtime baseline context.
+
 ## Provider evidence and boundaries
 
 The Providers page deliberately keeps four questions separate:

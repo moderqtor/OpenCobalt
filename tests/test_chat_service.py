@@ -249,6 +249,77 @@ def test_provider_policy_context_is_bounded_before_execution(tmp_path):
     assert route.metadata.get("capability_role") == "cheap_local"
 
 
+def test_first_short_request_policy_is_small_and_does_not_duplicate_the_user_message(tmp_path):
+    service, store, _ = _real_mock_service(tmp_path)
+    conversation = service.create_conversation(title="Short request")
+    captured = {}
+    provider = service.providers.get("mock")
+    original = provider.execute
+
+    def wrapped(request, cancellation=None):
+        captured["policy"] = request.system_policy
+        captured["message"] = request.message
+        return original(request, cancellation)
+
+    provider.execute = wrapped
+    prompt = "What is TCP?"
+    list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message=prompt,
+                provider_override="mock",
+            )
+        )
+    )
+    policy = captured["policy"]
+    assert captured["message"] == prompt
+    assert policy.count("OpenCobalt interaction policy:") == 1
+    assert policy.count(f"User: {prompt}") == 0
+    assert "Recent conversation context:" not in policy
+    assert len(policy) < 4000
+
+
+def test_provider_policy_history_is_capped_and_excludes_the_current_user_message(tmp_path):
+    service, store, _ = _real_mock_service(tmp_path)
+    conversation = service.create_conversation(title="History cap")
+    for index in range(12):
+        store.add_message(
+            conversation.conversation_id,
+            role="user" if index % 2 == 0 else "assistant",
+            content=f"history-{index}: " + ("x" * 10_000),
+        )
+    captured = {}
+    provider = service.providers.get("mock")
+    original = provider.execute
+
+    def wrapped(request, cancellation=None):
+        captured["policy"] = request.system_policy
+        captured["message"] = request.message
+        return original(request, cancellation)
+
+    provider.execute = wrapped
+    prompt = "Summarize the bounded context"
+    list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message=prompt,
+                provider_override="mock",
+            )
+        )
+    )
+    policy = captured["policy"]
+    assert captured["message"] == prompt
+    assert policy.count("Recent conversation context:") == 1
+    assert policy.count("history-") <= 10
+    assert f"User: {prompt}" not in policy
+    for line in policy.splitlines():
+        if line.startswith("User: ") or line.startswith("Assistant: "):
+            assert len(line) <= 3012
+    assert len(policy) < 40_000
+
+
 def test_task_specific_verifier_is_not_claimed_when_only_integrity_was_checked(tmp_path):
     service, store, _ = _real_mock_service(tmp_path)
     conversation = service.create_conversation(title="Honest verification")
