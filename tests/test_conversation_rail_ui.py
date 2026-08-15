@@ -45,6 +45,7 @@ def test_new_conversation_ui_does_not_copy_active_chat_routing():
     assert "setDrafting(false)" in ensure
     assert "ensured.created ? defaultComposerControls" not in send
     assert "const sendControls = { ...controlsRef.current };" in send
+    assert "runGenerationRef.current === generation" in send
     persist = _function_body(APP, "const persistConversationRouting = (nextControls, conversationId) => {", "const updateControls")
     assert "write_seq: seq" in persist
     assert "Conversation routing was not saved" in persist

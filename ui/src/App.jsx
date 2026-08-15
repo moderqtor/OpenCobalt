@@ -974,15 +974,19 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     } catch (error) {
       if (error?.name !== "AbortError") {
         setNotice({ tone: "error", text: error.message || "The request could not be sent." });
-        setMessageState({ loading: false, error });
         setMessages((current) => current.map((message) => message.message_id === "local-stream" ? { ...message, status: "failed", content: message.content || error.message } : message));
+        if (runRef.current?.generation === generation) {
+          setMessageState({ loading: false, error });
+        }
       }
     } finally {
-      if (runRef.current?.generation === generation) {
+      if (runGenerationRef.current === generation) {
         setBusy(false);
-        executionRef.current = null;
-        abortRef.current = null;
-        runRef.current = null;
+        if (runRef.current?.generation === generation) {
+          executionRef.current = null;
+          abortRef.current = null;
+          runRef.current = null;
+        }
       }
     }
   };
