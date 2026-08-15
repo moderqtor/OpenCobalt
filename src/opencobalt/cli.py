@@ -2078,8 +2078,66 @@ def _opencobalt_owned_listener(port: int, label: str) -> tuple[int, str] | None:
     return None
 
 
+def _listener_has_live_ui_launcher_ancestor(pid: int) -> bool:
+    """Protect listeners whose owning ``opencobalt ui`` launcher is still alive."""
+    import shlex
+    import subprocess
+
+    seen = {pid}
+    current = pid
+    for _ in range(16):
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(current), "-o", "ppid="],
+                capture_output=True,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+            parent = int(result.stdout.strip()) if result.returncode == 0 else 0
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return False
+        if parent <= 1 or parent in seen:
+            return False
+        seen.add(parent)
+        command = _listener_command_line(parent)
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = command.split()
+        for index, token in enumerate(tokens):
+            if Path(token).name == "opencobalt" and "ui" in tokens[index + 1 :]:
+                return True
+        current = parent
+    return False
+
+
+def _opencobalt_listener_is_healthy(port: int, label: str) -> bool:
+    """Confirm an owned listener serves the expected OpenCobalt surface."""
+    import json
+    import urllib.request
+
+    path = "/api/ready" if label == "API" else "/"
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}{path}", timeout=0.5
+        ) as response:
+            if not 200 <= int(response.status) < 300:
+                return False
+            body = response.read(32_768)
+    except (OSError, TimeoutError, ValueError):
+        return False
+    if label == "UI":
+        return b"<title>OpenCobalt</title>" in body
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("ready") is True
+
+
 def _reclaim_stale_opencobalt_listener(port: int, label: str) -> bool:
-    """Terminate a listener only when command-line ownership is unambiguous."""
+    """Terminate only an owned, unhealthy listener with no live UI launcher."""
     import os
     import signal
     import time
@@ -2088,7 +2146,15 @@ def _reclaim_stale_opencobalt_listener(port: int, label: str) -> bool:
     if owned is None:
         return False
     pid, command = owned
-    if _opencobalt_owned_listener(port, label) != owned:
+    if _listener_has_live_ui_launcher_ancestor(pid):
+        return False
+    if _opencobalt_listener_is_healthy(port, label):
+        return False
+    if (
+        _opencobalt_owned_listener(port, label) != owned
+        or _listener_has_live_ui_launcher_ancestor(pid)
+        or _opencobalt_listener_is_healthy(port, label)
+    ):
         return False
     err.print(
         f"  [dim]Reclaiming stale OpenCobalt {label} listener pid {pid}: {command[:160]}[/dim]"
@@ -2102,7 +2168,11 @@ def _reclaim_stale_opencobalt_listener(port: int, label: str) -> bool:
         if not _ui_port_has_listener(port) and _can_bind_ui_port(port):
             return True
         time.sleep(0.05)
-    if _opencobalt_owned_listener(port, label) != owned:
+    if (
+        _opencobalt_owned_listener(port, label) != owned
+        or _listener_has_live_ui_launcher_ancestor(pid)
+        or _opencobalt_listener_is_healthy(port, label)
+    ):
         return False
     try:
         os.kill(pid, signal.SIGKILL)
