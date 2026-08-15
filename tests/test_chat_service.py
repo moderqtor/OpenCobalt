@@ -655,6 +655,29 @@ def test_durable_cancellation_stops_mock_stream_and_marks_execution(tmp_path):
     assert remaining[-1].event_type == "cancelled"
     assert store.get_execution(started.execution_id).status == "cancelled"
     assert service.cancel("missing-execution") is False
+    signals = service._historical_outcome_signals()
+    assert signals.get("mock", {}).get("success", 0) == 0
+    assert signals.get("mock", {}).get("cancel", 0) == 0
+
+
+def test_pre_execution_request_cancellation_is_idempotent(tmp_path):
+    service, _, _ = _real_mock_service(tmp_path)
+    conversation = service.create_conversation(title="Early cancellation")
+    stream = iter(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="Explain this",
+                provider_override="mock",
+            )
+        )
+    )
+    accepted = next(stream)
+    assert next(stream).event_type == "phase_changed"
+
+    assert service.cancel(accepted.request_id) is True
+    assert service.cancel(accepted.request_id) is False
+    stream.close()
 
 
 @pytest.mark.parametrize("stop_type", ["execution_started", "provider_started"])

@@ -403,7 +403,7 @@ class ChatService:
         with self._cancellation_lock:
             cancellation = self._cancellations.pop(execution_id, None)
             if cancellation is None:
-                cancellation = self._request_tokens.get(execution_id)
+                cancellation = self._request_tokens.pop(execution_id, None)
         if cancellation is None:
             return False
         cancellation.cancel()
@@ -455,7 +455,7 @@ class ChatService:
             return False
         with self._cancellation_lock:
             cancellation = self._cancellations.pop(execution_id, None)
-            request_token = self._request_tokens.get(execution_id)
+            request_token = self._request_tokens.pop(execution_id, None)
         if cancellation is not None:
             cancellation.cancel()
         elif request_token is not None:
@@ -840,6 +840,9 @@ class ChatService:
                 self._persist_lifecycle_event(current, event)
                 yield event
 
+            if request_lifecycle.phase != "starting_provider":
+                request_lifecycle.enter("starting_provider")
+                route = self._touch_route_phase(route, request_lifecycle)
             started = emit(
                 "execution_started",
                 execution=current,
@@ -856,8 +859,6 @@ class ChatService:
             )
             self._persist_lifecycle_event(current, started)
             yield started
-            request_lifecycle.enter("starting_provider")
-            route = self._touch_route_phase(route, request_lifecycle)
 
             rendered_policy = render_persona_policy(persona_version, cognitive_policy)
             provider_request = ProviderRequest(
@@ -1945,15 +1946,13 @@ class ChatService:
             if len(outcomes) < 20 and execution.status in {
                 "complete",
                 "failed",
-                "cancelled",
             }:
                 outcomes.append(execution)
         signals: dict[str, dict[str, int]] = {}
         for provider_id, executions in grouped.items():
             statuses = [item.status for item in executions]
             successes = statuses.count("complete")
-            cancelled = statuses.count("cancelled")
-            failures = len(statuses) - successes
+            failures = statuses.count("failed")
             durations = []
             for item in executions:
                 if item.status != "complete":
@@ -1970,17 +1969,10 @@ class ChatService:
                     latency_signal = 2
                 elif median > 20_000:
                     latency_signal = -2
-            cancel_signal = 0
-            if statuses:
-                rate = cancelled / len(statuses)
-                if rate >= 0.4:
-                    cancel_signal = -4
-                elif rate >= 0.2:
-                    cancel_signal = -2
             signals[provider_id] = {
                 "success": max(-10, min(10, 2 * (successes - failures))),
                 "latency": latency_signal,
-                "cancel": cancel_signal,
+                "cancel": 0,
             }
         return signals
 

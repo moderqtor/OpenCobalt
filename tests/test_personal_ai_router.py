@@ -279,6 +279,26 @@ def test_route_output_is_persistence_compatible_and_never_reports_a_fallback_exe
     assert plan.candidates[0].route_id == plan.record.route_id
 
 
+@pytest.mark.parametrize("permission", ["deny", "ask"])
+def test_builtin_skill_recommendation_requires_allow_builtin(permission):
+    provider = _provider(
+        "planner",
+        local=True,
+        requires_network=False,
+        capabilities=frozenset({"chat", "planning"}),
+    )
+
+    plan = PersonalAIRouter().route(
+        _request(
+            "Plan next week",
+            settings=AISettings(skill_permissions=permission),
+        ),
+        [provider],
+    )
+
+    assert plan.record.selected_skills == []
+
+
 @pytest.mark.parametrize(
     ("prompt", "expected"),
     [
@@ -347,6 +367,38 @@ def test_cost_ceiling_is_an_eligibility_rule_with_a_visible_rejection_reason():
     assert expensive_candidate.rejection_reason == (
         "provider cost category 'high' exceeds configured ceiling 'low'"
     )
+
+
+def test_subscription_backed_standard_cost_uses_low_marginal_cost_for_ceiling():
+    router = PersonalAIRouter()
+    subscription = _provider(
+        "subscription",
+        local=False,
+        requires_network=True,
+        cost_category="standard",
+        billing_classification="subscription_backed",
+    )
+    fallback = _provider(
+        "fallback",
+        local=True,
+        requires_network=False,
+        cost_category="low",
+    )
+
+    plan = router.route(
+        _request(
+            "Explain this concept",
+            settings=AISettings(cost_ceiling_category="low"),
+        ),
+        [subscription, fallback],
+    )
+
+    candidate = next(
+        item for item in plan.candidates if item.provider_id == "subscription"
+    )
+    assert candidate.eligible is True
+    assert candidate.rejection_reason is None
+    assert candidate.score_components["cost_fit"] == 5
 
 
 def test_complex_implementation_rejects_a_weak_model_even_when_it_is_free():

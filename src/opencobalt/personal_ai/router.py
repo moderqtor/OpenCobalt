@@ -249,7 +249,10 @@ class PersonalAIRouter:
         )
         selected_tools = sorted(set(request.requested_tools) & snapshot.tool_names)
         selected_skills = _selected_skills(request, snapshot)
-        if not selected_skills:
+        if (
+            not selected_skills
+            and request.settings.skill_permissions == "allow_builtin"
+        ):
             from opencobalt.personal_ai.builtin_skills import recommend_builtin_skill
 
             recommended = recommend_builtin_skill(
@@ -769,9 +772,20 @@ def _rejection_reason(
     missing_tools = sorted(set(request.requested_tools) - snapshot.tool_names)
     if missing_tools:
         return f"provider does not support required tools: {', '.join(missing_tools)}"
-    if _cost_rank(snapshot.cost_category) > _cost_rank(request.settings.cost_ceiling_category):
+    effective_cost = _effective_cost_category(
+        snapshot.cost_category, snapshot.billing_classification
+    )
+    if _cost_rank(effective_cost) > _cost_rank(request.settings.cost_ceiling_category):
+        if effective_cost == snapshot.cost_category:
+            category = f"provider cost category '{snapshot.cost_category}'"
+        else:
+            category = (
+                f"provider effective cost category '{effective_cost}' "
+                f"(declared '{snapshot.cost_category}', billing "
+                f"'{snapshot.billing_classification}')"
+            )
         return (
-            f"provider cost category '{snapshot.cost_category}' exceeds configured ceiling "
+            f"{category} exceeds configured ceiling "
             f"'{request.settings.cost_ceiling_category}'"
         )
     if task_class in {"security_review", "consequential_decision", "repository_execution"} and (
@@ -820,16 +834,21 @@ def _cost_fit(
     demanding: bool = False,
     billing_classification: str = "unknown",
 ) -> int:
+    effective = _effective_cost_category(cost_category, billing_classification)
+    if demanding:
+        base = {"free": 2, "low": 2, "standard": 2, "high": -4}[effective]
+    else:
+        base = {"free": 8, "low": 5, "standard": 2, "high": -4}[effective]
+    return base if _cost_rank(effective) <= _cost_rank(ceiling) else base - 10
+
+
+def _effective_cost_category(cost_category: str, billing_classification: str) -> str:
     effective = cost_category
     if billing_classification == "subscription_backed" and cost_category == "standard":
         effective = "low"
     if billing_classification == "api_billed" and cost_category in {"free", "low"}:
         effective = "standard"
-    if demanding:
-        base = {"free": 2, "low": 2, "standard": 2, "high": -4}[effective]
-    else:
-        base = {"free": 8, "low": 5, "standard": 2, "high": -4}[effective]
-    return base if _cost_rank(cost_category) <= _cost_rank(ceiling) else base - 10
+    return effective
 
 
 def _cost_rank(value: str) -> int:

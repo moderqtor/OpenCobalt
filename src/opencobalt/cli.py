@@ -2030,7 +2030,20 @@ def _listener_command_line(pid: int) -> str:
             "utf-8", errors="replace"
         ).strip()
     except OSError:
+        pass
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except Exception:
         return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def _opencobalt_owned_listener(port: int, label: str) -> tuple[int, str] | None:
@@ -2053,19 +2066,14 @@ def _opencobalt_owned_listener(port: int, label: str) -> tuple[int, str] | None:
             pids.append(int(line))
         except ValueError:
             continue
-    markers = {
-        "API": ("opencobalt.api_server:app", "uvicorn"),
-        "UI": ("vite",),
-    }.get(label, ())
     for pid in pids:
         command = _listener_command_line(pid)
         if not command:
             continue
-        if label == "API" and "opencobalt.api_server" in command:
+        lowered = command.casefold()
+        if label == "API" and "uvicorn" in lowered and "opencobalt.api_server:app" in lowered:
             return pid, command
-        if label == "UI" and "vite" in command and ("opencobalt" in command.lower() or "/ui" in command):
-            return pid, command
-        if any(marker in command for marker in markers) and "opencobalt" in command.lower():
+        if label == "UI" and "vite" in lowered and "opencobalt" in lowered:
             return pid, command
     return None
 
@@ -2080,6 +2088,8 @@ def _reclaim_stale_opencobalt_listener(port: int, label: str) -> bool:
     if owned is None:
         return False
     pid, command = owned
+    if _opencobalt_owned_listener(port, label) != owned:
+        return False
     err.print(
         f"  [dim]Reclaiming stale OpenCobalt {label} listener pid {pid}: {command[:160]}[/dim]"
     )
@@ -2092,6 +2102,8 @@ def _reclaim_stale_opencobalt_listener(port: int, label: str) -> bool:
         if not _ui_port_has_listener(port) and _can_bind_ui_port(port):
             return True
         time.sleep(0.05)
+    if _opencobalt_owned_listener(port, label) != owned:
+        return False
     try:
         os.kill(pid, signal.SIGKILL)
     except OSError:

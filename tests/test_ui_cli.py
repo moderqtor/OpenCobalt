@@ -5,10 +5,13 @@ from __future__ import annotations
 import socket
 import subprocess
 import urllib.request
+from pathlib import Path
+from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
 from opencobalt.cli import (
+    _listener_command_line,
     _reclaim_stale_opencobalt_listener,
     _require_available_ui_port,
     app,
@@ -48,6 +51,28 @@ def test_stale_listener_reclaim_requires_opencobalt_ownership(monkeypatch) -> No
     assert _reclaim_stale_opencobalt_listener(8000, "API") is False
 
 
+def test_listener_command_line_uses_portable_ps_when_proc_is_unavailable(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda _path: (_ for _ in ()).throw(FileNotFoundError("no procfs")),
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="uvicorn opencobalt.api_server:app --port 8000\n",
+        ),
+    )
+
+    assert _listener_command_line(4242) == (
+        "uvicorn opencobalt.api_server:app --port 8000"
+    )
+
+
 def test_stale_opencobalt_listener_is_reclaimed(monkeypatch) -> None:
     killed = []
     monkeypatch.setattr(
@@ -60,6 +85,26 @@ def test_stale_opencobalt_listener_is_reclaimed(monkeypatch) -> None:
     monkeypatch.setattr("time.sleep", lambda seconds: None)
     assert _reclaim_stale_opencobalt_listener(8000, "API") is True
     assert killed[0][0] == 4242
+
+
+def test_stale_listener_is_not_killed_if_ownership_changes(monkeypatch) -> None:
+    ownership_checks = iter(
+        [
+            (4242, "uvicorn opencobalt.api_server:app --port 8000"),
+            (4343, "python unrelated_server.py"),
+        ]
+    )
+    monkeypatch.setattr(
+        "opencobalt.cli._opencobalt_owned_listener",
+        lambda port, label: next(ownership_checks),
+    )
+
+    def unexpected_kill(pid, signal_number):
+        raise AssertionError(f"must not kill changed listener pid {pid}")
+
+    monkeypatch.setattr("os.kill", unexpected_kill)
+
+    assert _reclaim_stale_opencobalt_listener(8000, "API") is False
 
 
 def test_ui_refuses_an_occupied_api_port_before_starting_children(

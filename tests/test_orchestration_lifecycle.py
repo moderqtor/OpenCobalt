@@ -45,6 +45,8 @@ def test_route_leaves_planned_before_provider_returns(tmp_path):
     assert finished.outcome_status == "complete"
     timings = finished.metadata.get("lifecycle", {}).get("timings") or {}
     assert "total_ms" in timings
+    phases = finished.metadata.get("lifecycle", {}).get("phases") or []
+    assert [item["phase"] for item in phases].count("starting_provider") == 1
 
 
 def test_provider_started_is_emitted_before_execute_returns(tmp_path):

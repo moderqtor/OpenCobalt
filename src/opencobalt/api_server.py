@@ -9,58 +9,39 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import re
-import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .core.public_safety import scan_directory
 from .core.router import route_task
+from .personal_ai.api import _CONTEXT_LOCK, _CONTEXTS
+from .personal_ai.api import router as personal_ai_router
 
 _START_TIME = time.time()
 _START_MONOTONIC = time.monotonic()
-_PERSONAL_AI_LOCK = threading.Lock()
-_PERSONAL_AI_MOUNTED = False
-_MOUNT_MS: int | None = None
 
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    mount_thread = threading.Thread(target=_ensure_personal_ai_routes, daemon=True)
-    mount_thread.start()
     yield
-    try:
-        from opencobalt.personal_ai.api import _CONTEXT_LOCK, _CONTEXTS
-
-        with _CONTEXT_LOCK:
-            contexts = [item[1] for item in _CONTEXTS.values()]
-        for context in contexts:
-            cancel_all = getattr(context.service, "cancel_all", None)
-            if callable(cancel_all):
-                cancel_all()
-    except Exception:
-        pass
-
-
-def _ensure_personal_ai_routes() -> None:
-    """Mount Chat/Research routes without blocking process listen/readiness."""
-    global _PERSONAL_AI_MOUNTED, _MOUNT_MS
-    if _PERSONAL_AI_MOUNTED:
-        return
-    with _PERSONAL_AI_LOCK:
-        if _PERSONAL_AI_MOUNTED:
-            return
-        started = time.monotonic()
-        from .personal_ai.api import router as personal_ai_router
-
-        app.include_router(personal_ai_router)
-        _MOUNT_MS = int((time.monotonic() - started) * 1000)
-        _PERSONAL_AI_MOUNTED = True
+    with _CONTEXT_LOCK:
+        contexts = [item[1] for item in _CONTEXTS.values()]
+    failures: list[Exception] = []
+    for context in contexts:
+        try:
+            context.service.cancel_all()
+        except Exception as exc:
+            failures.append(exc)
+    if failures:
+        raise RuntimeError(
+            f"personal-AI shutdown cancellation failed: {failures[0]}"
+        ) from failures[0]
 
 
 app = FastAPI(title="OpenCobalt API", version="0.1.0", lifespan=_lifespan)
@@ -71,14 +52,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["*"],
 )
-
-
-@app.middleware("http")
-async def _mount_personal_ai_before_v1(request: Request, call_next):
-    path = request.url.path
-    if path.startswith("/api/v1"):
-        _ensure_personal_ai_routes()
-    return await call_next(request)
+app.include_router(personal_ai_router)
 
 
 def _ledger():
@@ -104,13 +78,12 @@ def _count_tests() -> int | None:
 
 @app.get("/api/ready")
 def get_ready() -> dict[str, Any]:
-    """Process is listening. Does not scan the repo or wait on provider catalogs."""
+    """The complete API is mounted without scanning the repo or provider catalogs."""
     return {
         "ready": True,
-        "phase": "listening",
+        "phase": "ready",
         "uptime_ms": int((time.monotonic() - _START_MONOTONIC) * 1000),
-        "personal_ai_mounted": _PERSONAL_AI_MOUNTED,
-        "personal_ai_mount_ms": _MOUNT_MS,
+        "personal_ai_mounted": True,
     }
 
 

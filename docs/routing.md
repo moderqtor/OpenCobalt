@@ -49,7 +49,7 @@ coding-agent execution.
 The recorded score is an integer sum of heuristic components, not a
 probability and not a calibrated quality model. Adapter quality and cost
 tiers are declared contracts (`statistically_calibrated=False`). Outcome
-hooks reuse local execution history (success, latency, cancellation) as
+hooks reuse local execution history (success and latency) as
 bounded integers. They are not learned quality scores.
 
 Components that are actually populated today include:
@@ -66,7 +66,7 @@ Components that are actually populated today include:
 | latency_fit | Declared latency category |
 | historical_success | Recent complete vs failed executions for that provider |
 | observed_latency | Bounded signal from recent execution durations, not a quality score |
-| cancellation_rate | Bounded penalty when recent attempts were cancelled often |
+| cancellation_rate | Reserved; user, disconnect, and shutdown cancellations are neutral today |
 | deterministic_fit | Closed-form micro-tasks prefer the in-process deterministic provider |
 | billing_fit | Local or subscription-backed near-zero marginal cost vs per-call API billing |
 | provider_priority | User settings order |

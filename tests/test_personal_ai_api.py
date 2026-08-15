@@ -15,6 +15,7 @@ from opencobalt.personal_ai.api import _stream_ndjson
 from opencobalt.personal_ai.models import ChatExecution, StreamEvent
 from opencobalt.personal_ai.service import ChatLifecycleEvent, ChatRequest
 from opencobalt.personal_ai.store import PersonalAIStore
+from tests.test_chat_service import _real_mock_service
 
 
 @pytest.fixture
@@ -111,6 +112,27 @@ def test_ndjson_disconnect_does_not_abandon_live_pending_approval() -> None:
     assert "approval_required" in next(stream)
     stream.close()
     assert service.abandoned == []
+
+
+def test_ndjson_disconnect_releases_request_token_before_provider_execution(
+    tmp_path,
+) -> None:
+    service, _, _ = _real_mock_service(tmp_path)
+    conversation = service.create_conversation(title="Early disconnect")
+    stream = _stream_ndjson(
+        service,
+        ChatRequest(
+            conversation_id=conversation.conversation_id,
+            message="Explain this",
+            provider_override="mock",
+        ),
+    )
+    accepted = json.loads(next(stream))
+    assert json.loads(next(stream))["event_type"] == "phase_changed"
+
+    stream.close()
+
+    assert service.cancel(accepted["request_id"]) is False
 
 
 def test_context_is_keyed_by_resolved_ledger_path(
