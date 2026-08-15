@@ -320,7 +320,7 @@ export function RouteInspector({ route, candidates = [], providers = [], persona
 export function ConversationRail({ conversations, selectedId, onSelect, onCreate, isCreating, disabled = false, mobileOpen = false, onClose }) {
   const railRef = useRef(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [draft, setDraft] = useState({ title: "New conversation", project_path: "" });
+  const [draft, setDraft] = useState({ title: "", project_path: "" });
   useEffect(() => {
     if (!mobileOpen) return undefined;
     const previouslyFocused = document.activeElement;
@@ -352,7 +352,6 @@ export function ConversationRail({ conversations, selectedId, onSelect, onCreate
 
   const select = (conversationId) => {
     onSelect(conversationId);
-    onClose?.();
   };
 
   const create = async (event) => {
@@ -363,13 +362,13 @@ export function ConversationRail({ conversations, selectedId, onSelect, onCreate
     });
     if (created !== false) {
       setCreateOpen(false);
-      setDraft({ title: "New conversation", project_path: "" });
+      setDraft({ title: "", project_path: "" });
     }
   };
 
   return <aside ref={railRef} id="conversation-navigation" className={`conversation-rail ${mobileOpen ? "is-mobile-open" : ""}`} role={mobileOpen ? "dialog" : undefined} aria-modal={mobileOpen ? "true" : undefined} aria-label="Conversations">
     <div className="rail-heading"><div><p className="eyebrow">Chat</p><h2>Conversations</h2></div><div className="rail-actions"><IconButton label="New conversation" aria-expanded={createOpen} aria-controls="conversation-create" onClick={() => setCreateOpen((current) => !current)} disabled={isCreating || disabled}><Plus size={17} /></IconButton><IconButton className="conversation-close" label="Collapse conversations" onClick={onClose}><X size={17} /></IconButton></div></div>
-    {createOpen && <form id="conversation-create" className="conversation-create" onSubmit={create}><label><span>Title</span><input value={draft.title} maxLength="200" onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} /></label><label><span>Repository path</span><input value={draft.project_path} maxLength="4096" placeholder="Absolute path to an existing local repository" onChange={(event) => setDraft((current) => ({ ...current, project_path: event.target.value }))} /></label><small>The path is canonicalized. Coding work stays inside this repository.</small><div><button type="button" className="text-button" onClick={() => setCreateOpen(false)}>Cancel</button><button type="submit" className="button primary" disabled={isCreating || !draft.title.trim()}>{isCreating ? "Creating…" : "Create"}</button></div></form>}
+    {createOpen && <form id="conversation-create" className="conversation-create" onSubmit={create}><label><span>Title</span><input value={draft.title} maxLength="200" placeholder="New conversation" autoFocus onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} /></label><label><span>Repository path</span><input value={draft.project_path} maxLength="4096" placeholder="Absolute path to an existing local repository" onChange={(event) => setDraft((current) => ({ ...current, project_path: event.target.value }))} /></label><small>The path is canonicalized. Coding work stays inside this repository.</small><div><button type="button" className="text-button" onClick={() => setCreateOpen(false)}>Cancel</button><button type="submit" className="button primary" disabled={isCreating}>{isCreating ? "Creating…" : "Create"}</button></div></form>}
     <div className="conversation-list">{conversations.map((conversation) => {
       const conversationId = conversation.conversation_id || conversation.id;
       const selected = conversationId === selectedId;
