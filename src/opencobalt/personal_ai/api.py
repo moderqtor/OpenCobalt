@@ -38,6 +38,11 @@ from opencobalt.personal_ai.staging import (
 )
 from opencobalt.skills.registry import list_skills as list_builtin_skills
 
+from .conversation_routing import (
+    ConversationRoutingUpdate,
+    ConversationRoutingView,
+    routing_view,
+)
 from .models import (
     AISettings,
     ChatExecution,
@@ -853,6 +858,119 @@ def create_conversation(request: ConversationCreate) -> Conversation:
         title=request.title,
         project_path=project_path,
     )
+
+
+def _chat_eligible_provider_reason(context: APIContext, provider_id: str) -> str | None:
+    try:
+        provider = context.providers.get(provider_id)
+    except KeyError:
+        return f"Provider {provider_id} is not in the local registry."
+    status = provider.status()
+    preference = next(
+        (
+            item
+            for item in context.store.list_provider_preferences()
+            if item.provider_id == provider_id
+        ),
+        None,
+    )
+    enabled = preference.enabled if preference is not None else True
+    if provider_id == "mock" and not context.service.enable_mock:
+        enabled = False
+    if not status.installed:
+        return f"{provider_id} is not installed."
+    if not status.execution_supported:
+        return f"{provider_id} is not currently executable."
+    if not status.capabilities.answer_only_isolation:
+        return f"{provider_id} does not have a proven answer-only Chat boundary."
+    if not enabled:
+        return f"{provider_id} is disabled for Chat."
+    return None
+
+
+def _routing_view(context: APIContext, conversation: Conversation) -> ConversationRoutingView:
+    routing = context.service.conversation_routing(conversation.conversation_id)
+    provider_id = routing.manual_preset.provider_id
+    model_id = routing.manual_preset.model_id
+    provider_status: str = "unset"
+    provider_reason = None
+    model_status: str = "unset"
+    model_reason = None
+    if provider_id:
+        provider_reason = _chat_eligible_provider_reason(context, provider_id)
+        provider_status = "unavailable" if provider_reason else "available"
+        if model_id:
+            model_status = "unknown"
+            model_reason = (
+                "The stored model is preserved. OpenCobalt does not substitute another model."
+            )
+            if provider_status == "unavailable":
+                model_status = "unavailable"
+                model_reason = provider_reason
+            elif provider_id == "mock":
+                catalog = context.providers.get("mock").discover_models()
+                admitted = {item.model_id for item in catalog.models}
+                if model_id in admitted:
+                    model_status = "available"
+                    model_reason = None
+                else:
+                    model_status = "unavailable"
+                    model_reason = (
+                        f"Model {model_id} is not in the current {provider_id} catalog."
+                    )
+    elif model_id:
+        model_status = "unavailable"
+        model_reason = "A stored model requires a stored provider."
+    return routing_view(
+        conversation.conversation_id,
+        routing,
+        provider_status=provider_status,  # type: ignore[arg-type]
+        provider_unavailable_reason=provider_reason,
+        model_status=model_status,  # type: ignore[arg-type]
+        model_unavailable_reason=model_reason,
+    )
+
+
+@router.get("/conversations/{conversation_id}", response_model=Conversation)
+def get_conversation(conversation_id: str) -> Conversation:
+    conversation = _api_context().store.get_conversation(conversation_id)
+    if conversation is None:
+        raise _not_found("conversation", conversation_id)
+    return conversation
+
+
+@router.get(
+    "/conversations/{conversation_id}/routing",
+    response_model=ConversationRoutingView,
+)
+def get_conversation_routing(conversation_id: str) -> ConversationRoutingView:
+    context = _api_context()
+    conversation = context.store.get_conversation(conversation_id)
+    if conversation is None:
+        raise _not_found("conversation", conversation_id)
+    return _routing_view(context, conversation)
+
+
+@router.patch(
+    "/conversations/{conversation_id}/routing",
+    response_model=ConversationRoutingView,
+)
+def update_conversation_routing(
+    conversation_id: str,
+    request: ConversationRoutingUpdate,
+) -> ConversationRoutingView:
+    context = _api_context()
+    conversation = context.store.get_conversation(conversation_id)
+    if conversation is None:
+        raise _not_found("conversation", conversation_id)
+    try:
+        context.service.update_conversation_routing(conversation_id, request)
+    except ValueError as exc:
+        raise _unprocessable(str(exc)) from exc
+    updated = context.store.get_conversation(conversation_id)
+    if updated is None:
+        raise _not_found("conversation", conversation_id)
+    return _routing_view(context, updated)
 
 
 @router.get(

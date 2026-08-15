@@ -44,6 +44,14 @@ Mutating repo work becomes `coding_agent` only when a conversation
 `project_path` is set. Without that path, the same text does not grant
 coding-agent execution.
 
+Manual Automatic vs Manual mode and the last provider/model preset are stored
+on the conversation record (`metadata.routing`). Automatic mode does not
+delete that preset. A stored unavailable provider or model is kept and shown
+as stale; OpenCobalt does not substitute another model to make the control
+look valid. The Chat request payload remains the execution input; conversation
+routing is durable composer state, not a silent backend override of task
+family or authority.
+
 ## Scoring
 
 The recorded score is an integer sum of heuristic components, not a

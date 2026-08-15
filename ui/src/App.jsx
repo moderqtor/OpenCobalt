@@ -6,6 +6,7 @@ import {
 import { ApiError, api, eventPayload, eventType, streamChat } from "./api";
 import Markdown from "./Markdown";
 import SkillImport from "./SkillImport";
+import { createPerConversationWriteQueue } from "./routingPersist";
 import {
   ConversationRail, EmptyState, ErrorState, IconButton, Loading, Navigation,
   PageTitle, Pill, RouteInspector, RouteSpine,
@@ -135,7 +136,79 @@ function allowedPolicies(persona) {
   return Array.isArray(policies) && policies.length ? policies : COGNITIVE_POLICIES;
 }
 
-function Composer({ controls, personas, providers, models: discoveredModels, modelError, onChange, onSend, busy, cancelling = false, onCancel, attachments = [], onAttach, onRemoveAttachment, attachmentError, executableAvailable = true }) {
+function useViewportFlag(query) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const sync = () => setMatches(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, [query]);
+  return matches;
+}
+
+function defaultComposerControls(settings = DEFAULT_SETTINGS) {
+  return {
+    personaId: settings.default_persona_id || DEFAULT_SETTINGS.default_persona_id,
+    automatic: settings.default_routing_mode !== "manual",
+    providerId: "",
+    modelId: "",
+    privacy: settings.privacy_policy || DEFAULT_SETTINGS.privacy_policy,
+    localOnly: Boolean(settings.local_only_default),
+    allowFallback: false,
+    cognitivePolicy: "deep_analysis",
+    reasoningEffort: "medium",
+  };
+}
+
+function routingRecord(value) {
+  if (!value || typeof value !== "object") return null;
+  const nested = value.manual_preset && typeof value.manual_preset === "object" ? value.manual_preset : {};
+  return {
+    mode: value.mode || "automatic",
+    provider_id: value.provider_id || nested.provider_id || "",
+    model_id: value.model_id || nested.model_id || "",
+    reasoning_effort: value.reasoning_effort || "medium",
+    allow_fallback: Boolean(value.allow_fallback),
+    privacy_mode: value.privacy_mode || "",
+    local_only: Boolean(value.local_only),
+    provider_status: value.provider_status || (value.provider_id || nested.provider_id ? "unknown" : "unset"),
+    provider_unavailable_reason: value.provider_unavailable_reason || "",
+    model_status: value.model_status || (value.model_id || nested.model_id ? "unknown" : "unset"),
+    model_unavailable_reason: value.model_unavailable_reason || "",
+  };
+}
+
+function controlsFromRouting(routing, settings = DEFAULT_SETTINGS) {
+  const defaults = defaultComposerControls(settings);
+  const record = routingRecord(routing);
+  if (!record) return defaults;
+  return {
+    ...defaults,
+    automatic: record.mode !== "manual",
+    providerId: record.provider_id || "",
+    modelId: record.model_id || "",
+    privacy: record.privacy_mode || defaults.privacy,
+    localOnly: record.local_only,
+    allowFallback: record.allow_fallback,
+    reasoningEffort: record.reasoning_effort || "medium",
+  };
+}
+
+function routingPatchFromControls(controls) {
+  return {
+    mode: controls.automatic ? "automatic" : "manual",
+    provider_id: controls.providerId || null,
+    model_id: controls.modelId || null,
+    reasoning_effort: controls.reasoningEffort,
+    allow_fallback: Boolean(controls.allowFallback),
+    privacy_mode: controls.privacy,
+    local_only: Boolean(controls.localOnly),
+  };
+}
+
+function Composer({ controls, personas, providers, models: discoveredModels, modelError, onChange, onSend, busy, cancelling = false, onCancel, attachments = [], onAttach, onRemoveAttachment, attachmentError, executableAvailable = true, routingAvailability = null }) {
   const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState("");
   const fileRef = useRef(null);
@@ -143,15 +216,35 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
   const selectedPersona = personas.find((persona) => (persona.persona_id || persona.id) === controls.personaId);
   const cognitivePolicies = allowedPolicies(selectedPersona);
   const models = discoveredModels.length ? discoveredModels : providerModels(selectedProvider);
+  const modelIds = new Set(models.map((model) => modelId(model)).filter(Boolean));
+  const providerIds = new Set(providers.map((provider) => provider.provider_id || provider.id).filter(Boolean));
+  const staleProviderMissing = Boolean(controls.providerId) && !providerIds.has(controls.providerId);
+  const staleModelMissing = Boolean(controls.modelId) && !modelIds.has(controls.modelId);
+  const providerUnavailableReason = routingAvailability?.provider_unavailable_reason;
+  const modelUnavailableReason = routingAvailability?.model_unavailable_reason;
+  const providerStale = !controls.automatic && Boolean(controls.providerId) && (
+    routingAvailability?.provider_status === "unavailable"
+    || staleProviderMissing
+    || !selectedProvider?.installed
+    || !selectedProvider?.execution_supported
+    || !selectedProvider?.capabilities?.answer_only_isolation
+    || selectedProvider?.enabled === false
+  );
+  const modelStale = !controls.automatic && Boolean(controls.modelId) && (
+    routingAvailability?.model_status === "unavailable"
+    || staleModelMissing
+  );
   const manualProviderMissing = !controls.automatic && !controls.providerId;
-  const manualProviderUnavailable = !controls.automatic && Boolean(controls.providerId) && (!selectedProvider?.installed || !selectedProvider?.execution_supported || !selectedProvider?.capabilities?.answer_only_isolation || selectedProvider?.enabled === false);
   const validationMessage = !executableAvailable && controls.automatic
     ? "No executable provider is currently available."
     : manualProviderMissing
     ? "Choose an installed, executable provider before sending in manual mode."
-    : manualProviderUnavailable
-      ? "The selected provider is not currently eligible for isolated answer-only Chat execution."
+    : providerStale
+      ? (providerUnavailableReason || "The stored provider is unavailable. Choose a replacement to send in manual mode.")
       : "";
+  const staleModelMessage = !controls.automatic && modelStale
+    ? (modelUnavailableReason || "The stored model is unavailable. It is kept until you choose a replacement.")
+    : "";
   const canSend = Boolean(text.trim()) && !busy && !validationMessage;
 
   useEffect(() => {
@@ -170,7 +263,7 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
       value={text}
       rows="2"
       aria-label="Message OpenCobalt"
-      aria-describedby={validationMessage ? "composer-provider-validation" : undefined}
+      aria-describedby={[validationMessage ? "composer-provider-validation" : "", staleModelMessage ? "composer-model-validation" : ""].filter(Boolean).join(" ") || undefined}
       placeholder="Message OpenCobalt"
       onChange={(event) => setText(event.target.value)}
       onKeyDown={(event) => {
@@ -194,6 +287,7 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
         : <button className="button primary" type="submit" disabled={!canSend}><Send size={15} aria-hidden="true" /> Send</button>}
     </div>
     {validationMessage && <p id="composer-provider-validation" className="composer-validation" role="status">{validationMessage}{!executableAvailable && controls.automatic ? <> <button type="button" className="text-button" onClick={() => { window.location.hash = "providers"; }}>Open Providers</button></> : ""}</p>}
+    {staleModelMessage && <p id="composer-model-validation" className="composer-validation" role="status">{staleModelMessage}</p>}
     {attachmentError && <p className="composer-validation" role="status">{attachmentError}</p>}
     {expanded && <div id="composer-advanced" className="composer-advanced">
       <SelectField label="Cognitive policy" value={controls.cognitivePolicy} onChange={(cognitivePolicy) => onChange({ cognitivePolicy })}>{cognitivePolicies.map((policy) => <option key={policy} value={policy}>{label(policy)}</option>)}</SelectField>
@@ -205,14 +299,17 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
       {!controls.automatic && <>
         <SelectField label="Provider" value={controls.providerId} onChange={(providerId) => onChange({ providerId, modelId: "" })} describedBy={validationMessage ? "composer-provider-validation" : undefined}>
           <option value="">Choose provider</option>
+          {staleProviderMissing && <option value={controls.providerId}>{controls.providerId} — unavailable</option>}
           {providers.map((provider) => {
             const providerId = provider.provider_id || provider.id;
             const executable = Boolean(provider.installed && provider.execution_supported && provider.capabilities?.answer_only_isolation && provider.enabled !== false);
-            return <option key={providerId} value={providerId} disabled={!executable}>{providerName(provider)}{executable ? "" : " — unavailable in Chat"}</option>;
+            const storedUnavailable = providerId === controls.providerId && providerStale;
+            return <option key={providerId} value={providerId} disabled={!executable && !storedUnavailable}>{providerName(provider)}{executable ? "" : " — unavailable in Chat"}</option>;
           })}
         </SelectField>
-        <SelectField label="Model" value={controls.modelId} onChange={(nextModelId) => onChange({ modelId: nextModelId })} disabled={!controls.providerId}>
+        <SelectField label="Model" value={controls.modelId} onChange={(nextModelId) => onChange({ modelId: nextModelId })} disabled={!controls.providerId} describedBy={staleModelMessage ? "composer-model-validation" : undefined}>
           <option value="">Provider default</option>
+          {staleModelMissing && <option value={controls.modelId}>{controls.modelId} — unavailable</option>}
           {models.map((model) => <option key={modelId(model)} value={modelId(model)}>{typeof model === "string" ? model : model.display_name || model.name || modelId(model)}</option>)}
         </SelectField>
         {modelError && <p className="inline-error model-error" role="alert">Model catalog unavailable: {modelError.message}</p>}
@@ -353,50 +450,83 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const [approvalBusyId, setApprovalBusyId] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [attachmentError, setAttachmentError] = useState("");
+  const [routingAvailability, setRoutingAvailability] = useState(null);
   const abortRef = useRef(null);
   const executionRef = useRef(null);
   const runRef = useRef(null);
   const runGenerationRef = useRef(0);
   const routeLoadsRef = useRef(new Set());
   const routeGenerationRef = useRef(0);
-  const settingsAppliedRef = useRef(false);
+  const hydrateGenerationRef = useRef(0);
+  const selectedIdRef = useRef(selectedId);
+  const hydratingRef = useRef(false);
+  const controlsConversationRef = useRef("");
+  const settingsRef = useRef(settings);
+  const writeSeqRef = useRef(new Map());
+  const persistQueueRef = useRef(null);
   const scrollRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
+  const isNarrow = useViewportFlag("(max-width: 760px)");
   const interactionBusy = busy || cancelling;
-  const [controls, setControls] = useState({
-    personaId: DEFAULT_SETTINGS.default_persona_id,
-    automatic: true,
-    providerId: "",
-    modelId: "",
-    privacy: DEFAULT_SETTINGS.privacy_policy,
-    localOnly: DEFAULT_SETTINGS.local_only_default,
-    allowFallback: false,
-    cognitivePolicy: "deep_analysis",
-    reasoningEffort: "medium",
-  });
+  const [controls, setControls] = useState(() => defaultComposerControls(settings));
+  selectedIdRef.current = selectedId;
+  settingsRef.current = settings;
+  if (persistQueueRef.current == null) {
+    persistQueueRef.current = createPerConversationWriteQueue({
+      write: (conversationId, payload) => api.updateConversationRouting(conversationId, payload),
+    });
+  }
   const closeConversations = useCallback(() => {
     setConversationOpen(false);
-    setRailCollapsed(true);
-  }, []);
+    if (!isNarrow) setRailCollapsed(true);
+  }, [isNarrow]);
   const openConversations = useCallback(() => {
-    setConversationOpen(true);
     setRailCollapsed(false);
+    setConversationOpen(true);
+  }, []);
+  const selectConversation = useCallback((conversationId) => {
+    setSelectedId(conversationId);
+    setConversationOpen(false);
   }, []);
   useEffect(() => {
     localStorage.setItem("opencobalt.railCollapsed", railCollapsed ? "1" : "0");
   }, [railCollapsed]);
 
   useEffect(() => {
-    if (!settingsReady || settingsAppliedRef.current) return;
-    setControls((current) => ({
-      ...current,
-      personaId: settings.default_persona_id || DEFAULT_SETTINGS.default_persona_id,
-      automatic: settings.default_routing_mode !== "manual",
-      privacy: settings.privacy_policy || DEFAULT_SETTINGS.privacy_policy,
-      localOnly: Boolean(settings.local_only_default),
-    }));
-    settingsAppliedRef.current = true;
-  }, [settings, settingsReady]);
+    if (!settingsReady) return undefined;
+    const conversationId = selectedId;
+    const generation = ++hydrateGenerationRef.current;
+    hydratingRef.current = true;
+    if (!conversationId) {
+      setControls(defaultComposerControls(settings));
+      setRoutingAvailability(null);
+      controlsConversationRef.current = "";
+      hydratingRef.current = false;
+      return undefined;
+    }
+    const listed = conversations.find((conversation) => conversationIdOf(conversation) === conversationId);
+    setControls(controlsFromRouting(listed?.metadata?.routing, settings));
+    setRoutingAvailability(null);
+    controlsConversationRef.current = conversationId;
+    api.conversationRouting(conversationId)
+      .then((routing) => {
+        if (hydrateGenerationRef.current !== generation || selectedIdRef.current !== conversationId) return;
+        setControls(controlsFromRouting(routing, settings));
+        setRoutingAvailability(routing);
+        controlsConversationRef.current = conversationId;
+      })
+      .catch(() => {
+        if (hydrateGenerationRef.current !== generation) return;
+        setRoutingAvailability(null);
+      })
+      .finally(() => {
+        if (hydrateGenerationRef.current === generation) hydratingRef.current = false;
+      });
+    return () => {
+      hydrateGenerationRef.current += 1;
+      hydratingRef.current = false;
+    };
+  }, [selectedId, settings, settingsReady]);
 
   useEffect(() => {
     const persona = personas.find((record) => (record.persona_id || record.id) === controls.personaId);
@@ -540,6 +670,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       const conversation = await api.createConversation({ title: "New conversation", ...input });
       const createdId = conversationIdOf(conversation);
       if (!createdId) throw new ApiError("OpenCobalt created a conversation without an identifier.", { detail: conversation });
+      writeSeqRef.current.delete(createdId);
       await refreshConversations();
       setSelectedId(createdId);
       setConversationOpen(false);
@@ -553,18 +684,66 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   };
 
   const ensureConversation = async () => {
-    if (selectedId && conversations.some((conversation) => conversationIdOf(conversation) === selectedId)) return selectedId;
+    if (selectedId && conversations.some((conversation) => conversationIdOf(conversation) === selectedId)) {
+      return { conversationId: selectedId, created: false };
+    }
     const currentConversation = conversations.find((conversation) => conversationIdOf(conversation) === selectedId);
     const input = { title: "New conversation", ...(currentConversation?.project_path ? { project_path: currentConversation.project_path } : {}) };
     const conversation = await api.createConversation(input);
     const createdId = conversationIdOf(conversation);
     if (!createdId) throw new ApiError("OpenCobalt created a conversation without an identifier.", { detail: conversation });
+    writeSeqRef.current.delete(createdId);
     await refreshConversations();
     setSelectedId(createdId);
-    return createdId;
+    return { conversationId: createdId, created: true };
   };
 
-  const updateControls = (patch) => setControls((current) => ({ ...current, ...patch }));
+  const persistConversationRouting = (nextControls, conversationId) => {
+    if (!conversationId) return;
+    const seq = (writeSeqRef.current.get(conversationId) || 0) + 1;
+    writeSeqRef.current.set(conversationId, seq);
+    persistQueueRef.current.enqueue(conversationId, {
+      ...routingPatchFromControls(nextControls),
+      write_seq: seq,
+    }).then((routing) => {
+      if (!routing || selectedIdRef.current !== conversationId) return;
+      setRoutingAvailability(routing);
+      setNotice((current) => (current?.source === "routing" ? null : current));
+    }).catch((error) => {
+      if (selectedIdRef.current !== conversationId) return;
+      setNotice({
+        tone: "error",
+        source: "routing",
+        text: error?.message || "Conversation routing was not saved. Showing the stored preset.",
+      });
+      hydratingRef.current = true;
+      api.conversationRouting(conversationId)
+        .then((routing) => {
+          if (selectedIdRef.current !== conversationId) return;
+          setControls(controlsFromRouting(routing, settingsRef.current));
+          setRoutingAvailability(routing);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          hydratingRef.current = false;
+        });
+    });
+  };
+
+  const updateControls = (patch) => {
+    const conversationId = selectedIdRef.current;
+    const routingChanged = Object.keys(patch).some((key) => (
+      key === "automatic" || key === "providerId" || key === "modelId"
+      || key === "reasoningEffort" || key === "allowFallback" || key === "privacy" || key === "localOnly"
+    ));
+    setControls((current) => {
+      const next = { ...current, ...patch };
+      if (routingChanged && conversationId && !hydratingRef.current) {
+        persistConversationRouting(next, conversationId);
+      }
+      return next;
+    });
+  };
 
   const send = async (content) => {
     if (interactionBusy) return;
@@ -579,7 +758,9 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     setMessageState({ loading: false, error: null });
     executionRef.current = null;
     try {
-      const conversationId = await ensureConversation();
+      const ensured = await ensureConversation();
+      const conversationId = ensured.conversationId;
+      const sendControls = ensured.created ? defaultComposerControls(settings) : controls;
       const localUser = { message_id: `local-user-${Date.now()}`, conversation_id: conversationId, role: "user", content, status: "complete", created_at: new Date().toISOString() };
       const localAssistant = { message_id: "local-stream", conversation_id: conversationId, role: "assistant", content: "", status: "streaming", created_at: new Date().toISOString() };
       setMessages((current) => [...current, localUser, localAssistant]);
@@ -667,14 +848,14 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       const result = await streamChat({
         conversation_id: conversationId,
         message: content,
-        persona_id: controls.personaId,
-        cognitive_policy: controls.cognitivePolicy,
-        reasoning_effort: controls.reasoningEffort,
-        privacy_mode: controls.privacy,
-        local_only: controls.localOnly,
-        provider_override: controls.automatic ? undefined : controls.providerId,
-        model_override: controls.automatic ? undefined : controls.modelId || undefined,
-        allow_fallback: controls.allowFallback,
+        persona_id: sendControls.personaId,
+        cognitive_policy: sendControls.cognitivePolicy,
+        reasoning_effort: sendControls.reasoningEffort,
+        privacy_mode: sendControls.privacy,
+        local_only: sendControls.localOnly,
+        provider_override: sendControls.automatic ? undefined : sendControls.providerId,
+        model_override: sendControls.automatic ? undefined : sendControls.modelId || undefined,
+        allow_fallback: sendControls.allowFallback,
         attachment_ids: attachments.map((item) => item.attachment_id).filter(Boolean),
       }, handleEvent, controller.signal);
 
@@ -828,7 +1009,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     if (!file || interactionBusy) return;
     setAttachmentError("");
     try {
-      const conversationId = await ensureConversation();
+      const { conversationId } = await ensureConversation();
       const record = await api.uploadAttachment(conversationId, file);
       setAttachments((current) => [...current.filter((item) => item.attachment_id !== record.attachment_id), record]);
     } catch (error) {
@@ -884,9 +1065,9 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       : `OpenCobalt is ${streamRoute?.metadata?.lifecycle?.phase ? label(streamRoute.metadata.lifecycle.phase) : "working on"} the current request${executionRef.current ? ` with execution ${executionRef.current}` : ""}.`
     : notice?.text || "";
 
-  return <div className={`chat-layout ${railCollapsed ? "rail-collapsed" : ""}`}>
-    {conversationOpen && <button type="button" className="drawer-backdrop conversation-backdrop" aria-label="Close conversations" onClick={closeConversations} />}
-    <ConversationRail conversations={conversations} selectedId={selectedId} onSelect={setSelectedId} onCreate={createConversation} isCreating={creating} disabled={interactionBusy} mobileOpen={conversationOpen} onClose={closeConversations} />
+  return <div className={`chat-layout ${railCollapsed ? "rail-collapsed" : ""} ${isNarrow && conversationOpen ? "rail-drawer-open" : ""}`}>
+    {isNarrow && conversationOpen && <button type="button" className="drawer-backdrop conversation-backdrop" aria-label="Close conversations" onClick={() => setConversationOpen(false)} />}
+    <ConversationRail conversations={conversations} selectedId={selectedId} onSelect={selectConversation} onCreate={createConversation} isCreating={creating} disabled={interactionBusy} mobileOpen={isNarrow && conversationOpen} onClose={closeConversations} />
     <section className="chat-main" aria-labelledby="chat-title">
       <header className="chat-header">
         <div className="chat-heading"><IconButton className="conversation-open" label="Open conversations" aria-expanded={!railCollapsed || conversationOpen} aria-controls="conversation-navigation" onClick={openConversations}><MessageSquareText size={17} /></IconButton><div><h1 id="chat-title">{selected?.title || "New conversation"}</h1><p className="chat-status">{activePersona?.name || activePersona?.display_name || controls.personaId || "persona"} · {routeHint} · {statusHint}</p>{selected?.project_path ? <p className="project-path" title={selected.project_path}>{selected.project_path}</p> : null}</div></div>
@@ -916,7 +1097,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       </div>
       <div className="chat-live" aria-live="polite" aria-atomic="true">{liveStatus}</div>
       {notice && <div className={`stream-notice ${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}>{notice.text}</div>}
-      <Composer controls={controls} personas={personas} providers={providers} models={modelCatalog} modelError={modelError} onChange={updateControls} onSend={send} busy={interactionBusy} cancelling={cancelling} onCancel={cancel} attachments={attachments} onAttach={attachFile} onRemoveAttachment={removeAttachment} attachmentError={attachmentError} executableAvailable={executableAvailable} />
+      <Composer controls={controls} personas={personas} providers={providers} models={modelCatalog} modelError={modelError} onChange={updateControls} onSend={send} busy={interactionBusy} cancelling={cancelling} onCancel={cancel} attachments={attachments} onAttach={attachFile} onRemoveAttachment={removeAttachment} attachmentError={attachmentError} executableAvailable={executableAvailable} routingAvailability={routingAvailability} />
     </section>
   </div>;
 }
