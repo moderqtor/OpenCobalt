@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -849,32 +850,94 @@ class PersonalAIStore:
             )
         return conversation
 
+    def _mutate_conversation_metadata(
+        self,
+        conversation_id: str,
+        mutator: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Read-modify-write conversation metadata in one reserved transaction."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT metadata_json FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(conversation_id)
+            current = _load(row["metadata_json"], {})
+            if not isinstance(current, dict):
+                current = {}
+            updated = mutator(dict(current))
+            if not isinstance(updated, dict):
+                raise TypeError("conversation metadata mutator must return a dict")
+            conn.execute(
+                "UPDATE conversations SET metadata_json = ?, updated_at = ? "
+                "WHERE conversation_id = ?",
+                (
+                    _dump(updated),
+                    _iso(datetime.now(tz=timezone.utc)),
+                    conversation_id,
+                ),
+            )
+            return updated
+
     def update_conversation_metadata(
         self, conversation_id: str, metadata: dict[str, Any]
     ) -> None:
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "UPDATE conversations SET metadata_json = ?, updated_at = ? "
-                "WHERE conversation_id = ?",
-                (_dump(metadata), _iso(datetime.now(tz=timezone.utc)), conversation_id),
-            )
-            if cursor.rowcount == 0:
-                raise KeyError(conversation_id)
+        self._mutate_conversation_metadata(conversation_id, lambda _current: dict(metadata))
+
+    def merge_conversation_metadata(
+        self, conversation_id: str, patch: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Merge keys into live metadata without replacing unrelated keys."""
+
+        def mutator(current: dict[str, Any]) -> dict[str, Any]:
+            merged = dict(current)
+            merged.update(patch)
+            return merged
+
+        return self._mutate_conversation_metadata(conversation_id, mutator)
 
     def save_conversation_routing(self, conversation_id: str, routing: ConversationRoutingSettings) -> Conversation:
         from .conversation_routing import merge_routing_metadata
 
-        conversation = self.get_conversation(conversation_id)
-        if conversation is None:
-            raise KeyError(conversation_id)
-        self.update_conversation_metadata(
+        self._mutate_conversation_metadata(
             conversation_id,
-            merge_routing_metadata(conversation.metadata, routing),
+            lambda current: merge_routing_metadata(current, routing),
         )
         updated = self.get_conversation(conversation_id)
         if updated is None:
             raise KeyError(conversation_id)
         return updated
+
+    def apply_conversation_routing_update(
+        self,
+        conversation_id: str,
+        update: Any,
+        settings: AISettings | None = None,
+    ) -> ConversationRoutingSettings:
+        from .conversation_routing import (
+            apply_routing_update,
+            merge_routing_metadata,
+            parse_conversation_routing,
+        )
+
+        resolved = settings or self.get_settings()
+        holder: dict[str, ConversationRoutingSettings] = {}
+
+        def mutator(current: dict[str, Any]) -> dict[str, Any]:
+            parsed = parse_conversation_routing(current, resolved)
+            routing = apply_routing_update(parsed, update)
+            holder["routing"] = routing
+            if (
+                getattr(update, "write_seq", None) is not None
+                and routing.write_seq != update.write_seq
+            ):
+                return current
+            return merge_routing_metadata(current, routing)
+
+        self._mutate_conversation_metadata(conversation_id, mutator)
+        return holder["routing"]
 
     def delete_conversation(self, conversation_id: str) -> bool:
         with self._connect() as conn:

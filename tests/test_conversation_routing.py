@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -21,6 +22,29 @@ from tests.test_personal_ai_router import _cheap_local, _request, _strong_cloud
 
 def _store(tmp_path: Path) -> PersonalAIStore:
     return PersonalAIStore(tmp_path / "ledger.db")
+
+
+def test_apply_routing_update_ignores_stale_write_seq():
+    current = apply_routing_update(
+        default_conversation_routing(),
+        ConversationRoutingUpdate(
+            mode="manual",
+            provider_id="mock",
+            model_id="mock-v1",
+            write_seq=3,
+        ),
+    )
+    ignored = apply_routing_update(
+        current,
+        ConversationRoutingUpdate(
+            mode="manual",
+            provider_id="antigravity",
+            model_id="claude-sonnet-4-6",
+            write_seq=1,
+        ),
+    )
+    assert ignored.manual_preset.provider_id == "mock"
+    assert ignored.write_seq == 3
 
 
 def test_new_conversation_defaults_to_automatic_without_inheriting_manual_state(tmp_path):
@@ -308,8 +332,239 @@ def test_api_presets_are_isolated_across_reload_and_new_chats(tmp_path, monkeypa
         assert routing_a["privacy_mode"] == "private"
         assert routing_b["mode"] == "automatic"
         assert routing_b["provider_id"] is None
+    assert routing_c["mode"] == "automatic"
+    assert routing_c["provider_id"] is None
+
+
+def test_ui_create_while_manual_chat_is_selected_keeps_settings_defaults(tmp_path, monkeypatch):
+    """ChatPage.createConversation POSTs a new row and must not PATCH active controls onto it."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENCOBALT_ENABLE_DEVELOPMENT_MOCK", "1")
+    with TestClient(app) as client:
+        conversation_a = client.post("/api/v1/conversations", json={"title": "A"}).json()
+        patched = client.patch(
+            f"/api/v1/conversations/{conversation_a['conversation_id']}/routing",
+            json={
+                "mode": "manual",
+                "provider_id": "antigravity",
+                "model_id": "claude-sonnet-4-6",
+                "reasoning_effort": "high",
+                "allow_fallback": True,
+                "privacy_mode": "private",
+                "local_only": False,
+            },
+        )
+        assert patched.status_code == 200
+        created = client.post("/api/v1/conversations", json={"title": "C"}).json()
+        routing_c = client.get(
+            f"/api/v1/conversations/{created['conversation_id']}/routing"
+        ).json()
+        stored = client.get(f"/api/v1/conversations/{created['conversation_id']}").json()
         assert routing_c["mode"] == "automatic"
         assert routing_c["provider_id"] is None
+        assert routing_c["model_id"] is None
+        assert routing_c["reasoning_effort"] == "medium"
+        assert routing_c["allow_fallback"] is False
+        assert routing_c["privacy_mode"] == "standard"
+        assert routing_c["local_only"] is False
+        assert stored["metadata"]["routing"]["mode"] == "automatic"
+        assert stored["metadata"]["routing"]["manual_preset"]["provider_id"] is None
+        routing_a = client.get(
+            f"/api/v1/conversations/{conversation_a['conversation_id']}/routing"
+        ).json()
+        assert routing_a["mode"] == "manual"
+        assert routing_a["provider_id"] == "antigravity"
+        assert routing_a["model_id"] == "claude-sonnet-4-6"
+
+
+def test_stale_write_seq_does_not_overwrite_later_intent(tmp_path):
+    store = _store(tmp_path)
+    conversation = store.create_conversation(title="Queued")
+    first = store.apply_conversation_routing_update(
+        conversation.conversation_id,
+        ConversationRoutingUpdate(
+            mode="manual",
+            provider_id="mock",
+            model_id="mock-v1",
+            write_seq=1,
+        ),
+    )
+    later = store.apply_conversation_routing_update(
+        conversation.conversation_id,
+        ConversationRoutingUpdate(mode="automatic", write_seq=5),
+    )
+    stale = store.apply_conversation_routing_update(
+        conversation.conversation_id,
+        ConversationRoutingUpdate(
+            mode="manual",
+            provider_id="antigravity",
+            model_id="claude-sonnet-4-6",
+            write_seq=2,
+        ),
+    )
+    assert first.write_seq == 1
+    assert later.mode == "automatic"
+    assert later.write_seq == 5
+    assert later.manual_preset.provider_id == "mock"
+    assert stale.mode == "automatic"
+    assert stale.write_seq == 5
+    assert stale.manual_preset.provider_id == "mock"
+    stored = parse_conversation_routing(
+        store.get_conversation(conversation.conversation_id).metadata,
+        store.get_settings(),
+    )
+    assert stored.mode == "automatic"
+    assert stored.write_seq == 5
+    assert stored.manual_preset.model_id == "mock-v1"
+
+
+def test_delayed_stale_routing_write_keeps_last_user_action(tmp_path):
+    store = _store(tmp_path)
+    conversation = store.create_conversation(title="Delayed")
+    started = threading.Event()
+    release = threading.Event()
+    errors: list[BaseException] = []
+
+    def delayed_stale() -> None:
+        started.set()
+        if not release.wait(timeout=5):
+            errors.append(TimeoutError("stale writer was not released"))
+            return
+        try:
+            store.apply_conversation_routing_update(
+                conversation.conversation_id,
+                ConversationRoutingUpdate(
+                    mode="manual",
+                    provider_id="antigravity",
+                    model_id="claude-sonnet-4-6",
+                    write_seq=1,
+                ),
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=delayed_stale)
+    worker.start()
+    assert started.wait(timeout=5)
+    store.apply_conversation_routing_update(
+        conversation.conversation_id,
+        ConversationRoutingUpdate(
+            mode="manual",
+            provider_id="mock",
+            model_id="mock-v1",
+            write_seq=2,
+        ),
+    )
+    release.set()
+    worker.join(timeout=5)
+    assert errors == []
+    stored = parse_conversation_routing(
+        store.get_conversation(conversation.conversation_id).metadata,
+        store.get_settings(),
+    )
+    assert stored.mode == "manual"
+    assert stored.manual_preset.provider_id == "mock"
+    assert stored.manual_preset.model_id == "mock-v1"
+    assert stored.write_seq == 2
+
+
+def test_routing_update_preserves_unrelated_metadata_key(tmp_path):
+    store = _store(tmp_path)
+    conversation = store.create_conversation(
+        title="ACP",
+        metadata={"acp_session_id": "sess-keep"},
+    )
+    store.apply_conversation_routing_update(
+        conversation.conversation_id,
+        ConversationRoutingUpdate(mode="manual", provider_id="mock"),
+    )
+    updated = store.get_conversation(conversation.conversation_id)
+    assert updated is not None
+    assert updated.metadata["acp_session_id"] == "sess-keep"
+    assert updated.metadata["routing"]["mode"] == "manual"
+
+
+def test_concurrent_routing_and_acp_metadata_writers_do_not_lose_keys(tmp_path):
+    store = _store(tmp_path)
+    conversation = store.create_conversation(
+        title="Concurrent",
+        metadata={"acp_session_id": "sess-0"},
+    )
+    start = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def write_routing() -> None:
+        try:
+            start.wait(timeout=5)
+            for index in range(20):
+                store.apply_conversation_routing_update(
+                    conversation.conversation_id,
+                    ConversationRoutingUpdate(
+                        mode="manual",
+                        provider_id="mock",
+                        model_id="mock-v1",
+                        write_seq=index + 1,
+                    ),
+                )
+        except BaseException as exc:
+            errors.append(exc)
+
+    def write_session() -> None:
+        try:
+            start.wait(timeout=5)
+            for index in range(20):
+                store.merge_conversation_metadata(
+                    conversation.conversation_id,
+                    {"acp_session_id": f"sess-{index}"},
+                )
+        except BaseException as exc:
+            errors.append(exc)
+
+    routing_worker = threading.Thread(target=write_routing)
+    session_worker = threading.Thread(target=write_session)
+    routing_worker.start()
+    session_worker.start()
+    routing_worker.join(timeout=10)
+    session_worker.join(timeout=10)
+    assert errors == []
+    metadata = store.get_conversation(conversation.conversation_id).metadata
+    assert str(metadata.get("acp_session_id", "")).startswith("sess-")
+    assert metadata.get("routing", {}).get("mode") == "manual"
+    assert metadata["routing"]["manual_preset"]["provider_id"] == "mock"
+
+
+def test_out_of_order_api_patches_keep_highest_write_seq(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENCOBALT_ENABLE_DEVELOPMENT_MOCK", "1")
+    with TestClient(app) as client:
+        created = client.post("/api/v1/conversations", json={"title": "Seq"}).json()
+        conversation_id = created["conversation_id"]
+        first = client.patch(
+            f"/api/v1/conversations/{conversation_id}/routing",
+            json={"mode": "manual", "provider_id": "mock", "model_id": "mock-v1", "write_seq": 1},
+        )
+        later = client.patch(
+            f"/api/v1/conversations/{conversation_id}/routing",
+            json={"mode": "automatic", "write_seq": 4},
+        )
+        stale = client.patch(
+            f"/api/v1/conversations/{conversation_id}/routing",
+            json={
+                "mode": "manual",
+                "provider_id": "antigravity",
+                "model_id": "claude-sonnet-4-6",
+                "write_seq": 2,
+            },
+        )
+        assert first.status_code == 200
+        assert later.status_code == 200
+        assert stale.status_code == 200
+        body = client.get(f"/api/v1/conversations/{conversation_id}/routing").json()
+        stored = client.get(f"/api/v1/conversations/{conversation_id}").json()
+        assert body["mode"] == "automatic"
+        assert body["provider_id"] == "mock"
+        assert stored["metadata"]["routing"]["write_seq"] == 4
+        assert stored["metadata"]["routing"]["manual_preset"]["model_id"] == "mock-v1"
 
 
 def test_unavailable_mock_model_is_preserved_when_catalog_lacks_it(tmp_path, monkeypatch):

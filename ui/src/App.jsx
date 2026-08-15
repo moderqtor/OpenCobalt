@@ -6,6 +6,7 @@ import {
 import { ApiError, api, eventPayload, eventType, streamChat } from "./api";
 import Markdown from "./Markdown";
 import SkillImport from "./SkillImport";
+import { createPerConversationWriteQueue } from "./routingPersist";
 import {
   ConversationRail, EmptyState, ErrorState, IconButton, Loading, Navigation,
   PageTitle, Pill, RouteInspector, RouteSpine,
@@ -460,12 +461,21 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const selectedIdRef = useRef(selectedId);
   const hydratingRef = useRef(false);
   const controlsConversationRef = useRef("");
+  const settingsRef = useRef(settings);
+  const writeSeqRef = useRef(new Map());
+  const persistQueueRef = useRef(null);
   const scrollRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
   const isNarrow = useViewportFlag("(max-width: 760px)");
   const interactionBusy = busy || cancelling;
   const [controls, setControls] = useState(() => defaultComposerControls(settings));
   selectedIdRef.current = selectedId;
+  settingsRef.current = settings;
+  if (persistQueueRef.current == null) {
+    persistQueueRef.current = createPerConversationWriteQueue({
+      write: (conversationId, payload) => api.updateConversationRouting(conversationId, payload),
+    });
+  }
   const closeConversations = useCallback(() => {
     setConversationOpen(false);
     if (!isNarrow) setRailCollapsed(true);
@@ -660,6 +670,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       const conversation = await api.createConversation({ title: "New conversation", ...input });
       const createdId = conversationIdOf(conversation);
       if (!createdId) throw new ApiError("OpenCobalt created a conversation without an identifier.", { detail: conversation });
+      writeSeqRef.current.delete(createdId);
       await refreshConversations();
       setSelectedId(createdId);
       setConversationOpen(false);
@@ -673,26 +684,50 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   };
 
   const ensureConversation = async () => {
-    if (selectedId && conversations.some((conversation) => conversationIdOf(conversation) === selectedId)) return selectedId;
+    if (selectedId && conversations.some((conversation) => conversationIdOf(conversation) === selectedId)) {
+      return { conversationId: selectedId, created: false };
+    }
     const currentConversation = conversations.find((conversation) => conversationIdOf(conversation) === selectedId);
     const input = { title: "New conversation", ...(currentConversation?.project_path ? { project_path: currentConversation.project_path } : {}) };
     const conversation = await api.createConversation(input);
     const createdId = conversationIdOf(conversation);
     if (!createdId) throw new ApiError("OpenCobalt created a conversation without an identifier.", { detail: conversation });
-    await api.updateConversationRouting(createdId, routingPatchFromControls(controls));
+    writeSeqRef.current.delete(createdId);
     await refreshConversations();
     setSelectedId(createdId);
-    return createdId;
+    return { conversationId: createdId, created: true };
   };
 
   const persistConversationRouting = (nextControls, conversationId) => {
     if (!conversationId) return;
-    api.updateConversationRouting(conversationId, routingPatchFromControls(nextControls))
-      .then((routing) => {
-        if (selectedIdRef.current !== conversationId) return;
-        setRoutingAvailability(routing);
-      })
-      .catch(() => undefined);
+    const seq = (writeSeqRef.current.get(conversationId) || 0) + 1;
+    writeSeqRef.current.set(conversationId, seq);
+    persistQueueRef.current.enqueue(conversationId, {
+      ...routingPatchFromControls(nextControls),
+      write_seq: seq,
+    }).then((routing) => {
+      if (!routing || selectedIdRef.current !== conversationId) return;
+      setRoutingAvailability(routing);
+      setNotice((current) => (current?.source === "routing" ? null : current));
+    }).catch((error) => {
+      if (selectedIdRef.current !== conversationId) return;
+      setNotice({
+        tone: "error",
+        source: "routing",
+        text: error?.message || "Conversation routing was not saved. Showing the stored preset.",
+      });
+      hydratingRef.current = true;
+      api.conversationRouting(conversationId)
+        .then((routing) => {
+          if (selectedIdRef.current !== conversationId) return;
+          setControls(controlsFromRouting(routing, settingsRef.current));
+          setRoutingAvailability(routing);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          hydratingRef.current = false;
+        });
+    });
   };
 
   const updateControls = (patch) => {
@@ -723,7 +758,9 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     setMessageState({ loading: false, error: null });
     executionRef.current = null;
     try {
-      const conversationId = await ensureConversation();
+      const ensured = await ensureConversation();
+      const conversationId = ensured.conversationId;
+      const sendControls = ensured.created ? defaultComposerControls(settings) : controls;
       const localUser = { message_id: `local-user-${Date.now()}`, conversation_id: conversationId, role: "user", content, status: "complete", created_at: new Date().toISOString() };
       const localAssistant = { message_id: "local-stream", conversation_id: conversationId, role: "assistant", content: "", status: "streaming", created_at: new Date().toISOString() };
       setMessages((current) => [...current, localUser, localAssistant]);
@@ -811,14 +848,14 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       const result = await streamChat({
         conversation_id: conversationId,
         message: content,
-        persona_id: controls.personaId,
-        cognitive_policy: controls.cognitivePolicy,
-        reasoning_effort: controls.reasoningEffort,
-        privacy_mode: controls.privacy,
-        local_only: controls.localOnly,
-        provider_override: controls.automatic ? undefined : controls.providerId,
-        model_override: controls.automatic ? undefined : controls.modelId || undefined,
-        allow_fallback: controls.allowFallback,
+        persona_id: sendControls.personaId,
+        cognitive_policy: sendControls.cognitivePolicy,
+        reasoning_effort: sendControls.reasoningEffort,
+        privacy_mode: sendControls.privacy,
+        local_only: sendControls.localOnly,
+        provider_override: sendControls.automatic ? undefined : sendControls.providerId,
+        model_override: sendControls.automatic ? undefined : sendControls.modelId || undefined,
+        allow_fallback: sendControls.allowFallback,
         attachment_ids: attachments.map((item) => item.attachment_id).filter(Boolean),
       }, handleEvent, controller.signal);
 
@@ -972,7 +1009,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     if (!file || interactionBusy) return;
     setAttachmentError("");
     try {
-      const conversationId = await ensureConversation();
+      const { conversationId } = await ensureConversation();
       const record = await api.uploadAttachment(conversationId, file);
       setAttachments((current) => [...current.filter((item) => item.attachment_id !== record.attachment_id), record]);
     } catch (error) {

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .models import (
     AISettings,
@@ -49,6 +49,7 @@ class ConversationRoutingUpdate(BaseModel):
     allow_fallback: bool | None = None
     privacy_mode: Literal["standard", "private", "sensitive"] | None = None
     local_only: bool | None = None
+    write_seq: int | None = Field(default=None, ge=1)
 
 
 def default_conversation_routing(settings: AISettings | None = None) -> ConversationRoutingSettings:
@@ -96,8 +97,17 @@ def apply_routing_update(
     current: ConversationRoutingSettings,
     update: ConversationRoutingUpdate,
 ) -> ConversationRoutingSettings:
-    """Apply a partial patch. Automatic mode keeps the last manual preset."""
+    """Apply a partial patch. Automatic mode keeps the last manual preset.
+
+    Optional write_seq ignores an older in-flight patch so last user intent wins.
+    """
     provided = update.model_fields_set
+    if "write_seq" in provided and update.write_seq is not None:
+        if update.write_seq <= current.write_seq:
+            return current
+        next_seq = update.write_seq
+    else:
+        next_seq = current.write_seq
     mode = update.mode if "mode" in provided and update.mode is not None else current.mode
     preset = current.manual_preset
     if "provider_id" in provided:
@@ -131,6 +141,7 @@ def apply_routing_update(
             if "local_only" in provided and update.local_only is not None
             else current.local_only
         ),
+        write_seq=next_seq,
     )
 
 

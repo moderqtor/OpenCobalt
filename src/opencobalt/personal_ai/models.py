@@ -67,6 +67,7 @@ class ConversationRoutingSettings(BaseModel):
     allow_fallback: bool = False
     privacy_mode: Literal["standard", "private", "sensitive"] = "standard"
     local_only: bool = False
+    write_seq: int = Field(default=0, ge=0)
 
 
 class Conversation(BaseModel):

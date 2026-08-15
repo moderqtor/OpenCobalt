@@ -206,12 +206,11 @@ class ChatService:
     def update_conversation_routing(
         self, conversation_id: str, update: ConversationRoutingUpdate
     ) -> ConversationRoutingSettings:
-        from .conversation_routing import apply_routing_update
-
-        current = self.conversation_routing(conversation_id)
-        routing = apply_routing_update(current, update)
-        self.store.save_conversation_routing(conversation_id, routing)
-        return routing
+        return self.store.apply_conversation_routing_update(
+            conversation_id,
+            update,
+            self.store.get_settings(),
+        )
 
     def stream_request(self, request: ChatRequest) -> Iterator[ChatLifecycleEvent]:
         """Execute the complete durable lifecycle and yield normalized events."""
@@ -1297,12 +1296,9 @@ class ChatService:
             verification=verification,
         )
         if captured_session_id:
-            conversation.metadata = {
-                **conversation.metadata,
-                "acp_session_id": captured_session_id,
-            }
-            self.store.update_conversation_metadata(
-                conversation.conversation_id, conversation.metadata
+            conversation.metadata = self.store.merge_conversation_metadata(
+                conversation.conversation_id,
+                {"acp_session_id": captured_session_id},
             )
         coding_id = route.metadata.get("coding_mission_id")
         if coding_id:
