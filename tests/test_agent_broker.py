@@ -7,6 +7,7 @@ import pytest
 from opencobalt.agent_broker.broker import AgentBroker, BrokerExecution
 from opencobalt.agent_broker.codex_adapter import CodexSdkBrokerAdapter
 from opencobalt.agent_broker.store import AgentBrokerStore
+from opencobalt.agent_broker.worker import _install_decline_handler
 
 
 class FakeRunner:
@@ -155,3 +156,32 @@ def test_codex_adapter_builds_bounded_worker_command(monkeypatch) -> None:
     assert command[command.index("--model") + 1] == "gpt-test"
     assert command[-2:] == ["--prompt", "fix the tests"]
     assert not any("dangerously" in part for part in command)
+
+
+def test_worker_installs_explicit_decline_handler() -> None:
+    class Client:
+        _approval_handler = None
+
+    class Codex:
+        _client = Client()
+
+    codex = Codex()
+    _install_decline_handler(codex)
+
+    assert codex._client._approval_handler("item/commandExecution/requestApproval", {}) == {
+        "decision": "decline"
+    }
+    assert codex._client._approval_handler("item/fileChange/requestApproval", {}) == {
+        "decision": "decline"
+    }
+    assert codex._client._approval_handler("item/permissions/requestApproval", {}) == {
+        "decision": "decline"
+    }
+
+
+def test_worker_fails_closed_if_sdk_handler_slot_changes() -> None:
+    class Codex:
+        _client = object()
+
+    with pytest.raises(RuntimeError, match="approval boundary"):
+        _install_decline_handler(Codex())
