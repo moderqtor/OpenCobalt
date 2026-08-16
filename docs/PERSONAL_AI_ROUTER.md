@@ -1,9 +1,9 @@
 # Personal AI workspace
 
-The local React and FastAPI workspace is the primary OpenCobalt surface. Give
-OpenCobalt a goal in Chat. Routing, provider selection, research, coding
-staging, memory, and receipts happen behind that interaction and remain
-inspectable.
+The local React and FastAPI workspace is an interactive user surface and
+inspection environment for OpenCobalt. State intent in Chat; intent compilation,
+WorkGraph planning, provider allocation, research, coding staging, memory, and
+receipts operate behind that interaction and remain inspectable.
 
 This is not a hosted account, credential broker, or unrestricted agent
 runtime. Product identity lives in [OPENCOBALT.md](../OPENCOBALT.md). Routing

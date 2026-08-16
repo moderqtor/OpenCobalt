@@ -4,22 +4,31 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-OpenCobalt is a personal control layer for allocating intelligence and
-capability.
+OpenCobalt is a personal autonomous intelligence fabric.
 
-AI work is currently split across models, local runtimes, cloud runtimes,
-coding agents, research tools, skills, context, and memory. People usually
-make those orchestration decisions by hand. OpenCobalt takes a goal and handles
-routing, context, memory, research, coding execution policy, approvals, and
-durable state behind a simple surface.
+The user provides intent, not workflow. OpenCobalt translates sparse or
+detailed human intent into an adaptive program of work across available
+intelligence, agents, tools, applications, runtimes, and compute.
 
-It is inspectable, not magical. Route scores, provider evidence, Missions,
-approvals, and receipts stay visible when you want them. It is not a generic
-chatbot, not a thin API wrapper, and not a coding-only or research-only app.
+## North Star
+
+OpenCobalt compiles human intent into an adaptive `WorkGraph` of reasoning,
+ideation, criticism, experiments, implementation, verification, and revision.
+It coordinates heterogeneous systems (Codex, Claude, Gemini, Antigravity,
+Cursor, Stitch, GitHub, Vercel, browsers, local models) while maintaining
+durable state, receipts, and authority boundaries across provider sessions.
+
+The primary user interaction is simple:
+
+```
+Tell OpenCobalt what you want.
+```
+
+The complexity belongs behind that interaction.
 
 ## What works today
 
-The local web workspace is the primary surface:
+The local web workspace and CLI are the operational surfaces:
 
 ```bash
 opencobalt ui
@@ -27,7 +36,7 @@ opencobalt ui
 
 That starts a FastAPI backend on `localhost:8000` and a React workspace on
 `localhost:5173`. Chat is the default page. Give OpenCobalt a goal; it records
-the conversation, selects a route, and keeps the result in local SQLite.
+the conversation, routes work through capability adapters, and keeps state in local SQLite.
 
 | Capability | Status |
 |---|---|
@@ -41,6 +50,7 @@ the conversation, selects a route, and keeps the result in local SQLite.
 | Local-only request constraint | Implemented |
 | Approvals for provider tool use and coding promotion | Implemented |
 | CLI routing, receipts, missions, and `auto` planning | Implemented |
+| Autonomous Creation v0 | Under active implementation (IntentContract + WorkGraph + supervisor) |
 | Tauri desktop wrapper | Usable via `opencobalt desktop` if Cargo/Tauri tooling is installed. The web UI is canonical. |
 
 Claude Code and Codex are real execution adapters, but ordinary Chat currently
@@ -53,16 +63,12 @@ workspace; it is not OS-level sandboxing.
 
 ## Distinctive pieces
 
-- Capability roles come before vendor names: cheap local reasoning, fast
-  general reasoning, strong reasoning, research, coding analysis, coding
-  execution.
-- Personas are interaction policies, not provider replicas.
-- Missions persist independently of any provider session.
-- Research retrieves public HTTPS sources, user documents, and stores evidence locally.
-- Coding-agent work produces a ChangeSet and requires explicit promotion into
-  the authoritative repository.
-- Providers are interchangeable. OpenCobalt owns state, routing, policy, and
-  receipts.
+- **Intent Compilation**: Requests compile into structured `IntentContract` records distinguishing hard constraints from inferred creative dimensions.
+- **WorkGraph Representation**: Work nodes represent what needs to become true, not vendor calls.
+- **Capability Roles**: Capabilities precede vendor names: cheap local reasoning, fast general reasoning, strong reasoning, research, coding analysis, coding execution.
+- **Durable Missions**: Missions persist independently of any provider session.
+- **Staging & Containment**: Coding-agent work produces a ChangeSet requiring explicit promotion into the authoritative repository.
+- **Interchangeable Providers**: OpenCobalt owns state, routing, policy, and receipts.
 
 ## Install and start
 
@@ -87,7 +93,7 @@ it for local-only Chat and some research roles.
 ## First use
 
 1. Open Chat and start typing, or click New.
-2. Write the goal. Automatic routing is on unless you choose Manual.
+2. Write what you want. Automatic routing is on unless you choose Manual.
 3. Open Controls only for persona, approach, privacy, local-only, a
    manual provider, or an optional repository path. Those draft choices
    apply to the first send. A repository can be attached before any
@@ -114,7 +120,7 @@ OpenCobalt is an active local project, not a hosted product.
   commercial deep-research crawler.
 - Desktop packaging still requires development tooling.
 - The CLI has additional subsystems (opportunity engine, evolve, daily
-  operator, telemetry) that are real but are not the primary product story.
+  operator, telemetry) that are real but are supporting substrate.
 
 ## Documentation
 

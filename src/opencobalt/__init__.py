@@ -1,3 +1,3 @@
-"""OpenCobalt: personal control layer for allocating intelligence and capability."""
+"""OpenCobalt: personal autonomous intelligence fabric."""
 
 __version__ = "0.1.0"

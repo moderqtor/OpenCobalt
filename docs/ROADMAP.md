@@ -1,51 +1,54 @@
 # Roadmap
 
-Near-term sequence, not an aspirational backlog. Older phase history lives in
-git and [history/](history/README.md).
+Near-term sequence toward the Autonomous Intelligence Fabric.
+Historical phase logs live in git and [history/](history/README.md).
 
-## Now
+---
 
-1. Use the product. Dogfood Chat, Research Missions, and Cursor coding
-   Missions on real work.
-2. Improve research source quality and citation usefulness on real questions.
-   Retrieval now covers HTML, PDF, PubMed, DOI/Crossref, government hosts,
-   and user uploads; remaining work is evidence ranking and live-provider
-   synthesis quality.
-3. Keep coding staging and promotion honest: repository containment is
-   implemented; host sandboxing is not.
+## 1. Autonomous Creation v0 (Active)
 
-## Next
+1. **Intent Compilation**:
+   - `IntentContract` model and parser distinguishing literal constraints, preferences, inferred objectives, open creative dimensions, quality criteria, authority, and budget.
+2. **Adaptive WorkGraph**:
+   - Provider-neutral work nodes (divergent exploration, novelty attack, fun critique, feasibility review, synthesis, implementation, verification).
+   - Dynamic graph execution and replanning based on intermediate evaluation.
+3. **Multi-Agent Creative Exploration & Critique**:
+   - Asynchronous subagents with distinct incentives (explorers, novelty critic, fun critic, contrarian, feasibility reviewer).
+   - Artifact handoffs and synthesis.
+4. **Long-Horizon Supervisor**:
+   - Durable execution loop with bounded iterations, wall-clock limits, and stop conditions.
+   - Resource allocation under real quota constraints (e.g. routing work to Antigravity when Codex/Cursor are exhausted).
+5. **Interactive Front Door**:
+   - CLI `opencobalt do "..." --autonomy high --budget 4h` and progress visualization.
 
-- Knowledge and reference integration only where OpenCobalt adds routing,
-  evidence, or provenance value.
-- Voice Profiles learned from user-provided writing. Not implemented today.
-- UI and desktop polish. The web UI is canonical; Tauri is a development
-  wrapper.
-- Outcome-weighted routing using recorded execution history more strongly
-  than the current bounded heuristic. Success and latency signals are now
-  recorded; user, disconnect, and shutdown cancellations are neutral.
+---
 
-## Later, if justified
+## 2. Next: Heterogeneous Composition & Multi-Hour Autonomy
 
-These are directional possibilities, not commitments:
+1. **Heterogeneous Tool & Application Composition**:
+   - Coordinated handoffs across diverse systems (Claude/Gemini reasoning, Stitch visual designs, GitHub PR integration, Vercel preview deployment, browser verification).
+2. **Longer-Horizon Durability**:
+   - State checkpoints and seamless pause/resume across multi-hour autonomous missions.
+3. **Advanced Evaluation & Verification**:
+   - Empirical experiment runners and multi-dimensional quality scoring.
 
-- Richer research retrieval and optional Zotero or linked-note sources
-- Specialist UI/design systems
-- Cursor, Codex, and Antigravity specialization where the adapter contract
-  is complete
-- Optional specialist APIs
-- Evaluation and verifier systems
-- Secure skill/plugin discovery
-- Browser or computer-use capabilities
-- Standalone desktop packaging that does not require a development toolchain
+---
 
-An integration ships only when it participates in capability discovery,
-policy, receipts, and provenance. Adding a launcher is not enough.
+## 3. Later Milestones
 
-## Not the current strategy
+1. **Learned Comparative Advantage**:
+   - Dynamic resource optimizer that learns empirical provider strengths and costs over time.
+2. **Deep Autonomous Research & Prototyping**:
+   - Autonomous exploration loops for complex scientific, technical, or creative tasks.
+3. **Autonomous Repository Evolution**:
+   - Self-improving vertical slices with automated staging, testing, and receipt verification.
 
-- Cold resume as the primary product wedge
-- Daily Operator as the product identity
-- Hosted multi-user routing
-- Enterprise governance theater
-- Collecting every adjacent tool because it can be detected on PATH
+---
+
+## 4. What OpenCobalt Is Not Optimizing For
+
+- Generic multi-model chat or prompt-comparison dashboards.
+- Cold-resume as the primary product identity.
+- Single-vendor wrapper tooling.
+- Enterprise governance and compliance theater.
+- Arbitrary MCP/tool collection without orchestration value.

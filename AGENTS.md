@@ -41,13 +41,14 @@ product direction changed.
 
 ## Product surface
 
-The ordinary user surface is Chat in the local web workspace (`opencobalt ui`).
-Give OpenCobalt a goal; routing, memory, research, coding staging, approvals,
-and receipts happen behind that interaction and remain inspectable.
+The primary user interaction is simple: tell OpenCobalt what you want.
 
-The CLI remains a full control plane, including `opencobalt auto "GOAL"` for
-plan-only orchestration. Manual commands are primitives, not the required
-front door.
+In the local web workspace (`opencobalt ui`), that is Chat. On the CLI, that is
+`opencobalt do "GOAL"` for autonomous intent execution and `opencobalt auto "GOAL"`
+for plan-only orchestration. Behind that surface, intent interpretation,
+WorkGraph generation, capability allocation, research, coding staging, approvals,
+and receipts operate autonomously and remain progressively inspectable. Manual
+commands are internal primitives, not the required front door.
 
 ## Working rules
 

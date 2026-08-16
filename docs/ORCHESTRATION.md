@@ -1,16 +1,13 @@
 # Orchestration
 
-The primary user surface is Chat in the local workspace. This document
-describes the CLI AutoOrchestrator, which remains the plan-only front door
-for shell and scripted use:
+OpenCobalt provides natural-language orchestration across CLI and web surfaces:
+- `opencobalt do "INTENT"` executes autonomous intent compilation and WorkGraph supervision.
+- `opencobalt auto "GOAL"` provides deterministic, plan-only auto orchestration for scripting and inspection.
+- The web workspace (`opencobalt ui`) provides interactive Chat and progressive disclosure.
 
-```
-opencobalt auto "GOAL"
-/auto GOAL
-```
-
-Manual commands still exist. The point of orchestration is to turn them into
-internal primitives so the user does not need to memorize the sequence.
+Manual commands still exist as internal primitives. The point of orchestration is
+to translate human intent into an adaptive program of work so the user does not
+need to manually sequence steps or prompts.
 
 ## AutoOrchestrator v1
 

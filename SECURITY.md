@@ -1,7 +1,7 @@
 # Security
 
-OpenCobalt is a single-user local control layer. It is not a multi-user
-service and does not claim complete sandboxing.
+OpenCobalt is a personal autonomous intelligence fabric running locally.
+It is not a multi-user service and does not claim complete sandboxing.
 
 ## Trust boundaries
 
