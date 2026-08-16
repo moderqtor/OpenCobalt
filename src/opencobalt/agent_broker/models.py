@@ -59,6 +59,17 @@ class AgentBrokerTurn(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class AgentRelayChannel(BaseModel):
+    """Durable cursor for one explicitly bound GitHub issue/PR relay channel."""
+
+    repository: str
+    issue_number: int = Field(gt=0)
+    allowed_author: str
+    last_seen_comment_id: int = Field(default=0, ge=0)
+    initialized_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
 class AgentRelayEvent(BaseModel):
     """One deduplicated command/result exchange on an external relay channel."""
 
