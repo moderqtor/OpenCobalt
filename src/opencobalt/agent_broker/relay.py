@@ -283,6 +283,19 @@ class GitHubAgentRelay:
             if COMMAND_MARKER not in body:
                 continue
             author = str((comment.get("user") or {}).get("login") or "")
+            if author.casefold() != self.allowed_author:
+                event = AgentRelayEvent(
+                    repository=self.repository,
+                    issue_number=self.issue_number,
+                    source_comment_id=comment_id,
+                    command_id=f"ignored-{comment_id}",
+                    author=author or "unknown",
+                    action="ignored",
+                    status="ignored",
+                )
+                self.store.save_relay_event(event)
+                ignored += 1
+                continue
             try:
                 command = parse_command_comment(body)
                 if command is None:
@@ -294,7 +307,7 @@ class GitHubAgentRelay:
                     issue_number=self.issue_number,
                     source_comment_id=comment_id,
                     command_id=command.command_id,
-                    author=author or "unknown",
+                    author=author,
                     action="invalid",
                     status="result_pending",
                     result_json={"ok": False, "error": str(exc)},
@@ -307,23 +320,40 @@ class GitHubAgentRelay:
                 processed += 1
                 continue
 
+            duplicate = self.store.get_relay_event_by_command(
+                self.repository, self.issue_number, command.command_id
+            )
+            if duplicate is not None:
+                event = AgentRelayEvent(
+                    repository=self.repository,
+                    issue_number=self.issue_number,
+                    source_comment_id=comment_id,
+                    command_id=f"duplicate-{comment_id}",
+                    author=author,
+                    action="duplicate",
+                    session_id=duplicate.session_id,
+                    status="ignored",
+                    command_json={
+                        "duplicate_command_id": command.command_id,
+                        "original_source_comment_id": duplicate.source_comment_id,
+                    },
+                )
+                self.store.save_relay_event(event)
+                ignored += 1
+                continue
+
             event = AgentRelayEvent(
                 repository=self.repository,
                 issue_number=self.issue_number,
                 source_comment_id=comment_id,
                 command_id=command.command_id,
-                author=author or "unknown",
+                author=author,
                 action=command.action,
                 session_id=command.session_id,
                 command_json=command.model_dump(mode="json", exclude_none=True),
                 status="processing",
             )
             self.store.save_relay_event(event)
-            if author.casefold() != self.allowed_author:
-                event = event.model_copy(update={"status": "ignored", "updated_at": _now()})
-                self.store.save_relay_event(event)
-                ignored += 1
-                continue
 
             result = self._dispatch(command)
             session_id = str(result.get("session_id") or command.session_id or "") or None
