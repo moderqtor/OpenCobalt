@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import typer
 
@@ -153,12 +153,25 @@ def relay_cmd(
     github_repo: str = typer.Option(..., "--github-repo", help="GitHub owner/name relay repository."),
     issue: int = typer.Option(..., "--issue", min=1, help="Issue or PR number used as the relay channel."),
     author: str = typer.Option(..., "--author", help="Only this GitHub login may issue commands."),
-    local_repo: Path = typer.Option(Path("."), "--local-repo", help="Authoritative local repository bound to start commands."),
-    execute_agent: bool = typer.Option(False, "--execute-agent", help="Allow accepted start/continue commands to invoke Codex."),
+    local_repo: Path = typer.Option(
+        Path("."),
+        "--local-repo",
+        help="Authoritative local repository bound to start commands.",
+    ),
+    execute_agent: bool = typer.Option(
+        False,
+        "--execute-agent",
+        help="Allow accepted start/continue commands to invoke Codex.",
+    ),
     allow_github_comments: bool = typer.Option(
         False,
         "--allow-github-comments",
         help="Explicitly allow relay result comments through existing gh authentication.",
+    ),
+    replay_existing: bool = typer.Option(
+        False,
+        "--replay-existing",
+        help="On first bind only, process pre-existing command comments instead of starting after them.",
     ),
     model: str | None = typer.Option(None, "--model"),
     interval: float = typer.Option(5.0, "--interval", min=1.0, max=300.0),
@@ -181,8 +194,11 @@ def relay_cmd(
             model=model,
         )
         relay.github.check_auth()
+        channel = relay.initialize_channel(replay_existing=replay_existing)
         if once:
-            _emit(relay.run_once(), json_output=json_output)
+            data = relay.run_once()
+            data["last_seen_comment_id"] = channel.last_seen_comment_id
+            _emit(data, json_output=json_output)
             return
         typer.echo(
             f"Relay active: {github_repo}#{issue} · author {author} · "
@@ -191,7 +207,12 @@ def relay_cmd(
         typer.echo(
             "Accepted commands can modify only staged workspaces. Results are posted to the configured GitHub thread. Ctrl+C stops the relay."
         )
-        relay.run_forever(interval_seconds=interval)
+        if replay_existing and channel.last_seen_comment_id == 0:
+            typer.echo("First bind will consider existing command comments because --replay-existing was set.")
+        relay.run_forever(
+            interval_seconds=interval,
+            replay_existing=replay_existing,
+        )
     except KeyboardInterrupt:
         typer.echo("Relay stopped.")
     except Exception as exc:
@@ -208,8 +229,9 @@ def command_cmd(
     if action not in {"start", "continue", "status", "stop"}:
         raise typer.BadParameter("action must be start, continue, status, or stop")
     try:
+        typed_action = cast(Literal["start", "continue", "status", "stop"], action)
         body = command_comment(
-            action=action,  # type: ignore[arg-type]
+            action=typed_action,
             prompt=prompt,
             session_id=session_id,
         )
