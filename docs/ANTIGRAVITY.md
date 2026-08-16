@@ -192,6 +192,21 @@ subagent discovery, and Antigravity's private SQLite schema remain unknown
 and are never assumed. `--dangerously-skip-permissions` is forbidden by
 default; the unsafe override warns and records a policy event.
 
+## Agent Broker integration
+
+`opencobalt-broker` supports `google-antigravity` as a first-class resumable backend:
+
+```bash
+opencobalt-broker start "inspect codebase" --repo . --runtime google-antigravity --execute
+opencobalt-broker continue AGENT_SESSION_ID "implement requested changes" --execute
+opencobalt-broker stop AGENT_SESSION_ID
+```
+
+- **Staged workspace containment**: Subprocess execution occurs inside OpenCobalt detached git worktrees under `.opencobalt/agent-broker-workspaces/`.
+- **Native conversation resumption**: Resuming a session passes `--conversation <conversation_id>` to `agy`, continuing the exact same provider context across multiple turns.
+- **Durable WorkReceipts**: Every turn records a cryptographic receipt in `.opencobalt/ledger.db`.
+- **Truthful capability reporting**: Server-side conversation archiving is reported as `status="unsupported"` rather than inventing non-existent functionality.
+
 ## Examples
 
 Route browser validation to Antigravity:

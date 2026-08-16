@@ -347,3 +347,88 @@ def test_continue_and_status_use_existing_session(tmp_path: Path) -> None:
     assert result == {"processed": 2, "ignored": 0, "posted": 2}
     assert broker.continues == [(started.session_id, "second", True)]
     assert any("receipt-continue" in body for body in github.posts)
+
+
+def test_github_comment_client_validation() -> None:
+    from opencobalt.agent_broker.relay import GitHubCommentClient
+
+    # Invalid repo format
+    with pytest.raises(ValueError, match="repository must be owner/name"):
+        GitHubCommentClient("invalid_repo_name", 1, allow_comment_writes=False)
+
+    # Invalid issue number
+    with pytest.raises(ValueError, match="issue_number must be positive"):
+        GitHubCommentClient("owner/repo", 0, allow_comment_writes=False)
+
+    # Permission check on write when not allowed
+    client_readonly = GitHubCommentClient("owner/repo", 1, allow_comment_writes=False)
+    with pytest.raises(PermissionError, match="not explicitly enabled"):
+        client_readonly.post_comment("hello")
+
+
+def test_relay_authorized_invalid_command_posts_error_comment(tmp_path: Path) -> None:
+    # Authorized author posts invalid command (missing required prompt)
+    malformed_body = f"{COMMAND_MARKER}\n```json\n{{\"command_id\": \"cmd-bad\", \"action\": \"start\"}}\n```"
+    github = FakeGitHub([comment(201, malformed_body)])
+    relay, _broker, store = make_relay(tmp_path, github)
+
+    result = relay.run_once()
+    assert result == {"processed": 1, "ignored": 0, "posted": 1}
+    assert len(github.posts) == 1
+    assert "start requires a prompt" in github.posts[0]
+    event = store.get_relay_event("moderqtor/OpenCobalt", 42, 201)
+    assert event is not None
+    assert event.action == "invalid"
+    assert event.status == "failed"
+
+
+def test_relay_dispatches_stop_and_status_list(tmp_path: Path) -> None:
+    github = FakeGitHub([])
+    relay, broker, _store = make_relay(tmp_path, github)
+    started, _ = broker.start(repository=str(tmp_path / "repo"), objective="to stop", execute=True)
+
+    github.comments.extend(
+        [
+            comment(301, command_comment(action="stop", session_id=started.session_id, command_id="cmd-stop")),
+            comment(302, command_comment(action="status", command_id="cmd-list-all")),
+        ]
+    )
+    result = relay.run_once()
+    assert result == {"processed": 2, "ignored": 0, "posted": 2}
+    assert started.session_id in github.posts[0]
+    assert "stopped" in github.posts[0]
+    assert "sessions" in github.posts[1]
+
+
+def test_relay_public_response_redaction_and_truncation() -> None:
+    from opencobalt.agent_broker.relay import _public_text
+
+    # Redact credentials and home path
+    home = str(Path.home())
+    text_with_secret = f"Path is {home}/workspace, token is sk-ant-api03-123456789012345678901234567890123456"
+    sanitized = _public_text(text_with_secret)
+    assert home not in sanitized
+    assert "<home>" in sanitized
+
+    # Truncate >8000 chars
+    long_text = "A" * 10_000
+    truncated = _public_text(long_text)
+    assert len(truncated) < 9_000
+    assert "[truncated; full response is in the local broker ledger]" in truncated
+
+
+def test_relay_command_validation_constraints() -> None:
+    from opencobalt.agent_broker.relay import RelayCommand
+
+    # Flag injection in command_id
+    with pytest.raises(ValueError, match="bounded non-flag"):
+        RelayCommand(command_id="--danger", action="start", prompt="test")
+
+    # Whitespace in session_id
+    with pytest.raises(ValueError, match="bounded non-flag"):
+        RelayCommand(command_id="cmd-1", action="continue", session_id="ses 123", prompt="test")
+
+    # Continue without session_id
+    with pytest.raises(ValueError, match="continue requires a session_id"):
+        RelayCommand(command_id="cmd-1", action="continue", prompt="test")
+

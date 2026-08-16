@@ -21,6 +21,29 @@ def _uid(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4()}"
 
 
+def canonical_broker_runtime(runtime: str | None) -> str:
+    """Resolve user or configuration aliases to canonical broker runtime IDs."""
+    if not runtime:
+        return "codex-sdk"
+    norm = runtime.strip().lower().replace("_", "-")
+    if norm in {"codex", "codex-sdk", "codex-sdk-broker", "openai-codex"}:
+        return "codex-sdk"
+    if norm in {
+        "agy",
+        "antigravity",
+        "google-antigravity",
+        "google-antigravity-cli",
+        "google-antigravity-broker",
+        "antigravity-cli",
+        "gemini",
+        "gemini-cli",
+        "google-gemini-cli",
+        "legacy-gemini-cli",
+    }:
+        return "google-antigravity"
+    return norm
+
+
 class AgentBrokerSession(BaseModel):
     """OpenCobalt-owned state for one resumable external-agent thread."""
 

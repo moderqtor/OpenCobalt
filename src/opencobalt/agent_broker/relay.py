@@ -24,7 +24,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from opencobalt.execution.runner import redact_text
 
 from .broker import AgentBroker, BrokerExecution
-from .models import AgentBrokerSession, AgentRelayChannel, AgentRelayEvent
+from .models import (
+    AgentBrokerSession,
+    AgentRelayChannel,
+    AgentRelayEvent,
+    canonical_broker_runtime,
+)
 from .store import AgentBrokerStore
 
 COMMAND_MARKER = "<!-- opencobalt-agent-command:v1 -->"
@@ -45,8 +50,9 @@ class RelayCommand(BaseModel):
     action: Literal["start", "continue", "status", "stop"]
     session_id: str | None = Field(default=None, max_length=200)
     prompt: str | None = Field(default=None, max_length=100_000)
+    runtime: str | None = Field(default=None, max_length=100)
 
-    @field_validator("command_id", "session_id")
+    @field_validator("command_id", "session_id", "runtime")
     @classmethod
     def _bounded_identifier(cls, value: str | None) -> str | None:
         if value is None:
@@ -69,6 +75,7 @@ def command_comment(
     action: Literal["start", "continue", "status", "stop"],
     prompt: str | None = None,
     session_id: str | None = None,
+    runtime: str | None = None,
     command_id: str | None = None,
 ) -> str:
     """Render the stable command envelope a remote controller should post."""
@@ -77,6 +84,7 @@ def command_comment(
         action=action,
         prompt=prompt,
         session_id=session_id,
+        runtime=runtime,
     ).model_dump(mode="json", exclude_none=True)
     return f"{COMMAND_MARKER}\n```json\n{json.dumps(payload, sort_keys=True)}\n```"
 
@@ -198,6 +206,7 @@ def _public_text(value: str) -> str:
 def _session_view(session: AgentBrokerSession) -> dict[str, Any]:
     return {
         "session_id": session.session_id,
+        "runtime": session.runtime,
         "provider_session_id": session.provider_session_id,
         "status": session.status,
         "turn_count": session.turn_count,
@@ -245,6 +254,7 @@ class GitHubAgentRelay:
         issue_number: int,
         allowed_author: str,
         local_repository: str,
+        runtime: str = "codex-sdk",
         broker: AgentBroker | None = None,
         store: AgentBrokerStore | None = None,
         github: GitHubCommentClient | Any | None = None,
@@ -258,6 +268,7 @@ class GitHubAgentRelay:
         self.issue_number = int(issue_number)
         self.allowed_author = allowed_author.casefold()
         self.local_repository = str(Path(local_repository).expanduser().resolve())
+        self.runtime = canonical_broker_runtime(runtime)
         self.broker = broker or AgentBroker()
         self.store = store or self.broker.store
         self.github = github or GitHubCommentClient(
@@ -431,6 +442,7 @@ class GitHubAgentRelay:
                 session, execution = self.broker.start(
                     repository=self.local_repository,
                     objective=(command.prompt or "").strip(),
+                    runtime=command.runtime or self.runtime,
                     model=self.model,
                     execute=self.execute_agent,
                 )

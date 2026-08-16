@@ -50,20 +50,27 @@ def _emit(data: Any, *, json_output: bool) -> None:
 
 @app.command("start")
 def start_cmd(
-    goal: str = typer.Argument(..., help="Objective for the durable Codex session."),
+    goal: str = typer.Argument(..., help="Objective for the durable agent session."),
     repository: Path = typer.Option(Path("."), "--repo", help="Authoritative repository."),
+    runtime: str = typer.Option(
+        "codex-sdk",
+        "--runtime",
+        "-r",
+        help="Runtime backend: codex-sdk or google-antigravity.",
+    ),
     model: str | None = typer.Option(None, "--model"),
     execute: bool = typer.Option(False, "--execute", help="Actually run the first turn."),
     yes: bool = typer.Option(False, "--yes", help="Approve red-risk execution when policy permits."),
     timeout: int = typer.Option(1800, "--timeout", min=1, max=7200),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Create a staged workspace and start a durable Codex thread."""
+    """Create a staged workspace and start a durable agent session."""
     broker = AgentBroker()
     try:
         session, execution = broker.start(
             repository=str(repository),
             objective=goal,
+            runtime=runtime,
             model=model,
             execute=execute,
             approved=yes,
@@ -73,7 +80,7 @@ def start_cmd(
         raise typer.Exit(code=_error(exc, json_output=json_output)) from exc
     _emit(_payload(session, execution), json_output=json_output)
     if not execute:
-        typer.echo("Dry-run only. Re-run with --execute to invoke Codex.", err=True)
+        typer.echo(f"Dry-run only. Re-run with --execute to invoke {session.runtime}.", err=True)
 
 
 @app.command("continue")
@@ -85,7 +92,7 @@ def continue_cmd(
     timeout: int = typer.Option(1800, "--timeout", min=1, max=7200),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Resume the same provider thread and run another bounded turn."""
+    """Resume the same provider session and run another bounded turn."""
     broker = AgentBroker()
     try:
         session, execution = broker.continue_session(
@@ -99,7 +106,7 @@ def continue_cmd(
         raise typer.Exit(code=_error(exc, json_output=json_output)) from exc
     _emit(_payload(session, execution), json_output=json_output)
     if not execute:
-        typer.echo("Dry-run only. Re-run with --execute to invoke Codex.", err=True)
+        typer.echo(f"Dry-run only. Re-run with --execute to invoke {session.runtime}.", err=True)
 
 
 @app.command("status")
@@ -128,7 +135,7 @@ def stop_cmd(
     archive_provider: bool = typer.Option(
         False,
         "--archive-provider",
-        help="Also archive the persisted Codex thread through ExecutionEngine.",
+        help="Also archive the persisted provider thread through ExecutionEngine when supported.",
     ),
     execute: bool = typer.Option(False, "--execute"),
     yes: bool = typer.Option(False, "--yes"),
@@ -158,10 +165,16 @@ def relay_cmd(
         "--local-repo",
         help="Authoritative local repository bound to start commands.",
     ),
+    runtime: str = typer.Option(
+        "codex-sdk",
+        "--runtime",
+        "-r",
+        help="Default runtime backend for new relay sessions (codex-sdk, google-antigravity).",
+    ),
     execute_agent: bool = typer.Option(
         False,
         "--execute-agent",
-        help="Allow accepted start/continue commands to invoke Codex.",
+        help="Allow accepted start/continue commands to invoke the coding agent.",
     ),
     allow_github_comments: bool = typer.Option(
         False,
@@ -178,7 +191,7 @@ def relay_cmd(
     once: bool = typer.Option(False, "--once", help="Process one poll cycle and exit."),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Bridge allowlisted GitHub comments to local durable Codex sessions."""
+    """Bridge allowlisted GitHub comments to local durable agent sessions."""
     if not allow_github_comments:
         raise typer.BadParameter(
             "relay requires --allow-github-comments because command results are written to GitHub"
@@ -189,6 +202,7 @@ def relay_cmd(
             issue_number=issue,
             allowed_author=author,
             local_repository=str(local_repo),
+            runtime=runtime,
             execute_agent=execute_agent,
             allow_comment_writes=allow_github_comments,
             model=model,
@@ -202,6 +216,7 @@ def relay_cmd(
             return
         typer.echo(
             f"Relay active: {github_repo}#{issue} · author {author} · "
+            f"runtime {relay.runtime} · "
             f"agent execution {'enabled' if execute_agent else 'dry-run'}"
         )
         typer.echo(
@@ -224,6 +239,7 @@ def command_cmd(
     action: str = typer.Argument(..., help="start, continue, status, or stop"),
     prompt: str | None = typer.Option(None, "--prompt"),
     session_id: str | None = typer.Option(None, "--session"),
+    runtime: str | None = typer.Option(None, "--runtime", "-r"),
 ) -> None:
     """Render a relay command comment for inspection or manual use."""
     if action not in {"start", "continue", "status", "stop"}:
@@ -234,6 +250,7 @@ def command_cmd(
             action=typed_action,
             prompt=prompt,
             session_id=session_id,
+            runtime=runtime,
         )
     except Exception as exc:
         raise typer.Exit(code=_error(exc, json_output=False)) from exc

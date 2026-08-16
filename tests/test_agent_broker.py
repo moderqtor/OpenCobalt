@@ -276,3 +276,184 @@ def test_worker_fails_closed_if_sdk_handler_slot_changes() -> None:
 
     with pytest.raises(RuntimeError, match="approval boundary"):
         _install_decline_handler(Codex())
+
+
+def test_codex_runner_success_turn(tmp_path: Path) -> None:
+    stdout_payload = (
+        '{"ok": true, "thread_id": "thr-abc-123", "final_response": "Completed task successfully", '
+        '"usage": {"input_tokens": 500, "output_tokens": 100, "total_tokens": 600}}\n'
+    )
+    stdout_file = tmp_path / "stdout.log"
+    stdout_file.write_text(stdout_payload, encoding="utf-8")
+
+    outcome = SimpleNamespace(
+        result=SimpleNamespace(
+            status="succeeded",
+            exit_code=0,
+            stdout_path=str(stdout_file),
+            stdout_preview=stdout_payload,
+            stderr_preview="",
+            error=None,
+        ),
+        receipt=SimpleNamespace(receipt_id="receipt-codex-1"),
+    )
+    runner = ExecutionEngineCodexRunner(FakeEngine(outcome))
+    execution = runner.run_turn(
+        prompt="write tests",
+        workspace_path="/tmp/staging",
+        provider_session_id="thr-abc-123",
+        model="gpt-5",
+        execute=True,
+        approved=False,
+        timeout_seconds=60,
+    )
+
+    assert execution.status == "complete"
+    assert execution.executed is True
+    assert execution.receipt_id == "receipt-codex-1"
+    assert execution.provider_session_id == "thr-abc-123"
+    assert execution.response == "Completed task successfully"
+    assert execution.metadata["usage"]["total_tokens"] == 600
+
+
+def test_codex_runner_worker_error_and_timeout(tmp_path: Path) -> None:
+    # 1. Worker returns ok: False in JSON
+    stdout_payload = '{"ok": false, "error": "rate limit exceeded"}\n'
+    stdout_file = tmp_path / "err.log"
+    stdout_file.write_text(stdout_payload, encoding="utf-8")
+
+    outcome_err = SimpleNamespace(
+        result=SimpleNamespace(
+            status="failed",
+            exit_code=1,
+            stdout_path=str(stdout_file),
+            stdout_preview=stdout_payload,
+            stderr_preview="",
+            error=None,
+        ),
+        receipt=SimpleNamespace(receipt_id="receipt-err-1"),
+    )
+    runner = ExecutionEngineCodexRunner(FakeEngine(outcome_err))
+    exec_err = runner.run_turn(
+        prompt="run task",
+        workspace_path="/tmp/staging",
+        provider_session_id=None,
+        model=None,
+        execute=True,
+        approved=False,
+        timeout_seconds=30,
+    )
+    assert exec_err.status == "failed"
+    assert "rate limit exceeded" in (exec_err.error or "")
+
+    # 2. Subprocess timeout
+    outcome_timeout = SimpleNamespace(
+        result=SimpleNamespace(
+            status="timeout",
+            exit_code=None,
+            stdout_path=None,
+            stdout_preview="",
+            stderr_preview="timed out",
+            error="Codex subprocess timed out",
+        ),
+        receipt=SimpleNamespace(receipt_id="receipt-timeout-1"),
+    )
+    runner_timeout = ExecutionEngineCodexRunner(FakeEngine(outcome_timeout))
+    exec_timeout = runner_timeout.run_turn(
+        prompt="run slow task",
+        workspace_path="/tmp/staging",
+        provider_session_id=None,
+        model=None,
+        execute=True,
+        approved=False,
+        timeout_seconds=30,
+    )
+    assert exec_timeout.status == "failed"
+    assert "timed out" in (exec_timeout.error or "").lower()
+
+
+def test_codex_runner_archive_success_and_failure(tmp_path: Path) -> None:
+    # Success archive
+    stdout_payload = '{"ok": true, "thread_id": "thr-archived"}\n'
+    stdout_file = tmp_path / "arch.log"
+    stdout_file.write_text(stdout_payload, encoding="utf-8")
+
+    outcome_ok = SimpleNamespace(
+        result=SimpleNamespace(
+            status="succeeded",
+            exit_code=0,
+            stdout_path=str(stdout_file),
+            stdout_preview=stdout_payload,
+            stderr_preview="",
+            error=None,
+        ),
+        receipt=SimpleNamespace(receipt_id="receipt-arch-ok"),
+    )
+    runner = ExecutionEngineCodexRunner(FakeEngine(outcome_ok))
+    res = runner.archive(
+        provider_session_id="thr-archived",
+        workspace_path="/tmp/staging",
+        execute=True,
+        approved=False,
+        timeout_seconds=30,
+    )
+    assert res.status == "complete"
+    assert res.executed is True
+    assert res.provider_session_id == "thr-archived"
+
+
+def test_stop_archive_failure_preserves_session_status(tmp_path: Path) -> None:
+    class FailingArchiveRunner(FakeRunner):
+        def archive(self, **kwargs):
+            return BrokerExecution(
+                status="failed",
+                executed=True,
+                error="Archive server unavailable",
+            )
+
+    store = AgentBrokerStore(tmp_path / "ledger.db")
+    broker = AgentBroker(
+        store=store,
+        runner=FailingArchiveRunner(),
+        db_path=tmp_path / "ledger.db",
+        workspace_factory=workspace_factory(tmp_path),
+    )
+    session, _ = broker.start(repository="ignored", objective="start", execute=True)
+
+    session_res, archive_res = broker.stop(session.session_id, archive_provider=True, execute=True)
+    assert archive_res.status == "failed"
+    # Session status remains active since archive failed
+    assert session_res.status == "active"
+    assert broker.require_session(session.session_id).status == "active"
+
+
+def test_broker_require_unknown_session_raises_keyerror(tmp_path: Path) -> None:
+    broker = AgentBroker(
+        store=AgentBrokerStore(tmp_path / "ledger.db"),
+        runner=FakeRunner(),
+        db_path=tmp_path / "ledger.db",
+        workspace_factory=workspace_factory(tmp_path),
+    )
+    with pytest.raises(KeyError, match="unknown broker session: nonexistent-123"):
+        broker.require_session("nonexistent-123")
+
+
+def test_codex_adapter_rejects_bypass_and_missing_sdk(monkeypatch) -> None:
+    # 1. Missing SDK
+    monkeypatch.setattr(CodexSdkBrokerAdapter, "_sdk_available", staticmethod(lambda: False))
+    adapter = CodexSdkBrokerAdapter()
+    snapshot = adapter.discover_capabilities()
+    assert snapshot.available is False
+    assert "optional dependency openai-codex is not installed" in " ".join(snapshot.limitations)
+    with pytest.raises(ValueError, match="optional dependency openai-codex is not installed"):
+        adapter.build_command("test")
+
+    # 2. Permission bypass flags rejected
+    from opencobalt.execution.adapters import CommandOptions
+
+    monkeypatch.setattr(CodexSdkBrokerAdapter, "_sdk_available", staticmethod(lambda: True))
+    adapter_valid = CodexSdkBrokerAdapter()
+    with pytest.raises(ValueError, match="permission bypass"):
+        adapter_valid.build_command("test", options=CommandOptions(dangerously_skip_permissions=True))
+
+

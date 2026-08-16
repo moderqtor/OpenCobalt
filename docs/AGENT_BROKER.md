@@ -17,27 +17,35 @@ broker gives OpenCobalt its own durable record of:
 - local stop state
 - deduplicated relay command/result events when the GitHub relay is enabled
 
-The provider thread is useful context. It is not OpenCobalt's source of truth.
+The provider session/thread is useful context. It is not OpenCobalt's source of truth.
 
-## Codex v0 backend
+## Provider-neutral architecture
 
-The first backend uses the official `openai-codex` Python SDK. The SDK supports durable
-threads that can be started and resumed later. OpenCobalt does not call that SDK from
-ordinary application code. Instead:
+Agent Broker v0 uses a narrow provider-neutral runner contract (`BrokerRunner`) dispatched
+via `BrokerRunnerRegistry`. Session identity, turn persistence, and staged workspace isolation
+are owned entirely by OpenCobalt, allowing multiple external agent backends to be supervised
+without vendor-specific leakage into the core control layer.
 
 ```text
 AgentBroker
-  -> ExecutionEngine
-    -> CodexSdkBrokerAdapter
-      -> python -m opencobalt.agent_broker.worker
-        -> official openai_codex SDK
+  -> BrokerRunnerRegistry (routes by canonical runtime ID)
+    -> ExecutionEngineCodexRunner (runtime: codex-sdk)
+      -> ExecutionEngine -> CodexSdkBrokerAdapter -> worker.py -> openai_codex SDK
+    -> ExecutionEngineAntigravityRunner (runtime: google-antigravity)
+      -> ExecutionEngine -> AntigravityBrokerAdapter -> agy CLI
 ```
 
-This preserves the repository doctrine that external runtime task execution crosses
-`ExecutionEngine` and leaves a WorkReceipt.
+Both backends adhere strictly to repository doctrine: all runtime task execution crosses
+`ExecutionEngine` and leaves a verifiable `WorkReceipt` in the SQLite ledger.
+
+## Supported backends
+
+### 1. Codex SDK backend (`codex-sdk`)
+
+The Codex backend uses the official `openai-codex` Python SDK. The SDK supports durable
+threads that can be started and resumed later.
 
 The worker uses:
-
 - `Sandbox.workspace_write`
 - `ApprovalMode.deny_all`
 - the OpenCobalt staged workspace as `cwd`
@@ -49,9 +57,22 @@ a fail-closed decline callback before a thread or turn is started. If the SDK st
 the expected handler slot, the worker refuses to run instead of silently weakening this
 boundary.
 
-The worker is instructed not to push, merge, deploy, publish, spend, send external
-messages, access secrets/auth state, or expand scope. This is staged repository containment,
-not a claim of full host isolation.
+### 2. Google Antigravity CLI backend (`google-antigravity`)
+
+The Antigravity backend uses Google's canonical Antigravity CLI (`agy`).
+
+Execution details:
+- Runs via non-interactive JSON print mode: `agy --output-format json --sandbox --print "<prompt>"`
+- Invoked inside the OpenCobalt staged workspace as `cwd`
+- Supports native conversation resumption across turns via `agy --conversation <conversation_id>`
+- Captures token usage metadata (`input_tokens`, `output_tokens`, `total_tokens`, `duration_seconds`)
+- Truthful capability reporting: remote conversation archiving is marked `status="unsupported"`
+  because `agy` does not expose a server-side conversation archive RPC.
+
+### 3. Legacy Gemini CLI aliases
+
+In accordance with `GEMINI.md` policy, legacy Gemini CLI aliases (`gemini`, `gemini-cli`,
+`google-gemini-cli`, `legacy-gemini-cli`) resolve directly to `google-antigravity`.
 
 ## Staged workspace
 
