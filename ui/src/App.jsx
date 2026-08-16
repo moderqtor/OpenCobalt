@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   ArrowRight, Check, ChevronDown, CircleStop, Loader2, MessageSquareText,
-  Paperclip, PanelRightOpen, RefreshCw, Save, Send, SlidersHorizontal,
+  Paperclip, PanelRightOpen, Pencil, RefreshCw, Save, Send, SlidersHorizontal,
 } from "lucide-react";
 import { ApiError, api, eventPayload, eventType, streamChat } from "./api";
 import Markdown from "./Markdown";
@@ -60,6 +60,18 @@ function relativeTime(value) {
       ? [Math.round(seconds / 60), "minute"]
       : [Math.round(seconds / 3600), "hour"];
   return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(unit[0], unit[1]);
+}
+
+function repositoryLabel(path) {
+  const trimmed = String(path || "").trim();
+  if (!trimmed) return "";
+  const parts = trimmed.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts.at(-1) || trimmed;
+}
+
+function memoryScopeLabel(scope) {
+  if (scope === "temporary") return "saved";
+  return scope || "user";
 }
 
 function errorMessage(payload, fallback = "The route did not complete.") {
@@ -208,7 +220,26 @@ function routingPatchFromControls(controls) {
   };
 }
 
-function Composer({ controls, personas, providers, models: discoveredModels, modelError, onChange, onSend, busy, cancelling = false, onCancel, attachments = [], onAttach, onRemoveAttachment, attachmentError, executableAvailable = true, routingAvailability = null }) {
+function routingControlsEqual(left, right) {
+  return left.automatic === right.automatic
+    && left.providerId === right.providerId
+    && left.modelId === right.modelId
+    && left.privacy === right.privacy
+    && left.localOnly === right.localOnly
+    && left.allowFallback === right.allowFallback
+    && left.reasoningEffort === right.reasoningEffort;
+}
+
+function mergeRoutingIntoControls(current, routing, settings = DEFAULT_SETTINGS) {
+  const next = controlsFromRouting(routing, settings);
+  return {
+    ...next,
+    personaId: current.personaId,
+    cognitivePolicy: current.cognitivePolicy,
+  };
+}
+
+function Composer({ controls, personas, providers, models: discoveredModels, modelError, onChange, onSend, busy, cancelling = false, onCancel, attachments = [], onAttach, onRemoveAttachment, attachmentError, executableAvailable = true, routingAvailability = null, projectPath = "", repoDraft = "", onRepoDraftChange, onAttachRepository, onDetachRepository, onToggleRepository, repositoryOpen = false, repoBusy = false }) {
   const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState("");
   const fileRef = useRef(null);
@@ -250,6 +281,9 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
   useEffect(() => {
     if (!controls.automatic) setExpanded(true);
   }, [controls.automatic]);
+  useEffect(() => {
+    if (repositoryOpen) setExpanded(true);
+  }, [repositoryOpen]);
 
   const submit = (event) => {
     event.preventDefault();
@@ -260,11 +294,12 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
 
   return <form className="composer" onSubmit={submit}>
     <textarea
+      id="chat-composer"
       value={text}
       rows="2"
       aria-label="Message OpenCobalt"
       aria-describedby={[validationMessage ? "composer-provider-validation" : "", staleModelMessage ? "composer-model-validation" : ""].filter(Boolean).join(" ") || undefined}
-      placeholder="Message OpenCobalt"
+      placeholder="Ask OpenCobalt"
       onChange={(event) => setText(event.target.value)}
       onKeyDown={(event) => {
         if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) submit(event);
@@ -274,28 +309,33 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
     {attachments.length > 0 && <ul className="attachment-chips">{attachments.map((item) => <li key={item.attachment_id}><span>{item.original_filename}</span><button type="button" className="text-button" onClick={() => onRemoveAttachment?.(item)} aria-label={`Remove ${item.original_filename}`}>Remove</button></li>)}</ul>}
     <div className="composer-foot">
       <div className="control-strip">
-        <SelectField label="Persona" value={controls.personaId} onChange={(personaId) => onChange({ personaId })}>
-          {personas.map((persona) => <option key={persona.persona_id || persona.id} value={persona.persona_id || persona.id}>{persona.name || persona.display_name || persona.persona_id || persona.id}</option>)}
-        </SelectField>
-        <button type="button" className={`mode-toggle ${controls.automatic ? "is-on" : ""}`} onClick={() => onChange({ automatic: !controls.automatic })}>{controls.automatic ? "Automatic" : "Manual"}</button>
+        <div className="mode-switch" role="group" aria-label="Routing mode">
+          <button type="button" className={`mode-toggle ${controls.automatic ? "is-on" : ""}`} aria-pressed={controls.automatic} title="OpenCobalt will choose provider and model" onClick={() => onChange({ automatic: true })}>Automatic</button>
+          <button type="button" className={`mode-toggle ${!controls.automatic ? "is-on" : ""}`} aria-pressed={!controls.automatic} onClick={() => onChange({ automatic: false })}>Manual</button>
+        </div>
         <button type="button" className="control-more" onClick={() => setExpanded((current) => !current)} aria-expanded={expanded} aria-controls="composer-advanced"><SlidersHorizontal size={15} aria-hidden="true" /> Controls</button>
-        <button type="button" className="control-more" onClick={() => fileRef.current?.click()} disabled={busy || !onAttach}><Paperclip size={15} aria-hidden="true" /> Attach</button>
-        <input ref={fileRef} className="visually-hidden" type="file" accept=".pdf,.md,.markdown,.txt,.html,.htm,.csv,application/pdf,text/plain,text/markdown,text/html,text/csv" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onAttach?.(file); }} />
       </div>
-      {busy
-        ? <button className="button stop" type="button" onClick={onCancel} disabled={cancelling}><CircleStop size={15} aria-hidden="true" /> {cancelling ? "Cancelling…" : "Cancel"}</button>
-        : <button className="button primary" type="submit" disabled={!canSend}><Send size={15} aria-hidden="true" /> Send</button>}
+      <div className="composer-actions">
+        <button type="button" className="icon-button composer-attach" onClick={() => fileRef.current?.click()} disabled={busy || !onAttach} aria-label="Attach file" title="Attach file"><Paperclip size={16} aria-hidden="true" /></button>
+        <input ref={fileRef} className="visually-hidden" type="file" accept=".pdf,.md,.markdown,.txt,.html,.htm,.csv,application/pdf,text/plain,text/markdown,text/html,text/csv" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) onAttach?.(file); }} />
+        {busy
+          ? <button className="button stop" type="button" onClick={onCancel} disabled={cancelling}><CircleStop size={15} aria-hidden="true" /> {cancelling ? "Cancelling…" : "Cancel"}</button>
+          : <button className="button primary" type="submit" disabled={!canSend}><Send size={15} aria-hidden="true" /> Send</button>}
+      </div>
     </div>
     {validationMessage && <p id="composer-provider-validation" className="composer-validation" role="status">{validationMessage}{!executableAvailable && controls.automatic ? <> <button type="button" className="text-button" onClick={() => { window.location.hash = "providers"; }}>Open Providers</button></> : ""}</p>}
     {staleModelMessage && <p id="composer-model-validation" className="composer-validation" role="status">{staleModelMessage}</p>}
     {attachmentError && <p className="composer-validation" role="status">{attachmentError}</p>}
     {expanded && <div id="composer-advanced" className="composer-advanced">
-      <SelectField label="Cognitive policy" value={controls.cognitivePolicy} onChange={(cognitivePolicy) => onChange({ cognitivePolicy })}>{cognitivePolicies.map((policy) => <option key={policy} value={policy}>{label(policy)}</option>)}</SelectField>
-      {(controls.cognitivePolicy === "research" || controls.cognitivePolicy === "research_synthesis") && <p className="composer-note">Research</p>}
-      <SelectField label="Reasoning effort" value={controls.reasoningEffort} onChange={(reasoningEffort) => onChange({ reasoningEffort })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option></SelectField>
+      <SelectField label="Persona" value={controls.personaId} onChange={(personaId) => onChange({ personaId })}>
+        {personas.map((persona) => <option key={persona.persona_id || persona.id} value={persona.persona_id || persona.id}>{persona.name || persona.display_name || persona.persona_id || persona.id}</option>)}
+      </SelectField>
+      <SelectField label="Approach" value={controls.cognitivePolicy} onChange={(cognitivePolicy) => onChange({ cognitivePolicy })}>{cognitivePolicies.map((policy) => <option key={policy} value={policy}>{label(policy)}</option>)}</SelectField>
+      {(controls.cognitivePolicy === "research" || controls.cognitivePolicy === "research_synthesis") && <p className="composer-note">Retrieves sources and records evidence. Citation linkage is not a proof of factual truth.</p>}
+      <SelectField label="Reasoning" value={controls.reasoningEffort} onChange={(reasoningEffort) => onChange({ reasoningEffort })}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option></SelectField>
       <SelectField label="Privacy" value={controls.privacy} onChange={(privacy) => onChange({ privacy })}><option value="standard">Standard</option><option value="private">Private</option><option value="sensitive">Sensitive</option></SelectField>
-      <Toggle label="Local only" checked={controls.localOnly} onChange={(localOnly) => onChange({ localOnly })} />
-      <Toggle label="Allow fallback" checked={controls.allowFallback} onChange={(allowFallback) => onChange({ allowFallback })} />
+      <Toggle label="Local only" checked={controls.localOnly} onChange={(localOnly) => onChange({ localOnly })} note="Exclude providers that require the network." />
+      <Toggle label="Allow fallback" checked={controls.allowFallback} onChange={(allowFallback) => onChange({ allowFallback })} note="If enabled, a failed provider can try one recorded alternative." />
       {!controls.automatic && <>
         <SelectField label="Provider" value={controls.providerId} onChange={(providerId) => onChange({ providerId, modelId: "" })} describedBy={validationMessage ? "composer-provider-validation" : undefined}>
           <option value="">Choose provider</option>
@@ -314,31 +354,49 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
         </SelectField>
         {modelError && <p className="inline-error model-error" role="alert">Model catalog unavailable: {modelError.message}</p>}
       </>}
+      {onAttachRepository && <div className="repo-compact">
+        {projectPath && !repositoryOpen
+          ? <div className="repo-compact-bound">
+              <span className="repo-compact-path" title={projectPath}>{repositoryLabel(projectPath)}</span>
+              {onToggleRepository && <button type="button" className="text-button" onClick={onToggleRepository}>Change</button>}
+              {onDetachRepository && <button type="button" className="text-button" onClick={onDetachRepository} disabled={repoBusy}>Detach</button>}
+            </div>
+          : <div className="repo-compact-form">
+              <label>
+                <span>Repository path</span>
+                <input value={repoDraft} maxLength="4096" placeholder="~/dev/OpenCobalt" autoComplete="off" onChange={(event) => onRepoDraftChange?.(event.target.value)} />
+              </label>
+              <button type="button" className="button secondary" onClick={onAttachRepository} disabled={repoBusy || !repoDraft.trim()}>{repoBusy ? "Saving…" : "Attach"}</button>
+              {projectPath && onToggleRepository && <button type="button" className="text-button" onClick={onToggleRepository}>Cancel</button>}
+            </div>}
+        <p className="composer-note">{projectPath ? "Coding work stays inside this bound repository." : "Attach a local repository. Optional, for coding work in a specific workspace."}</p>
+      </div>}
     </div>}
   </form>;
 }
 
 const MESSAGE_STATUS = {
-  streaming: ["routing", "streaming"],
+  streaming: ["Working", "streaming"],
   failed: ["failed", "failed"],
   cancelled: ["cancelled", "cancelled"],
   cancel_requested: ["cancel requested", "pending"],
+};
+
+const PHASE_LABELS = {
+  interpreting: "Planning",
+  checking_capabilities: "Checking capabilities",
+  routing: "Routing",
+  starting_provider: "Starting",
+  running: "Running",
+  verifying: "Verifying",
+  persisting: "Saving",
 };
 
 function streamingStatus(message) {
   const phaseLabel = message.metadata?.phase_label;
   if (typeof phaseLabel === "string" && phaseLabel.trim()) return [phaseLabel, "streaming"];
   const phase = message.metadata?.lifecycle?.phase;
-  const labels = {
-    interpreting: "interpreting",
-    checking_capabilities: "checking capabilities",
-    routing: "routing",
-    starting_provider: "starting provider",
-    running: "provider running",
-    verifying: "verifying",
-    persisting: "saving",
-  };
-  if (phase && labels[phase]) return [labels[phase], "streaming"];
+  if (phase && PHASE_LABELS[phase]) return [PHASE_LABELS[phase], "streaming"];
   return MESSAGE_STATUS.streaming;
 }
 
@@ -355,7 +413,6 @@ function ApprovalCard({ approval, onAllow, onDeny, onApply, onReject, busy = fal
     <div className="approval-card-top">
       <Pill tone={tone}>{promotion ? (pending ? "Apply to repository" : label(approval.state)) : pending ? "Approval required" : label(approval.state)}</Pill>
       {approval.provider && <span>{approval.provider}</span>}
-      {approval.capability_role && <span>{label(approval.capability_role)}</span>}
       {approval.risk_level && <span>Risk {label(approval.risk_level)}</span>}
     </div>
     <h3>{approval.headline || (promotion ? "Changes ready" : "Approval required")}</h3>
@@ -410,34 +467,40 @@ function PromotionCard({ changeset, onApply, onReject, busy = false }) {
   </article>;
 }
 
-function MessageBubble({ message, route, onInspect, events = [], approvals = [], onAllowApproval, onDenyApproval, onApplyChangeset, onRejectChangeset, approvalBusy = false, onCompare, compareBusy = false }) {
+function MessageBubble({ message, route, onInspect, onOpenMission, approvals = [], onAllowApproval, onDenyApproval, onApplyChangeset, onRejectChangeset, approvalBusy = false, onCompare, compareBusy = false }) {
   const assistant = message.role === "assistant";
   const status = message.status === "streaming" ? streamingStatus(message) : MESSAGE_STATUS[message.status];
   const changeset = message.metadata && typeof message.metadata === "object" ? message.metadata.changeset : null;
+  const missionId = (message.metadata && typeof message.metadata === "object" && message.metadata.mission_id)
+    || route?.metadata?.mission_id
+    || null;
   return <article className={`message ${assistant ? "assistant" : "user"}`}>
     <div className="message-meta">
       <span>{assistant ? "OpenCobalt" : "You"}</span>
       <time dateTime={message.created_at || undefined}>{relativeTime(message.created_at)}</time>
       {status && <span className={`message-status ${status[1]}`} role="status">{message.status === "streaming" && <i aria-hidden="true" />}{status[0]}</span>}
-      {assistant && onCompare && <button type="button" className="text-button" onClick={onCompare} disabled={compareBusy}>{compareBusy ? "Comparing…" : "Compare with previous"}</button>}
     </div>
     <Markdown content={message.content} />
-    {assistant && route && <RouteSpine route={route} onInspect={onInspect} />}
-    {events.length > 0 && <div className="event-strip" aria-label="Execution events">{events.map((event) => <Pill key={`${event.event_type}-${event.sequence}`} tone={event.event_type === "approval_required" ? "amber" : "neutral"}>{label(event.event_type)}</Pill>)}</div>}
+    {assistant && route && <RouteSpine route={route} onInspect={onInspect} missionId={missionId} onOpenMission={onOpenMission} />}
+    {assistant && onCompare && <button type="button" className="text-button compare-inline" onClick={onCompare} disabled={compareBusy}>{compareBusy ? "Comparing…" : "Compare last two answers"}</button>}
     {approvals.length > 0 && <div className="approval-stack">{approvals.map((approval) => <ApprovalCard key={approval.request_id || approval.step_id} approval={approval} onAllow={onAllowApproval} onDeny={onDenyApproval} onApply={onApplyChangeset} onReject={onRejectChangeset} busy={approvalBusy} />)}</div>}
     {changeset && <div className="approval-stack"><PromotionCard changeset={changeset} onApply={onApplyChangeset} onReject={onRejectChangeset} busy={approvalBusy} /></div>}
   </article>;
 }
 
-function ChatPage({ conversations, refreshConversations, personas, providers, settings, settingsReady, openRoute, refreshSignal = 0 }) {
+function ChatPage({ conversations, refreshConversations, personas, providers, settings, settingsReady, openRoute, refreshSignal = 0, navCollapsed = false, onOpenNavigation }) {
+  // Settings defaults initialize a local unsaved Chat draft. Creating, attaching
+  // a file, or sending promotes that draft into durable conversation state.
+  // Request payloads use the controls currently visible. Previous conversations
+  // do not seed a new draft.
   const [selectedId, setSelectedId] = useState(() => localStorage.getItem("opencobalt.activeConversation") || "");
+  const [composerSession, setComposerSession] = useState(() => localStorage.getItem("opencobalt.activeConversation") || "draft");
   const [messages, setMessages] = useState([]);
   const [messageState, setMessageState] = useState({ loading: false, error: null });
   const [notice, setNotice] = useState(null);
-  const [creating, setCreating] = useState(false);
+  const [drafting, setDrafting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [streamEvents, setStreamEvents] = useState([]);
   const [streamRoute, setStreamRoute] = useState(null);
   const [routeCache, setRouteCache] = useState({});
   const [routeHydrationErrors, setRouteHydrationErrors] = useState({});
@@ -451,6 +514,13 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const [attachments, setAttachments] = useState([]);
   const [attachmentError, setAttachmentError] = useState("");
   const [routingAvailability, setRoutingAvailability] = useState(null);
+  const [repoOpen, setRepoOpen] = useState(false);
+  const [repoDraft, setRepoDraft] = useState("");
+  const [draftProjectPath, setDraftProjectPath] = useState("");
+  const [draftTitle, setDraftTitle] = useState("New conversation");
+  const [renaming, setRenaming] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [repoBusy, setRepoBusy] = useState(false);
   const abortRef = useRef(null);
   const executionRef = useRef(null);
   const runRef = useRef(null);
@@ -460,17 +530,27 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const hydrateGenerationRef = useRef(0);
   const selectedIdRef = useRef(selectedId);
   const hydratingRef = useRef(false);
+  const draftingRef = useRef(false);
   const controlsConversationRef = useRef("");
   const settingsRef = useRef(settings);
+  const controlsRef = useRef(null);
+  const draftProjectPathRef = useRef("");
+  const draftTitleRef = useRef("New conversation");
+  const draftTransferRef = useRef(null);
+  const routingEpochRef = useRef(0);
   const writeSeqRef = useRef(new Map());
   const persistQueueRef = useRef(null);
   const scrollRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
-  const isNarrow = useViewportFlag("(max-width: 760px)");
+  const isNarrow = useViewportFlag("(max-width: 1180px)");
   const interactionBusy = busy || cancelling;
   const [controls, setControls] = useState(() => defaultComposerControls(settings));
   selectedIdRef.current = selectedId;
   settingsRef.current = settings;
+  controlsRef.current = controls;
+  draftProjectPathRef.current = draftProjectPath;
+  draftTitleRef.current = draftTitle;
+  draftingRef.current = drafting;
   if (persistQueueRef.current == null) {
     persistQueueRef.current = createPerConversationWriteQueue({
       write: (conversationId, payload) => api.updateConversationRouting(conversationId, payload),
@@ -485,6 +565,16 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     setConversationOpen(true);
   }, []);
   const selectConversation = useCallback((conversationId) => {
+    draftingRef.current = false;
+    setDrafting(false);
+    setDraftProjectPath("");
+    setDraftTitle("New conversation");
+    setRenaming(false);
+    setTitleDraft("");
+    setRepoDraft("");
+    setRepoOpen(false);
+    draftTransferRef.current = null;
+    setComposerSession(conversationId);
     setSelectedId(conversationId);
     setConversationOpen(false);
   }, []);
@@ -496,22 +586,47 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     if (!settingsReady) return undefined;
     const conversationId = selectedId;
     const generation = ++hydrateGenerationRef.current;
+    const epochAtStart = routingEpochRef.current;
     hydratingRef.current = true;
     if (!conversationId) {
-      setControls(defaultComposerControls(settings));
+      if (!draftingRef.current && !draftTransferRef.current) {
+        setControls(defaultComposerControls(settings));
+      }
       setRoutingAvailability(null);
       controlsConversationRef.current = "";
       hydratingRef.current = false;
       return undefined;
     }
     const listed = conversations.find((conversation) => conversationIdOf(conversation) === conversationId);
-    setControls(controlsFromRouting(listed?.metadata?.routing, settings));
+    const transfer = draftTransferRef.current?.conversationId === conversationId
+      ? draftTransferRef.current.controls
+      : null;
+    if (transfer) {
+      setControls(transfer);
+    } else {
+      setControls(controlsFromRouting(listed?.metadata?.routing, settings));
+    }
     setRoutingAvailability(null);
     controlsConversationRef.current = conversationId;
     api.conversationRouting(conversationId)
       .then((routing) => {
         if (hydrateGenerationRef.current !== generation || selectedIdRef.current !== conversationId) return;
-        setControls(controlsFromRouting(routing, settings));
+        if (routingEpochRef.current !== epochAtStart) {
+          setRoutingAvailability(routing);
+          return;
+        }
+        const transferred = draftTransferRef.current?.conversationId === conversationId
+          ? draftTransferRef.current.controls
+          : null;
+        if (transferred) {
+          draftTransferRef.current = null;
+          const fromServer = controlsFromRouting(routing, settings);
+          setControls(routingControlsEqual(fromServer, transferred)
+            ? { ...fromServer, personaId: transferred.personaId, cognitivePolicy: transferred.cognitivePolicy }
+            : transferred);
+        } else {
+          setControls(controlsFromRouting(routing, settings));
+        }
         setRoutingAvailability(routing);
         controlsConversationRef.current = conversationId;
       })
@@ -556,12 +671,13 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   }, [controls.automatic, controls.providerId]);
 
   useEffect(() => {
-    if (interactionBusy) return;
+    if (interactionBusy || drafting) return;
     const exists = conversations.some((conversation) => conversationIdOf(conversation) === selectedId);
     if (exists) return;
     const nextId = conversations.length ? conversationIdOf(conversations[0]) : "";
     setSelectedId(nextId);
-  }, [interactionBusy, conversations, selectedId]);
+    if (nextId) setComposerSession(nextId);
+  }, [interactionBusy, conversations, selectedId, drafting]);
 
   useEffect(() => {
     if (selectedId) localStorage.setItem("opencobalt.activeConversation", selectedId);
@@ -587,9 +703,10 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     }
     let alive = true;
     setNotice(null);
-    setStreamEvents([]);
     setStreamRoute(null);
     setPendingApprovals([]);
+    setRepoOpen(false);
+    setRepoDraft("");
     setMessages([]);
     setRouteCache({});
     setRouteHydrationErrors({});
@@ -662,38 +779,65 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     return () => window.cancelAnimationFrame(frame);
   }, [messages, comparison.data, comparison.loading]);
 
-  const createConversation = async (input = {}) => {
-    if (interactionBusy) return false;
-    setCreating(true);
-    setMessageState((current) => ({ ...current, error: null }));
-    try {
-      const conversation = await api.createConversation({ title: "New conversation", ...input });
-      const createdId = conversationIdOf(conversation);
-      if (!createdId) throw new ApiError("OpenCobalt created a conversation without an identifier.", { detail: conversation });
-      writeSeqRef.current.delete(createdId);
-      await refreshConversations();
-      setSelectedId(createdId);
-      setConversationOpen(false);
-      return true;
-    } catch (error) {
-      setMessageState({ loading: false, error });
-      return false;
-    } finally {
-      setCreating(false);
-    }
+  const startConversation = () => {
+    if (interactionBusy) return;
+    draftingRef.current = true;
+    draftTransferRef.current = null;
+    setDrafting(true);
+    setSelectedId("");
+    setComposerSession(`draft-${Date.now()}`);
+    setMessages([]);
+    setNotice(null);
+    setRepoOpen(false);
+    setRepoDraft("");
+    setDraftProjectPath("");
+    setDraftTitle("New conversation");
+    setRenaming(false);
+    setTitleDraft("");
+    setPendingApprovals([]);
+    setAttachments([]);
+    setControls(defaultComposerControls(settingsRef.current));
+    setConversationOpen(false);
+    window.requestAnimationFrame(() => document.getElementById("chat-composer")?.focus());
   };
 
   const ensureConversation = async () => {
     if (selectedId && conversations.some((conversation) => conversationIdOf(conversation) === selectedId)) {
       return { conversationId: selectedId, created: false };
     }
-    const currentConversation = conversations.find((conversation) => conversationIdOf(conversation) === selectedId);
-    const input = { title: "New conversation", ...(currentConversation?.project_path ? { project_path: currentConversation.project_path } : {}) };
-    const conversation = await api.createConversation(input);
+    const projectPath = (draftProjectPathRef.current || "").trim();
+    const title = (draftTitleRef.current || "").trim() || "New conversation";
+    const payload = { title };
+    if (projectPath) payload.project_path = projectPath;
+    const conversation = await api.createConversation(payload);
     const createdId = conversationIdOf(conversation);
     if (!createdId) throw new ApiError("OpenCobalt created a conversation without an identifier.", { detail: conversation });
-    writeSeqRef.current.delete(createdId);
+    const draftControls = { ...controlsRef.current };
+    writeSeqRef.current.set(createdId, 1);
+    let routing = null;
+    try {
+      routing = await api.updateConversationRouting(createdId, {
+        ...routingPatchFromControls(draftControls),
+        write_seq: 1,
+      });
+    } catch (error) {
+      setNotice({
+        tone: "error",
+        source: "routing",
+        text: error?.message || "Conversation routing was not saved. Showing the draft controls.",
+      });
+    }
+    draftTransferRef.current = { conversationId: createdId, controls: draftControls };
+    setControls(draftControls);
+    if (routing) setRoutingAvailability(routing);
+    controlsConversationRef.current = createdId;
+    setDraftProjectPath("");
+    setRepoDraft("");
+    setRepoOpen(false);
+    draftingRef.current = false;
+    setDrafting(false);
     await refreshConversations();
+    selectedIdRef.current = createdId;
     setSelectedId(createdId);
     return { conversationId: createdId, created: true };
   };
@@ -720,7 +864,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       api.conversationRouting(conversationId)
         .then((routing) => {
           if (selectedIdRef.current !== conversationId) return;
-          setControls(controlsFromRouting(routing, settingsRef.current));
+          setControls((current) => mergeRoutingIntoControls(current, routing, settingsRef.current));
           setRoutingAvailability(routing);
         })
         .catch(() => undefined)
@@ -738,7 +882,8 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     ));
     setControls((current) => {
       const next = { ...current, ...patch };
-      if (routingChanged && conversationId && !hydratingRef.current) {
+      if (routingChanged && conversationId) {
+        routingEpochRef.current += 1;
         persistConversationRouting(next, conversationId);
       }
       return next;
@@ -752,15 +897,14 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     shouldAutoScrollRef.current = true;
     setBusy(true);
     setNotice(null);
-    setStreamEvents([]);
     setStreamRoute(null);
     setPendingApprovals([]);
     setMessageState({ loading: false, error: null });
     executionRef.current = null;
     try {
+      const sendControls = { ...controlsRef.current };
       const ensured = await ensureConversation();
       const conversationId = ensured.conversationId;
-      const sendControls = ensured.created ? defaultComposerControls(settings) : controls;
       const localUser = { message_id: `local-user-${Date.now()}`, conversation_id: conversationId, role: "user", content, status: "complete", created_at: new Date().toISOString() };
       const localAssistant = { message_id: "local-stream", conversation_id: conversationId, role: "assistant", content: "", status: "streaming", created_at: new Date().toISOString() };
       setMessages((current) => [...current, localUser, localAssistant]);
@@ -776,7 +920,9 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
         run.requestId ||= event.request_id;
         const type = eventType(event);
         const payload = eventPayload(event);
-        setStreamEvents((current) => [...current, event]);
+        if (type === "request_accepted" && payload.conversation_title) {
+          refreshConversations().catch(() => undefined);
+        }
         if (event.execution_id) executionRef.current = event.execution_id;
 
         const routeId = event.route_id || payload.route?.route_id || payload.route?.id;
@@ -870,15 +1016,20 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       await refreshConversations();
     } catch (error) {
       if (error?.name !== "AbortError") {
-        setMessageState({ loading: false, error });
+        setNotice({ tone: "error", text: error.message || "The request could not be sent." });
         setMessages((current) => current.map((message) => message.message_id === "local-stream" ? { ...message, status: "failed", content: message.content || error.message } : message));
+        if (runRef.current?.generation === generation) {
+          setMessageState({ loading: false, error });
+        }
       }
     } finally {
-      if (runRef.current?.generation === generation) {
+      if (runGenerationRef.current === generation) {
         setBusy(false);
-        executionRef.current = null;
-        abortRef.current = null;
-        runRef.current = null;
+        if (runRef.current?.generation === generation) {
+          executionRef.current = null;
+          abortRef.current = null;
+          runRef.current = null;
+        }
       }
     }
   };
@@ -1028,8 +1179,124 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     }
   };
 
+  const attachRepository = async () => {
+    const path = repoDraft.trim();
+    if (!path || repoBusy) return;
+    setRepoBusy(true);
+    setNotice(null);
+    try {
+      const canonical = await api.canonicalizeRepository({ project_path: path });
+      const bound = canonical?.project_path;
+      if (!bound) throw new ApiError("The repository path was not saved.");
+      if (!selectedId) {
+        setDraftProjectPath(bound);
+        setRepoDraft("");
+        setRepoOpen(false);
+        return;
+      }
+      const updated = await api.updateConversation(selectedId, { project_path: bound });
+      await refreshConversations();
+      setRepoDraft("");
+      setRepoOpen(false);
+      if (!updated?.project_path) {
+        setNotice({ tone: "error", text: "The repository path was not saved." });
+      }
+    } catch (error) {
+      setNotice({ tone: "error", text: error.message || "The repository path was not saved." });
+    } finally {
+      setRepoBusy(false);
+    }
+  };
+
+  const detachRepository = async () => {
+    if (repoBusy) return;
+    if (!selectedId) {
+      setDraftProjectPath("");
+      setRepoDraft("");
+      setRepoOpen(false);
+      return;
+    }
+    setRepoBusy(true);
+    setNotice(null);
+    try {
+      await api.updateConversation(selectedId, { project_path: null });
+      await refreshConversations();
+      setRepoOpen(false);
+      setRepoDraft("");
+    } catch (error) {
+      setNotice({ tone: "error", text: error.message || "The repository could not be detached." });
+    } finally {
+      setRepoBusy(false);
+    }
+  };
+
+  const beginRename = () => {
+    setTitleDraft(selected?.title || draftTitle || "New conversation");
+    setRenaming(true);
+  };
+
+  const saveRename = async (event) => {
+    event?.preventDefault?.();
+    const next = titleDraft.trim();
+    setRenaming(false);
+    if (!next) return;
+    const current = selected?.title || draftTitle || "New conversation";
+    if (next === current) return;
+    if (!selectedId) {
+      setDraftTitle(next);
+      return;
+    }
+    try {
+      await api.updateConversation(selectedId, { title: next });
+      await refreshConversations();
+    } catch (error) {
+      setNotice({ tone: "error", text: error.message || "The conversation title was not saved." });
+    }
+  };
+
+  const renameExistingConversation = async (conversationId, title) => {
+    const next = String(title || "").trim();
+    if (!next || !conversationId) return;
+    try {
+      await api.updateConversation(conversationId, { title: next });
+      await refreshConversations();
+      if (!selectedId) setDraftTitle("New conversation");
+    } catch (error) {
+      setNotice({ tone: "error", text: error.message || "The conversation title was not saved." });
+    }
+  };
+
+  const openMission = (missionId) => {
+    if (!missionId) return;
+    localStorage.setItem("opencobalt.focusMission", missionId);
+    window.location.hash = "missions";
+  };
+
+  useEffect(() => {
+    const onKey = (event) => {
+      const target = event.target;
+      const inField = target instanceof HTMLElement && (
+        ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
+        || target.isContentEditable
+      );
+      if (!inField && event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        document.getElementById("chat-composer")?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    if (messageState.loading || messages.length || interactionBusy) return undefined;
+    const frame = window.requestAnimationFrame(() => document.getElementById("chat-composer")?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedId, messageState.loading, messages.length, interactionBusy]);
+
   const selected = conversations.find((conversation) => conversationIdOf(conversation) === selectedId);
-  const activePersona = personas.find((persona) => (persona.persona_id || persona.id) === controls.personaId);
+  const attachedProjectPath = selected?.project_path || draftProjectPath;
+  const canAttachRepository = Boolean(selected || drafting);
   const executableAvailable = providers.some((provider) => provider.installed && provider.execution_supported && provider.capabilities?.answer_only_isolation && provider.enabled !== false);
   const routeHint = controls.automatic
     ? "Automatic"
@@ -1040,37 +1307,39 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       ? (cancelling ? "cancelling" : "working")
       : "ready";
   const comparableResponses = messages.filter((message) => message.role === "assistant" && message.status === "complete");
-  const executionEvents = streamEvents.filter((event) => [
-    "phase_changed",
-    "provider_started",
-    "execution_started",
-    "fallback_started",
-    "tool",
-    "tool_event",
-    "tool_started",
-    "tool_completed",
-    "approval_required",
-    "research_planning",
-    "research_retrieving",
-    "research_extracting",
-    "research_reviewing",
-    "research_synthesizing",
-    "research_complete",
-  ].includes(event.event_type));
   const liveStatus = pendingApprovals.length
-    ? "Approval required before Cursor can continue."
+    ? "Approval required before work can continue."
     : interactionBusy
     ? cancelling
-      ? "OpenCobalt is finalizing cancellation and refreshing the durable record."
-      : `OpenCobalt is ${streamRoute?.metadata?.lifecycle?.phase ? label(streamRoute.metadata.lifecycle.phase) : "working on"} the current request${executionRef.current ? ` with execution ${executionRef.current}` : ""}.`
+      ? "Cancelling and saving the durable record."
+      : (PHASE_LABELS[streamRoute?.metadata?.lifecycle?.phase] || "Working")
     : notice?.text || "";
 
   return <div className={`chat-layout ${railCollapsed ? "rail-collapsed" : ""} ${isNarrow && conversationOpen ? "rail-drawer-open" : ""}`}>
     {isNarrow && conversationOpen && <button type="button" className="drawer-backdrop conversation-backdrop" aria-label="Close conversations" onClick={() => setConversationOpen(false)} />}
-    <ConversationRail conversations={conversations} selectedId={selectedId} onSelect={selectConversation} onCreate={createConversation} isCreating={creating} disabled={interactionBusy} mobileOpen={isNarrow && conversationOpen} onClose={closeConversations} />
+    <ConversationRail conversations={conversations} selectedId={selectedId} onSelect={selectConversation} onCreate={startConversation} onRename={renameExistingConversation} isCreating={false} disabled={interactionBusy} mobileOpen={isNarrow && conversationOpen} onClose={closeConversations} />
     <section className="chat-main" aria-labelledby="chat-title">
       <header className="chat-header">
-        <div className="chat-heading"><IconButton className="conversation-open" label="Open conversations" aria-expanded={!railCollapsed || conversationOpen} aria-controls="conversation-navigation" onClick={openConversations}><MessageSquareText size={17} /></IconButton><div><h1 id="chat-title">{selected?.title || "New conversation"}</h1><p className="chat-status">{activePersona?.name || activePersona?.display_name || controls.personaId || "persona"} · {routeHint} · {statusHint}</p>{selected?.project_path ? <p className="project-path" title={selected.project_path}>{selected.project_path}</p> : null}</div></div>
+        <div className="chat-heading">
+          {navCollapsed && onOpenNavigation && <IconButton className="nav-reopen-inline" label="Open navigation" aria-expanded={!navCollapsed} aria-controls="primary-navigation" onClick={onOpenNavigation}><PanelRightOpen size={18} /></IconButton>}
+          <IconButton className="conversation-open" label="Open conversations" aria-expanded={!railCollapsed || conversationOpen} aria-controls="conversation-navigation" onClick={openConversations}><MessageSquareText size={17} /></IconButton>
+          <div className="chat-title-block">
+            {renaming
+              ? <form className="chat-rename" onSubmit={saveRename}>
+                  <input value={titleDraft} maxLength="200" aria-label="Conversation title" autoFocus onChange={(event) => setTitleDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setRenaming(false); } }} />
+                  <button type="submit" className="text-button">Save</button>
+                  <button type="button" className="text-button" onClick={() => setRenaming(false)}>Cancel</button>
+                </form>
+              : <h1 id="chat-title">{selected?.title || draftTitle || "New conversation"}</h1>}
+            <p className="chat-status">{routeHint} · {statusHint}</p>
+          </div>
+        </div>
+        <div className="chat-header-meta">
+          {attachedProjectPath
+            ? <button type="button" className="repo-chip" title={attachedProjectPath} onClick={() => setRepoOpen(true)}>{repositoryLabel(attachedProjectPath)}</button>
+            : null}
+          <IconButton className="conversation-rename-header" label="Rename conversation" onClick={beginRename}><Pencil size={15} /></IconButton>
+        </div>
       </header>
       <div ref={scrollRef} className="chat-scroll" onScroll={(event) => {
         const node = event.currentTarget;
@@ -1078,14 +1347,14 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       }}>
         {messageState.loading && <Loading label="Opening conversation" />}
         {messageState.error && <ErrorState error={messageState.error} retry={selectedId ? () => api.messages(selectedId).then((data) => { setMessages(data); setMessageState({ loading: false, error: null }); }) : undefined} />}
-        {!messageState.loading && !messages.length && <EmptyState title="Message OpenCobalt">Attach a document if the question depends on it. Route details stay on each response.</EmptyState>}
+        {!messageState.loading && !messages.length && <div className="chat-empty"><p>Write a goal. OpenCobalt will choose how to handle it.</p></div>}
         {messages.map((message) => {
           const messageId = message.message_id || message.id;
           const matchingStreamRoute = message.route_id && streamRoute?.route_id === message.route_id ? streamRoute : null;
           const hydratedRoute = message.route_id ? routeCache[message.route_id] : null;
           const route = message.route_id ? { route_id: message.route_id, receipt_id: message.receipt_id || message.work_receipt_id, verification_status: message.verification_status, provenance_error: Boolean(routeHydrationErrors[message.route_id]), ...(hydratedRoute || {}), ...(matchingStreamRoute || {}) } : null;
           const lastComparableId = comparableResponses.at(-1) && messageIdOf(comparableResponses.at(-1));
-          return <MessageBubble key={messageId} message={message} route={route} events={messageId === "local-stream" ? executionEvents : []} onInspect={() => route && openRoute(route.route_id, route)} onAllowApproval={(item) => decideApproval(item, true)} onDenyApproval={(item) => decideApproval(item, false)} onApplyChangeset={(item) => decidePromotion(item, true)} onRejectChangeset={(item) => decidePromotion(item, false)} approvalBusy={Boolean(approvalBusyId)} onCompare={comparableResponses.length >= 2 && messageId === lastComparableId ? compareLastTwo : undefined} compareBusy={comparison.loading} />;
+          return <MessageBubble key={messageId} message={message} route={route} onInspect={() => route && openRoute(route.route_id, route)} onOpenMission={openMission} onAllowApproval={(item) => decideApproval(item, true)} onDenyApproval={(item) => decideApproval(item, false)} onApplyChangeset={(item) => decidePromotion(item, true)} onRejectChangeset={(item) => decidePromotion(item, false)} approvalBusy={Boolean(approvalBusyId)} onCompare={comparableResponses.length >= 2 && messageId === lastComparableId ? compareLastTwo : undefined} compareBusy={comparison.loading} />;
         })}
         {pendingApprovals.length > 0 && <div className="approval-stack">{pendingApprovals.map((approval) => <ApprovalCard key={approval.request_id || approval.step_id} approval={approval} onAllow={(item) => decideApproval(item, true)} onDeny={(item) => decideApproval(item, false)} onApply={(item) => decidePromotion(item, true)} onReject={(item) => decidePromotion(item, false)} busy={Boolean(approvalBusyId)} />)}</div>}
         {comparison.error && <div className="compare-state"><ErrorState error={comparison.error} title="The responses could not be compared." /></div>}
@@ -1097,16 +1366,16 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       </div>
       <div className="chat-live" aria-live="polite" aria-atomic="true">{liveStatus}</div>
       {notice && <div className={`stream-notice ${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}>{notice.text}</div>}
-      <Composer controls={controls} personas={personas} providers={providers} models={modelCatalog} modelError={modelError} onChange={updateControls} onSend={send} busy={interactionBusy} cancelling={cancelling} onCancel={cancel} attachments={attachments} onAttach={attachFile} onRemoveAttachment={removeAttachment} attachmentError={attachmentError} executableAvailable={executableAvailable} routingAvailability={routingAvailability} />
+      <Composer key={composerSession} controls={controls} personas={personas} providers={providers} models={modelCatalog} modelError={modelError} onChange={updateControls} onSend={send} busy={interactionBusy} cancelling={cancelling} onCancel={cancel} attachments={attachments} onAttach={attachFile} onRemoveAttachment={removeAttachment} attachmentError={attachmentError} executableAvailable={executableAvailable} routingAvailability={routingAvailability} projectPath={attachedProjectPath} repoDraft={repoDraft} onRepoDraftChange={setRepoDraft} onAttachRepository={canAttachRepository ? attachRepository : undefined} onDetachRepository={canAttachRepository ? detachRepository : undefined} onToggleRepository={canAttachRepository ? () => setRepoOpen((current) => !current) : undefined} repositoryOpen={repoOpen} repoBusy={repoBusy} />
     </section>
   </div>;
 }
 
 function RoutesPage({ openRoute }) {
   const routes = useLoad(api.routes);
-  if (routes.loading) return <section className="page"><PageTitle eyebrow="Routes" title="Routing history">Each score is a heuristic, not a probability.</PageTitle><Loading /></section>;
-  if (routes.error) return <section className="page"><PageTitle eyebrow="Routes" title="Routing history">Each score is a heuristic, not a probability.</PageTitle><ErrorState error={routes.error} retry={routes.reload} /></section>;
-  return <section className="page"><PageTitle eyebrow="Routes" title="Routing history">Each score is a heuristic, not a probability.</PageTitle>{!routes.data.length ? <EmptyState title="No route decisions yet">Send a message in Chat to create the first route record.</EmptyState> : <div className="record-list">{routes.data.map((route) => <button type="button" className="route-row" key={routeIdOf(route)} onClick={() => openRoute(routeIdOf(route), route)}><span className="route-status" aria-hidden="true" /><div><b>{label(route.task_class)}</b><small>{route.selected_provider || "provider not recorded"} · {route.selected_model || "default model"}</small></div><div className="route-row-meta"><span>{route.route_score ?? "—"} pts</span><small>{relativeTime(route.created_at)}</small></div><ArrowRight size={16} aria-hidden="true" /></button>)}</div>}</section>;
+  if (routes.loading) return <section className="page"><PageTitle eyebrow="System" title="Routing history">Each score is a recorded heuristic, not a probability.</PageTitle><Loading /></section>;
+  if (routes.error) return <section className="page"><PageTitle eyebrow="System" title="Routing history">Each score is a recorded heuristic, not a probability.</PageTitle><ErrorState error={routes.error} retry={routes.reload} /></section>;
+  return <section className="page"><PageTitle eyebrow="System" title="Routing history">Each score is a recorded heuristic, not a probability.</PageTitle>{!routes.data.length ? <EmptyState title="No route decisions yet">Send a message in Chat to create the first route record.</EmptyState> : <div className="record-list">{routes.data.map((route) => <button type="button" className="route-row" key={routeIdOf(route)} onClick={() => openRoute(routeIdOf(route), route)}><span className="route-status" aria-hidden="true" /><div><b>{label(route.task_class)}</b><small>{route.selected_provider || "provider not recorded"} · {route.selected_model || "default model"}</small></div><div className="route-row-meta"><span>{route.route_score ?? "—"} pts</span><small>{relativeTime(route.created_at)}</small></div><ArrowRight size={16} aria-hidden="true" /></button>)}</div>}</section>;
 }
 
 function CollectionPage({ kind, title, description, loader, render }) {
@@ -1164,19 +1433,117 @@ function ResearchInspector({ research, onChanged }) {
   </div></details>;
 }
 
-function MissionsPage() {
+function missionUserStatus(mission) {
+  const status = String(mission.status || "");
+  const coding = mission.coding && typeof mission.coding === "object" ? mission.coding : null;
+  const steps = Array.isArray(mission.steps) ? mission.steps : [];
+  const pendingApproval = status.includes("awaiting")
+    || status === "blocked"
+    || steps.some((step) => step.approval_state === "pending" && step.requires_approval)
+    || (Array.isArray(coding?.approvals) && coding.approvals.some((item) => item.state === "pending"))
+    || coding?.changeset?.promotion_state === "pending";
+  if (pendingApproval) return "decision";
+  if (["completed", "complete"].includes(status)) return "completed";
+  if (["failed", "abandoned"].includes(status)) return "failed";
+  return "ongoing";
+}
+
+function missionStatusLabel(status) {
+  const labels = {
+    created: "Created",
+    evidence_gathering: "Gathering evidence",
+    opportunities_generated: "Opportunities ready",
+    candidates_generated: "Candidates ready",
+    plan_proposed: "Planned",
+    awaiting_approval: "Waiting for a decision",
+    awaiting_feedback: "Waiting for a decision",
+    executing_approved_step: "Running",
+    verifying: "Verifying",
+    completed: "Completed",
+    complete: "Completed",
+    failed: "Failed",
+    abandoned: "Abandoned",
+    blocked: "Blocked",
+    running: "Running",
+    pending: "Pending",
+  };
+  return labels[status] || label(status || "planned");
+}
+
+function isEarlierPlanningRecord(mission) {
+  if (missionUserStatus(mission) === "decision") return false;
+  const type = String(mission.mission_type || "");
+  const summary = String(mission.summary || "").toLowerCase();
+  if (mission.auto_plan_id || type === "auto") return true;
+  return summary.includes("persisted without execution");
+}
+
+function MissionCard({ mission, groupKey, onOpenConversation, onChanged }) {
+  const steps = Array.isArray(mission.steps) ? mission.steps : [];
+  const research = mission.research && typeof mission.research === "object" ? mission.research : null;
+  const coding = mission.coding && typeof mission.coding === "object" ? mission.coding : null;
+  const sources = Array.isArray(research?.sources) ? research.sources : [];
+  const evidence = Array.isArray(research?.evidence) ? research.evidence : [];
+  const conversationId = mission.conversation_id;
+  return <article className="record-card mission-card" id={`mission-${missionIdOf(mission)}`}>
+    <div className="card-top">
+      <div className="pill-row">
+        <Pill tone={groupKey === "completed" ? "green" : groupKey === "decision" || groupKey === "failed" ? "amber" : "neutral"}>{missionStatusLabel(mission.status)}</Pill>
+        <Pill>{label(mission.mission_type || "mission")}</Pill>
+        {research && <Pill>{sources.length} sources</Pill>}
+        {research && <Pill>{evidence.length} evidence</Pill>}
+        {coding && <Pill>{label(coding.capability_role === "coding_agent" ? "coding" : coding.capability_role || "coding")}</Pill>}
+      </div>
+      <small>{relativeTime(mission.created_at || mission.updated_at)}</small>
+    </div>
+    <h2>{mission.goal || mission.title || "Untitled mission"}</h2>
+    <p>{mission.current_state || mission.summary || research?.synthesis || coding?.outcome || "No current state has been recorded."}</p>
+    {conversationId && onOpenConversation && <button type="button" className="text-button" onClick={() => onOpenConversation(conversationId)}>Open conversation</button>}
+    <details><summary>Plan, checkpoints, and provenance</summary><div className="mission-detail"><dl><dt>Type</dt><dd>{label(mission.mission_type || "mission")}</dd><dt>Created</dt><dd>{mission.created_at || "not recorded"}</dd><dt>Linked conversation</dt><dd>{conversationId || "not linked"}</dd><dt>Active plan</dt><dd>{mission.active_plan_id || mission.auto_plan_id || "not recorded"}</dd><dt>Last receipt</dt><dd>{mission.last_receipt_id || "not recorded"}</dd><dt>Source route</dt><dd>{mission.route_id || research?.route_id || "not promoted from chat"}</dd><dt>Outcome</dt><dd>{mission.outcome || "not final"}</dd><dt>Mission ID</dt><dd>{mission.mission_id || mission.id}</dd></dl>{steps.length ? <ol>{steps.map((step) => <li key={step.step_id}><b>{step.title}</b><span>{label(step.execution_state)} · approval {label(step.approval_state)} · risk {label(step.risk_level)}</span>{step.receipt_id && <code>{step.receipt_id}</code>}</li>)}</ol> : <p>No durable steps were returned for this mission.</p>}</div></details>
+    {research && <ResearchInspector research={research} onChanged={onChanged} />}
+    {coding && <details open={["running", "pending"].includes(coding.status)}><summary>Coding work</summary><div className="mission-detail"><dl><dt>Objective</dt><dd>{coding.objective || mission.goal || "not recorded"}</dd><dt>Status</dt><dd>{label(coding.status || mission.status)}</dd><dt>Repository</dt><dd><code>{coding.repository_path || "not recorded"}</code></dd><dt>Provider</dt><dd>{coding.provider_id || "not recorded"}{coding.model_id ? ` · ${coding.model_id}` : ""}</dd><dt>Receipt</dt><dd><code>{coding.receipt_id || "not recorded"}</code></dd></dl>{Array.isArray(coding.approvals) && coding.approvals.length > 0 && <section><h3>Approvals</h3><ol>{coding.approvals.map((item, index) => <li key={item.request_id || item.approval_request_id || index}><b>{item.headline || item.tool || item.policy_decision || "permission"}</b><span>{label(item.state || item.policy_decision)} · {label(item.risk_level)}{item.command ? ` · ${item.command}` : item.path ? ` · ${item.path}` : ""}</span></li>)}</ol></section>}{Array.isArray(coding.files_changed) && coding.files_changed.length > 0 && <section><h3>Staged files</h3><ol>{coding.files_changed.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.terminal_operations) && coding.terminal_operations.length > 0 && <section><h3>Commands</h3><ol>{coding.terminal_operations.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.tests) && coding.tests.length > 0 && <section><h3>Verification</h3><ol>{coding.tests.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{coding.changeset && <section><h3>Staged ChangeSet</h3><p>{label(coding.changeset.promotion_state)} · {(coding.changeset.summary && coding.changeset.summary.files_changed) || 0} files</p><PromotionCard changeset={coding.changeset} onApply={async (item) => { await api.applyChangeset(item.changeset_id); await onChanged?.(); }} onReject={async (item) => { await api.rejectChangeset(item.changeset_id); await onChanged?.(); }} /></section>}{coding.outcome && <section><h3>Outcome</h3><p>{coding.outcome}</p></section>}</div></details>}
+  </article>;
+}
+
+function MissionsPage({ onOpenConversation }) {
   const state = useLoad(api.missions);
-  if (state.loading) return <section className="page"><PageTitle eyebrow="Missions" title="Missions">Research and coding work that stays resumable.</PageTitle><Loading /></section>;
-  if (state.error) return <section className="page"><PageTitle eyebrow="Missions" title="Missions">Research and coding work that stays resumable.</PageTitle><ErrorState error={state.error} retry={state.reload} /></section>;
-  if (!state.data.length) return <section className="page"><PageTitle eyebrow="Missions" title="Missions">Research and coding work that stays resumable.</PageTitle><EmptyState title="No missions yet">Research or coding work from Chat appears here.</EmptyState></section>;
-  return <section className="page"><PageTitle eyebrow="Missions" title="Missions">Research and coding work that stays resumable.</PageTitle><div className="record-list">{state.data.map((mission) => {
-    const steps = Array.isArray(mission.steps) ? mission.steps : [];
-    const research = mission.research && typeof mission.research === "object" ? mission.research : null;
-    const coding = mission.coding && typeof mission.coding === "object" ? mission.coding : null;
-    const sources = Array.isArray(research?.sources) ? research.sources : [];
-    const evidence = Array.isArray(research?.evidence) ? research.evidence : [];
-    return <article className="record-card mission-card" key={missionIdOf(mission)}><div className="card-top"><div className="pill-row"><Pill tone={mission.status === "complete" || mission.status === "completed" ? "green" : mission.status === "blocked" ? "amber" : "neutral"}>{label(mission.status || "planned")}</Pill><Pill>{label(mission.mission_type || "mission")}</Pill>{research && <Pill>{sources.length} sources</Pill>}{research && <Pill>{evidence.length} evidence</Pill>}{coding && <Pill>{label(coding.capability_role || "coding")}</Pill>}</div><small className="mono">{mission.mission_id || mission.id}</small></div><h2>{mission.goal || mission.title || "Untitled mission"}</h2><p>{mission.current_state || mission.summary || research?.synthesis || coding?.outcome || "No current state has been recorded."}</p><details><summary>Inspect plan, checkpoints, and provenance</summary><div className="mission-detail"><dl><dt>Active plan</dt><dd>{mission.active_plan_id || "not recorded"}</dd><dt>Last receipt</dt><dd>{mission.last_receipt_id || "not recorded"}</dd><dt>Source route</dt><dd>{mission.route_id || research?.route_id || "not promoted from chat"}</dd><dt>Outcome</dt><dd>{mission.outcome || "not final"}</dd></dl>{steps.length ? <ol>{steps.map((step) => <li key={step.step_id}><b>{step.title}</b><span>{label(step.execution_state)} · approval {label(step.approval_state)} · risk {label(step.risk_level)}</span>{step.receipt_id && <code>{step.receipt_id}</code>}</li>)}</ol> : <p>No durable steps were returned for this mission.</p>}</div></details>{research && <ResearchInspector research={research} onChanged={state.reload} />}{coding && <details open={["running", "pending"].includes(coding.status)}><summary>Coding Mission</summary><div className="mission-detail"><dl><dt>Objective</dt><dd>{coding.objective || mission.goal || "not recorded"}</dd><dt>Status</dt><dd>{label(coding.status || mission.status)}</dd><dt>Repository</dt><dd><code>{coding.repository_path || "not recorded"}</code></dd><dt>Provider</dt><dd>{coding.provider_id || "not recorded"}{coding.model_id ? ` · ${coding.model_id}` : ""} · {label(coding.capability_role || "coding")}</dd><dt>ACP session</dt><dd><code>{coding.acp_session_id || "not reloadable across restart"}</code></dd><dt>Receipt</dt><dd><code>{coding.receipt_id || "not recorded"}</code></dd></dl>{Array.isArray(coding.approvals) && coding.approvals.length > 0 && <section><h3>Approvals</h3><ol>{coding.approvals.map((item, index) => <li key={item.request_id || item.approval_request_id || index}><b>{item.headline || item.tool || item.policy_decision || "permission"}</b><span>{label(item.state || item.policy_decision)} · {label(item.risk_level)}{item.command ? ` · ${item.command}` : item.path ? ` · ${item.path}` : ""}</span></li>)}</ol></section>}{Array.isArray(coding.files_changed) && coding.files_changed.length > 0 && <section><h3>Staged files</h3><ol>{coding.files_changed.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.terminal_operations) && coding.terminal_operations.length > 0 && <section><h3>Commands</h3><ol>{coding.terminal_operations.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.tests) && coding.tests.length > 0 && <section><h3>Verification</h3><ol>{coding.tests.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{coding.changeset && <section><h3>Staged ChangeSet</h3><p>{label(coding.changeset.promotion_state)} · {(coding.changeset.summary && coding.changeset.summary.files_changed) || 0} files</p><PromotionCard changeset={coding.changeset} onApply={async (item) => { await api.applyChangeset(item.changeset_id); await state.reload(); }} onReject={async (item) => { await api.rejectChangeset(item.changeset_id); await state.reload(); }} /></section>}{coding.outcome && <section><h3>Outcome</h3><p>{coding.outcome}</p></section>}</div></details>}</article>;
-  })}</div></section>;
+  const groups = { decision: [], ongoing: [], completed: [], failed: [] };
+  const earlier = [];
+  if (state.data) {
+    state.data.forEach((mission) => {
+      if (isEarlierPlanningRecord(mission)) earlier.push(mission);
+      else groups[missionUserStatus(mission)].push(mission);
+    });
+  }
+  useEffect(() => {
+    const focusId = localStorage.getItem("opencobalt.focusMission");
+    if (!focusId || !state.data?.length) return undefined;
+    localStorage.removeItem("opencobalt.focusMission");
+    const node = document.getElementById(`mission-${focusId}`);
+    node?.scrollIntoView({ block: "start" });
+    node?.querySelector("details")?.setAttribute("open", "open");
+    return undefined;
+  }, [state.data]);
+  if (state.loading) return <section className="page"><PageTitle eyebrow="Work" title="Missions">Durable research and coding work that can resume later.</PageTitle><Loading /></section>;
+  if (state.error) return <section className="page"><PageTitle eyebrow="Work" title="Missions">Durable research and coding work that can resume later.</PageTitle><ErrorState error={state.error} retry={state.reload} /></section>;
+  if (!state.data.length) return <section className="page"><PageTitle eyebrow="Work" title="Missions">Durable research and coding work that can resume later.</PageTitle><EmptyState title="No missions yet">Research or coding work started from Chat appears here. Ordinary Chat stays a conversation.</EmptyState></section>;
+  const sections = [
+    ["decision", "Needs a decision", groups.decision],
+    ["ongoing", "In progress", groups.ongoing],
+    ["completed", "Completed", groups.completed],
+    ["failed", "Failed", groups.failed],
+  ];
+  const currentEmpty = sections.every(([, , items]) => !items.length);
+  return <section className="page"><PageTitle eyebrow="Work" title="Missions">Durable research and coding work that can resume later. Auto-plan records stay inspectable under earlier planning.</PageTitle>
+    {currentEmpty && earlier.length > 0 && <p className="mission-current-empty">No current actionable missions. Earlier planning records remain below.</p>}
+    {sections.filter(([, , items]) => items.length).map(([key, heading, items]) => (
+      <div className="mission-group" key={key}>
+        <h2>{heading}</h2>
+        <div className="record-list">{items.map((mission) => <MissionCard key={missionIdOf(mission)} mission={mission} groupKey={key} onOpenConversation={onOpenConversation} onChanged={state.reload} />)}</div>
+      </div>
+    ))}
+    {earlier.length > 0 && <details className="mission-earlier"><summary>Earlier planning records ({earlier.length})</summary><p className="mission-earlier-note">Auto-plan and other non-executing planning records. They remain durable; they are not current work.</p><div className="record-list">{earlier.map((mission) => <MissionCard key={missionIdOf(mission)} mission={mission} groupKey={missionUserStatus(mission)} onOpenConversation={onOpenConversation} onChanged={state.reload} />)}</div></details>}
+  </section>;
 }
 
 function SkillsPage() {
@@ -1195,8 +1562,8 @@ function SkillsPage() {
       setActions((current) => ({ ...current, [skillId]: { loading: false, error } }));
     }
   };
-  if (state.loading) return <section className="page"><PageTitle eyebrow="Skills" title="Skills">Installed skills remain inspectable. Inspection does not execute imported code.</PageTitle><Loading /></section>;
-  if (state.error) return <section className="page"><PageTitle eyebrow="Skills" title="Skills">Installed skills remain inspectable. Inspection does not execute imported code.</PageTitle><ErrorState error={state.error} retry={state.reload} /></section>;
+  if (state.loading) return <section className="page"><PageTitle eyebrow="System" title="Skills">Installed skills remain inspectable. Inspection does not execute imported code.</PageTitle><Loading /></section>;
+  if (state.error) return <section className="page"><PageTitle eyebrow="System" title="Skills">Installed skills remain inspectable. Inspection does not execute imported code.</PageTitle><ErrorState error={state.error} retry={state.reload} /></section>;
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = state.data.filter((skill) => {
     const matchesQuery = !normalizedQuery || [skill.name, skill.description, skill.source_ref].some((value) => String(value || "").toLowerCase().includes(normalizedQuery));
@@ -1207,7 +1574,7 @@ function SkillsPage() {
       || (filter === "builtin" && skill.source_kind === "builtin");
     return matchesQuery && matchesFilter;
   });
-  return <section className="page"><PageTitle eyebrow="Skills" title="Skills">Installed skills remain inspectable. Inspection does not execute imported code.</PageTitle><details className="skill-management-shell"><summary>Import or manage pinned local skills</summary><SkillImport onChanged={state.reload} /></details><div className="collection-tools"><label><span>Search skills</span><input type="search" value={query} placeholder="Name, description, or source" onChange={(event) => setQuery(event.target.value)} /></label><SelectField label="Filter" value={filter} onChange={setFilter}><option value="all">All skills</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="builtin">Built-in</option><option value="imported">Imported</option></SelectField></div>{filtered.length ? <div className="record-list">{filtered.map((skill) => {
+  return <section className="page"><PageTitle eyebrow="System" title="Skills">Installed skills remain inspectable. Inspection does not execute imported code.</PageTitle><details className="skill-management-shell"><summary>Import or manage pinned local skills</summary><SkillImport onChanged={state.reload} /></details><div className="collection-tools"><label><span>Search skills</span><input type="search" value={query} placeholder="Name, description, or source" onChange={(event) => setQuery(event.target.value)} /></label><SelectField label="Filter" value={filter} onChange={setFilter}><option value="all">All skills</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option><option value="builtin">Built-in</option><option value="imported">Imported</option></SelectField></div>{filtered.length ? <div className="record-list">{filtered.map((skill) => {
     const versions = Array.isArray(skill.versions) ? skill.versions : skill.active_version ? [skill.active_version] : [];
     const permissions = Array.isArray(skill.requested_permissions) ? skill.requested_permissions : [];
     const compatibility = skill.compatibility && typeof skill.compatibility === "object" ? skill.compatibility : {};
@@ -1249,9 +1616,9 @@ function MemoryRecord({ memory, onUpdate, onRemove }) {
     setEditing(false);
   };
 
-  if (editing) return <article className="memory-row memory-edit"><form onSubmit={save}><label><span>Memory</span><textarea rows="3" maxLength="20000" value={draft.content} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} /></label><label><span>Why it exists</span><input maxLength="1000" value={draft.reason} onChange={(event) => setDraft((current) => ({ ...current, reason: event.target.value }))} /></label><div className="memory-edit-grid"><SelectField label="Scope" value={draft.scope} onChange={(scope) => setDraft((current) => ({ ...current, scope }))}><option value="user">User</option><option value="project" disabled>Project — requires a bound project</option><option value="conversation" disabled>Conversation — requires a bound conversation</option><option value="temporary">Temporary</option></SelectField><SelectField label="State" value={draft.status} onChange={(status) => setDraft((current) => ({ ...current, status }))}><option value="proposed">Proposed</option><option value="active">Active</option><option value="rejected">Rejected</option></SelectField><SelectField label="Sensitivity" value={draft.sensitivity} onChange={(sensitivity) => setDraft((current) => ({ ...current, sensitivity }))}><option value="normal">Normal</option><option value="sensitive">Sensitive</option></SelectField></div><div className="memory-edit-actions"><button type="button" className="text-button" onClick={cancelEdit}>Cancel</button><button type="submit" className="button primary" disabled={saving || !draft.content.trim() || !draft.reason.trim()}>{saving ? "Saving…" : "Save changes"}</button></div></form></article>;
+  if (editing) return <article className="memory-row memory-edit"><form onSubmit={save}><label><span>Memory</span><textarea rows="3" maxLength="20000" value={draft.content} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} /></label><label><span>Why it exists</span><input maxLength="1000" value={draft.reason} onChange={(event) => setDraft((current) => ({ ...current, reason: event.target.value }))} /></label><div className="memory-edit-grid"><SelectField label="Scope" value={draft.scope === "temporary" ? "user" : draft.scope} onChange={(scope) => setDraft((current) => ({ ...current, scope }))}><option value="user">User</option><option value="project" disabled>Project — requires a bound project</option><option value="conversation" disabled>Conversation — requires a bound conversation</option></SelectField><SelectField label="State" value={draft.status} onChange={(status) => setDraft((current) => ({ ...current, status }))}><option value="proposed">Proposed</option><option value="active">Active</option><option value="rejected">Rejected</option></SelectField><SelectField label="Sensitivity" value={draft.sensitivity} onChange={(sensitivity) => setDraft((current) => ({ ...current, sensitivity }))}><option value="normal">Normal</option><option value="sensitive">Sensitive</option></SelectField></div><div className="memory-edit-actions"><button type="button" className="text-button" onClick={cancelEdit}>Cancel</button><button type="submit" className="button primary" disabled={saving || !draft.content.trim() || !draft.reason.trim()}>{saving ? "Saving…" : "Save changes"}</button></div></form></article>;
 
-  return <article className="memory-row"><div><div className="card-top"><div className="pill-row"><Pill tone={memory.pinned ? "amber" : "neutral"}>{memory.pinned ? "pinned" : memory.scope || "user"}</Pill>{memory.sensitivity === "sensitive" && <Pill tone="amber">sensitive</Pill>}</div><span>{label(memory.status)}</span></div><h2>{memory.content}</h2><p>Why: {memory.reason || "No reason recorded."}</p><small>Source: {memory.source_ref || memory.source_type || "explicit"} · {relativeTime(memory.updated_at || memory.created_at)}</small></div><div className="memory-actions"><button type="button" className="text-button" onClick={() => setEditing(true)}>Edit</button><button type="button" className="text-button" onClick={() => onUpdate(memory, { pinned: !memory.pinned })}>{memory.pinned ? "Unpin" : "Pin"}</button>{confirmDelete ? <><span className="delete-confirm">Delete permanently?</span><button type="button" className="text-button danger" onClick={() => onRemove(memory)}>Confirm delete</button><button type="button" className="text-button" onClick={() => setConfirmDelete(false)}>Keep</button></> : <button type="button" className="text-button danger" onClick={() => setConfirmDelete(true)}>Delete</button>}</div></article>;
+  return <article className="memory-row"><div><div className="card-top"><div className="pill-row"><Pill tone={memory.pinned ? "amber" : "neutral"}>{memory.pinned ? "pinned" : memoryScopeLabel(memory.scope)}</Pill>{memory.sensitivity === "sensitive" && <Pill tone="amber">sensitive</Pill>}</div><span>{label(memory.status)}</span></div><h2>{memory.content}</h2><p>Why: {memory.reason || "No reason recorded."}</p><small>Source: {memory.source_ref || memory.source_type || "explicit"} · {relativeTime(memory.updated_at || memory.created_at)}</small></div><div className="memory-actions"><button type="button" className="text-button" onClick={() => setEditing(true)}>Edit</button><button type="button" className="text-button" onClick={() => onUpdate(memory, { pinned: !memory.pinned })}>{memory.pinned ? "Unpin" : "Pin"}</button>{confirmDelete ? <><span className="delete-confirm">Delete permanently?</span><button type="button" className="text-button danger" onClick={() => onRemove(memory)}>Confirm delete</button><button type="button" className="text-button" onClick={() => setConfirmDelete(false)}>Keep</button></> : <button type="button" className="text-button danger" onClick={() => setConfirmDelete(true)}>Delete</button>}</div></article>;
 }
 
 function MemoryPage() {
@@ -1294,13 +1661,13 @@ function MemoryPage() {
       setActionError(error);
     }
   };
-  if (state.loading) return <section className="page"><PageTitle eyebrow="Memory" title="Memory">Stored facts, scoped and deletable.</PageTitle><Loading /></section>;
-  if (state.error) return <section className="page"><PageTitle eyebrow="Memory" title="Memory">Stored facts, scoped and deletable.</PageTitle><ErrorState error={state.error} retry={state.reload} /></section>;
-  return <section className="page"><PageTitle eyebrow="Memory" title="Memory">Stored facts, scoped and deletable.</PageTitle>{actionError && <ErrorState error={actionError} title="The memory change was not saved." />}<form className="memory-add" onSubmit={add}><input value={draft.content} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} placeholder="Save a fact or preference explicitly" aria-label="New memory" /><SelectField label="Scope" value={draft.scope} onChange={(scope) => setDraft((current) => ({ ...current, scope }))}><option value="user">User</option><option value="project" disabled>Project — requires a bound project</option><option value="conversation" disabled>Conversation — requires a bound conversation</option><option value="temporary">Temporary</option></SelectField><SelectField label="Sensitivity" value={draft.sensitivity} onChange={(sensitivity) => setDraft((current) => ({ ...current, sensitivity }))}><option value="normal">Normal</option><option value="sensitive">Sensitive</option></SelectField><button type="submit" className="button primary" disabled={saving || !draft.content.trim()}>{saving ? "Saving…" : "Save memory"}</button></form>{state.data.length ? <div className="record-list">{state.data.map((memory) => <MemoryRecord key={memoryIdOf(memory)} memory={memory} onUpdate={update} onRemove={remove} />)}</div> : <EmptyState title="No curated memory yet">OpenCobalt proposes memory from explicit requests. You decide what persists.</EmptyState>}</section>;
+  if (state.loading) return <section className="page"><PageTitle eyebrow="Context" title="Memory">Saved facts you chose to keep. This is not the conversation history.</PageTitle><Loading /></section>;
+  if (state.error) return <section className="page"><PageTitle eyebrow="Context" title="Memory">Saved facts you chose to keep. This is not the conversation history.</PageTitle><ErrorState error={state.error} retry={state.reload} /></section>;
+  return <section className="page"><PageTitle eyebrow="Context" title="Memory">Saved facts you chose to keep. This is not the conversation history.</PageTitle>{actionError && <ErrorState error={actionError} title="The memory change was not saved." />}<form className="memory-add" onSubmit={add}><input value={draft.content} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} placeholder="Save a fact or preference explicitly" aria-label="New memory" /><SelectField label="Scope" value={draft.scope === "temporary" ? "user" : draft.scope} onChange={(scope) => setDraft((current) => ({ ...current, scope }))}><option value="user">User</option><option value="project" disabled>Project — requires a bound project</option><option value="conversation" disabled>Conversation — requires a bound conversation</option></SelectField><SelectField label="Sensitivity" value={draft.sensitivity} onChange={(sensitivity) => setDraft((current) => ({ ...current, sensitivity }))}><option value="normal">Normal</option><option value="sensitive">Sensitive</option></SelectField><button type="submit" className="button primary" disabled={saving || !draft.content.trim()}>{saving ? "Saving…" : "Save memory"}</button></form>{state.data.length ? <div className="record-list">{state.data.map((memory) => <MemoryRecord key={memoryIdOf(memory)} memory={memory} onUpdate={update} onRemove={remove} />)}</div> : <EmptyState title="No saved facts yet">OpenCobalt proposes memory from explicit requests. You decide what persists.</EmptyState>}</section>;
 }
 
 function LedgerPage() {
-  return <CollectionPage kind="Ledger" title="Receipts" description="Normalized execution evidence is kept locally and redacted before it reaches this view." loader={api.receipts} render={(receipt) => <article className="record-card receipt-card" key={receiptIdOf(receipt)}><div className="card-top"><Pill tone={receipt.status === "complete" || receipt.ok ? "green" : receipt.status === "failed" ? "coral" : "neutral"}>{label(receipt.status || (receipt.ok ? "complete" : "recorded"))}</Pill><span className="mono">{receipt.receipt_id || receipt.id}</span></div><h2>{receipt.summary || receipt.action || receipt.provider_id || "Execution receipt"}</h2><p>{receipt.verification_status ? `Receipt integrity: ${label(receipt.verification_status)}` : "No receipt-integrity result was recorded."}</p><small>{relativeTime(receipt.created_at || receipt.finished_at)}</small></article>} />;
+  return <CollectionPage kind="System" title="Receipts" description="Execution records are kept on this machine. Receipt integrity is not a proof of factual truth." loader={api.receipts} render={(receipt) => <article className="record-card receipt-card" key={receiptIdOf(receipt)}><div className="card-top"><Pill tone={receipt.status === "complete" || receipt.ok ? "green" : receipt.status === "failed" ? "coral" : "neutral"}>{label(receipt.status || (receipt.ok ? "complete" : "recorded"))}</Pill><span className="mono">{receipt.receipt_id || receipt.id}</span></div><h2>{receipt.summary || receipt.action || receipt.provider_id || "Execution receipt"}</h2><p>{receipt.verification_status ? `Receipt integrity: ${label(receipt.verification_status)}` : "No receipt-integrity result was recorded."}</p><small>{relativeTime(receipt.created_at || receipt.finished_at)}</small></article>} />;
 }
 
 function ProvidersPage({ providers, reloadProviders }) {
@@ -1339,7 +1706,7 @@ function ProvidersPage({ providers, reloadProviders }) {
       setCatalogs((current) => ({ ...current, [providerId]: { loading: false, error, models: current[providerId]?.models || [] } }));
     }
   };
-  return <section className="page"><PageTitle eyebrow="Providers" title="Providers">Available, authenticated, and executable are separate facts.</PageTitle>{!providers.length ? <EmptyState title="No providers discovered">Refresh after installing or starting a supported runtime. No provider availability is inferred here.</EmptyState> : <div className="record-list">{providers.map((provider) => {
+  return <section className="page"><PageTitle eyebrow="System" title="Providers">Installed, signed in, and executable are separate facts.</PageTitle>{!providers.length ? <EmptyState title="No providers discovered">Refresh after installing or starting a supported runtime. No provider availability is inferred here.</EmptyState> : <div className="record-list">{providers.map((provider) => {
     const providerId = provider.provider_id || provider.id;
     const state = health[providerId];
     const capabilities = provider.capabilities || {};
@@ -1357,14 +1724,13 @@ function ProvidersPage({ providers, reloadProviders }) {
     return <article className="provider-row" key={providerId}>
       <span className={`provider-dot ${ready && executable && enabled ? "available" : ""}`} aria-hidden="true" />
       <div className="provider-main">
-        <div className="card-top"><h2>{providerName(provider)}</h2><div className="pill-row"><Pill tone={installed ? "green" : "neutral"}>{installed ? "installed" : "not installed"}</Pill><Pill tone={enabled ? "green" : "neutral"}>{enabled ? "enabled" : "disabled"}</Pill><Pill tone={requiresNetwork ? "amber" : "neutral"}>{requiresNetwork ? "network required" : "network not required"}</Pill><Pill tone={localOnlyEligible ? "green" : "neutral"}>{localOnlyEligible ? "local-only eligible" : "not local-only eligible"}</Pill><Pill tone={chatEligible ? "green" : "amber"}>{chatEligible ? "Chat eligible" : "Chat approval unavailable"}</Pill>{capabilities.acp ? <Pill tone="green">ACP</Pill> : null}{capabilities.coding_analysis ? <Pill tone="green">coding-analysis</Pill> : null}{capabilities.coding_agent ? <Pill tone="amber">coding-agent</Pill> : null}</div></div>
-        <p>{provider.runtime_id || "runtime not detected"} · auth {label(provider.authentication)} · health {label(provider.health)} · execution {executable ? "supported" : "unsupported"}</p>
-        <p className="provider-contract">{label(profile.adapter_type || "adapter unknown")} · {label(profile.billing_classification || "billing unknown")} · {label(profile.quality_tier || "quality unknown")} quality · {label(capabilities.streaming || "no streaming")} streaming · {label(capabilities.cancellation || "no cancellation")} cancellation</p>
+        <div className="card-top"><h2>{providerName(provider)}</h2><div className="pill-row"><Pill tone={installed ? "green" : "neutral"}>{installed ? "installed" : "not installed"}</Pill><Pill tone={enabled ? "green" : "neutral"}>{enabled ? "enabled" : "disabled"}</Pill><Pill tone={chatEligible ? "green" : "amber"}>{chatEligible ? "usable in Chat" : "not usable in Chat"}</Pill><Pill>{requiresNetwork ? "Network" : "Local"}</Pill></div></div>
+        <p>{executable ? "Execution supported" : "Execution unsupported"} · {label(provider.authentication) === "not required" ? "sign-in not required" : `sign-in ${label(provider.authentication)}`} · {label(provider.health)}</p>
         {models.length > 0 && <div className="pill-row">{models.slice(0, 4).map((model) => <Pill key={modelId(model)}>{typeof model === "string" ? model : `${model.display_name || model.name || modelId(model)}${model.execution_location === "local" ? " · local" : ""}`}</Pill>)}</div>}
         {catalog && !catalog.loading && !catalog.error && !models.length && <p className="provider-evidence">The runtime returned no model records.</p>}
         {catalog?.limitations?.length > 0 && <ul className="provider-limitations">{catalog.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul>}
         {catalog?.receiptId && <p className="provider-evidence">Model discovery receipt: <code>{catalog.receiptId}</code></p>}
-        <details className="provider-evidence"><summary>Inspect capability and outcome evidence</summary><dl><dt>Completion</dt><dd>{capabilities.completion ? "supported" : "unsupported"}</dd><dt>ACP</dt><dd>{capabilities.acp ? "discovered" : "not discovered"}</dd><dt>Coding analysis</dt><dd>{capabilities.coding_analysis ? "eligible" : "not eligible"}</dd><dt>Coding agent</dt><dd>{capabilities.coding_agent ? "eligible" : "not eligible"}</dd><dt>Declared roles</dt><dd>{profile.capability_roles?.length ? profile.capability_roles.map(label).join(", ") : "none declared"}</dd><dt>Tool support</dt><dd>{profile.tool_names?.length ? profile.tool_names.join(", ") : "none declared"}</dd><dt>Task capabilities</dt><dd>{profile.task_capabilities?.length ? profile.task_capabilities.map(label).join(", ") : "none declared"}</dd><dt>Last successful invocation</dt><dd>{provider.last_successful_invocation ? new Date(provider.last_successful_invocation).toLocaleString() : "not proven"}</dd></dl>{provider.recent_errors?.length > 0 && <div><h3>Recent redacted errors</h3><ul className="provider-limitations">{provider.recent_errors.map((recentError, index) => <li key={`${recentError.category}-${index}`}>{label(recentError.category)}: {recentError.message}</li>)}</ul></div>}</details>
+        <details className="provider-evidence"><summary>Inspect capability and outcome evidence</summary><dl><dt>Runtime</dt><dd>{provider.runtime_id || "not detected"}</dd><dt>Adapter</dt><dd>{label(profile.adapter_type || "unknown")}</dd><dt>Billing</dt><dd>{label(profile.billing_classification || "unknown")}</dd><dt>Quality tier</dt><dd>{label(profile.quality_tier || "unknown")}</dd><dt>Streaming</dt><dd>{label(capabilities.streaming || "none")}</dd><dt>Cancellation</dt><dd>{label(capabilities.cancellation || "none")}</dd><dt>Local-only eligible</dt><dd>{localOnlyEligible ? "yes" : "no"}</dd><dt>Completion</dt><dd>{capabilities.completion ? "supported" : "unsupported"}</dd><dt>ACP</dt><dd>{capabilities.acp ? "discovered" : "not discovered"}</dd><dt>Coding analysis</dt><dd>{capabilities.coding_analysis ? "eligible" : "not eligible"}</dd><dt>Coding agent</dt><dd>{capabilities.coding_agent ? "eligible" : "not eligible"}</dd><dt>Declared roles</dt><dd>{profile.capability_roles?.length ? profile.capability_roles.map(label).join(", ") : "none declared"}</dd><dt>Tool support</dt><dd>{profile.tool_names?.length ? profile.tool_names.join(", ") : "none declared"}</dd><dt>Task capabilities</dt><dd>{profile.task_capabilities?.length ? profile.task_capabilities.map(label).join(", ") : "none declared"}</dd><dt>Last successful invocation</dt><dd>{provider.last_successful_invocation ? new Date(provider.last_successful_invocation).toLocaleString() : "not proven"}</dd></dl>{provider.recent_errors?.length > 0 && <div><h3>Recent redacted errors</h3><ul className="provider-limitations">{provider.recent_errors.map((recentError, index) => <li key={`${recentError.category}-${index}`}>{label(recentError.category)}: {recentError.message}</li>)}</ul></div>}</details>
         {provider.limitations?.length > 0 && <ul className="provider-limitations">{provider.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}</ul>}
         {state?.error && <p className="inline-error" role="alert">{state.error.message}</p>}
         {state?.result && <p className={state.result.state === "ready" ? "health-result" : "provider-evidence"} role="status">Last health check: {label(state.result.state)} · auth {label(state.result.authentication)}{state.result.successful_invocation_proven ? " · successful invocation proven" : " · successful invocation not proven"}</p>}
@@ -1540,12 +1906,12 @@ function SettingsPage({ settings, onSettingsChange, personas, providers, reloadP
       setSaveState({ saving: false, saved: false, error });
     }
   };
-  return <section className="page"><PageTitle eyebrow="Settings" title="Settings">Defaults for Chat, privacy, and approvals. They do not grant authority.</PageTitle>{saveState.error && <ErrorState error={saveState.error} title="Local settings were not saved." />}<form className="settings-form" onSubmit={save}>
+  return <section className="page"><PageTitle eyebrow="System" title="Settings">Defaults for Chat, privacy, and approvals. They do not grant authority.</PageTitle>{saveState.error && <ErrorState error={saveState.error} title="Local settings were not saved." />}<form className="settings-form" onSubmit={save}>
     <section><h2>Interaction defaults</h2><SelectField label="Default persona" value={draft.default_persona_id} onChange={(default_persona_id) => setDraft({ ...draft, default_persona_id })}>{personas.map((persona) => <option key={persona.persona_id || persona.id} value={persona.persona_id || persona.id}>{persona.name || persona.display_name || persona.persona_id || persona.id}</option>)}</SelectField><SelectField label="Routing mode" value={draft.default_routing_mode} onChange={(default_routing_mode) => setDraft({ ...draft, default_routing_mode })}><option value="automatic">Automatic</option><option value="manual">Manual</option></SelectField><SelectField label="Theme" value={draft.theme} onChange={(theme) => setDraft({ ...draft, theme })}><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></SelectField></section>
     <section><h2>Safety and retention</h2><Toggle label="Local-only by default" checked={draft.local_only_default} onChange={(local_only_default) => setDraft({ ...draft, local_only_default })} note="Blocks providers whose capability record requires network access." /><SelectField label="Privacy policy" value={draft.privacy_policy} onChange={(privacy_policy) => setDraft({ ...draft, privacy_policy })}><option value="standard">Standard</option><option value="private">Private</option><option value="sensitive">Sensitive</option></SelectField><SelectField label="Memory behavior" value={draft.memory_behavior} onChange={(memory_behavior) => setDraft({ ...draft, memory_behavior })}><option value="off">Off</option><option value="propose">Propose</option><option value="explicit_only">Explicit only</option></SelectField><SelectField label="Verification" value={draft.verification_preference} onChange={(verification_preference) => setDraft({ ...draft, verification_preference })}><option value="minimal">Minimal</option><option value="task_appropriate">Task appropriate</option><option value="strict">Strict</option></SelectField></section>
     <section><h2>Authority and cost</h2><SelectField label="Approval policy" value={draft.approval_policy} onChange={(approval_policy) => setDraft({ ...draft, approval_policy })}><option value="ask_for_risk">Ask for risk</option><option value="always_ask">Always ask</option><option value="deny_tools">Deny tools</option></SelectField><p className="setting-boundary">Chat is answer-only: tool and skill execution is blocked. “Always ask” also blocks model execution until an approval-resume lifecycle exists.</p><SelectField label="Cost ceiling" value={draft.cost_ceiling_category} onChange={(cost_ceiling_category) => setDraft({ ...draft, cost_ceiling_category })}><option value="free">Free</option><option value="low">Low</option><option value="standard">Standard</option><option value="high">High</option></SelectField><SelectField label="Skill permissions" value={draft.skill_permissions} onChange={(skill_permissions) => setDraft({ ...draft, skill_permissions })}><option value="deny">Deny</option><option value="ask">Ask</option><option value="allow_builtin">Allow built-in</option></SelectField><ProviderPriorityField value={draft.provider_priority} providers={providers} onChange={(provider_priority) => setDraft({ ...draft, provider_priority })} /></section>
     <div className="settings-save"><button className="button primary" type="submit" disabled={saveState.saving}><Save size={15} aria-hidden="true" /> {saveState.saving ? "Saving…" : "Save local settings"}</button>{saveState.saved && <span className="save-note" role="status"><Check size={14} aria-hidden="true" /> Saved by the local API</span>}</div>
-  </form><section className="persona-note"><h2>Persona profiles</h2><p>Built-in profiles are versioned records. A provider-native profile is only applied when that provider is selected; another provider is disclosed as an approximation.</p><PersonaEditor personas={personas} providers={providers} defaultPersonaId={draft.default_persona_id} reloadPersonas={reloadPersonas} /></section><DataControls /></section>;
+  </form><details className="persona-note"><summary>Persona profiles</summary><p>Built-in profiles are versioned records. A provider-native profile is only applied when that provider is selected; another provider is disclosed as an approximation.</p><PersonaEditor personas={personas} providers={providers} defaultPersonaId={draft.default_persona_id} reloadPersonas={reloadPersonas} /></details><DataControls /></section>;
 }
 
 function CoreUnavailable({ error, retry, title = "Local API unavailable" }) {
@@ -1655,11 +2021,14 @@ export default function App() {
       ? <Loading label="Opening local control plane" />
       : chatError
         ? <CoreUnavailable error={chatError} retry={retryCore} />
-        : <ChatPage conversations={conversations.data || []} refreshConversations={conversations.reload} personas={personas.data || []} providers={providers.data || []} settings={settings} settingsReady={Boolean(settingsRecord.data)} openRoute={openRoute} refreshSignal={dataEpoch} />;
+        : <ChatPage conversations={conversations.data || []} refreshConversations={conversations.reload} personas={personas.data || []} providers={providers.data || []} settings={settings} settingsReady={Boolean(settingsRecord.data)} openRoute={openRoute} refreshSignal={dataEpoch} navCollapsed={navCollapsed} onOpenNavigation={() => { setNavCollapsed(false); setNavOpen(true); }} />;
   } else if (page === "routes") {
     view = <RoutesPage key={`routes-${dataEpoch}`} openRoute={openRoute} />;
   } else if (page === "missions") {
-    view = <MissionsPage />;
+    view = <MissionsPage onOpenConversation={(conversationId) => {
+      localStorage.setItem("opencobalt.activeConversation", conversationId);
+      selectPage("chat");
+    }} />;
   } else if (page === "skills") {
     view = <SkillsPage />;
   } else if (page === "memory") {

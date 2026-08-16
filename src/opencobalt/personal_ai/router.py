@@ -322,6 +322,7 @@ class PersonalAIRouter:
             metadata={
                 "routing": "deterministic_snapshot_v1",
                 "capability_role": capability_role,
+                "project_path": request.project_path,
                 "risk_classification": risk,
                 "local_only": local_only,
                 "privacy_mode": request.privacy_mode,
@@ -344,6 +345,7 @@ class PersonalAIRouter:
                 "discovery_age_ms": snapshot.discovery_age_ms,
                 "model_execution_location": snapshot.execution_location,
                 "model_locality_evidence": list(snapshot.model_locality_evidence),
+                "billing_classification": snapshot.billing_classification,
             },
         )
         return RoutingPlan(

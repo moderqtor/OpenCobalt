@@ -285,6 +285,22 @@ def _is_managed_external_scratch(
     )
 
 
+_CODING_WORKSPACE_ROLES = frozenset({"coding_analysis", "coding_agent"})
+
+
+def _attached_coding_workspace(request: ProviderRequest) -> Path | None:
+    """Return a validated bound repository for explicit coding roles."""
+    role = str(request.metadata.get("capability_role") or "")
+    if role not in _CODING_WORKSPACE_ROLES:
+        return None
+    raw = request.cwd or request.metadata.get("project_path")
+    if raw is None or not str(raw).strip():
+        raise ValueError("coding requests require an explicit repository path")
+    from opencobalt.personal_ai.cursor_acp import validate_repository_path
+
+    return validate_repository_path(str(raw))
+
+
 def print_timeout_flag(timeout_seconds: int) -> str:
     bounded = max(1, min(int(timeout_seconds), 3600))
     return f"{bounded}s"
@@ -434,11 +450,14 @@ class _AntigravityPrintAdapter:
         conversation_id: str | None = None,
         research: bool = False,
         scratch_path: Path | None = None,
+        attached_workspace: bool = False,
     ) -> None:
         self._capabilities = capabilities
+        self.attached_workspace = bool(attached_workspace)
+        sandbox = _capability_supported(capabilities, "sandbox_mode", "terminal_sandbox")
         self.isolates_answer_only_inference = bool(
-            _capability_supported(capabilities, "sandbox_mode", "terminal_sandbox")
-            and _is_managed_external_scratch(scratch_path)
+            sandbox
+            and (self.attached_workspace or _is_managed_external_scratch(scratch_path))
         )
         self.model_id = model_id
         self.effort = mapped_effort(effort)
@@ -457,11 +476,18 @@ class _AntigravityPrintAdapter:
         available = _capability_supported(
             self._capabilities, "non_interactive_print", "non_interactive_mode"
         ) and _capability_supported(self._capabilities, "json_output")
-        limitations = [
-            "isolated scratch working directory; OpenCobalt repository is not the workspace",
-            "headless permission prompts are not auto-approved; unsafe skip is disabled",
-            "--sandbox is used when discovered so terminal commands stay restricted",
-        ]
+        if self.attached_workspace:
+            limitations = [
+                "sandboxed print in the attached repository; unsafe permission bypass is disabled",
+                "headless permission prompts are not auto-approved; unsafe skip is disabled",
+                "--sandbox is used when discovered so terminal commands stay restricted",
+            ]
+        else:
+            limitations = [
+                "isolated scratch working directory; OpenCobalt repository is not the workspace",
+                "headless permission prompts are not auto-approved; unsafe skip is disabled",
+                "--sandbox is used when discovered so terminal commands stay restricted",
+            ]
         if self.research:
             limitations.append(
                 "research print may use provider tools if the runtime auto-allows them; "
@@ -761,6 +787,17 @@ class AntigravityChatProvider(EngineBackedChatProvider):
         if not self._uses_isolated_print():
             return super().execute(request, cancellation)
 
+        try:
+            workspace = _attached_coding_workspace(request)
+        except ValueError as exc:
+            return _pre_execution_error(
+                request,
+                self.provider_id,
+                category="invalid_request",
+                message=str(exc),
+                status="blocked",
+            )
+
         catalog = self.discover_models(local_only=False, refresh=False)
         admitted = {model.model_id for model in catalog.models}
         if (
@@ -806,6 +843,7 @@ class AntigravityChatProvider(EngineBackedChatProvider):
             (item for item in catalog.models if item.model_id == request.model_id),
             None,
         )
+        execution_cwd = workspace if workspace is not None else scratch
         adapter = _AntigravityPrintAdapter(
             capabilities=self._runtime_capabilities(),
             model_id=request.model_id,
@@ -825,7 +863,8 @@ class AntigravityChatProvider(EngineBackedChatProvider):
                 else None
             ),
             research=research,
-            scratch_path=scratch,
+            scratch_path=scratch if workspace is None else workspace,
+            attached_workspace=workspace is not None,
         )
         try:
             result = self._execute_through_engine(
@@ -833,7 +872,7 @@ class AntigravityChatProvider(EngineBackedChatProvider):
                 cancellation=cancellation,
                 adapter=adapter,
                 model_id=request.model_id,
-                cwd=str(scratch),
+                cwd=str(execution_cwd),
             )
         finally:
             _cleanup_antigravity_scratch(scratch)

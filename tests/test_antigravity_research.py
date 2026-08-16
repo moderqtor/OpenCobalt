@@ -427,6 +427,59 @@ def test_isolated_print_uses_scratch_cwd_and_never_skips_permissions():
     assert engine.calls[-1][1]["unsafe_skip_permissions"] is False
 
 
+def test_coding_analysis_uses_canonical_attached_repository_as_execution_cwd(tmp_path):
+    repo = tmp_path / "OpenCobalt"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    engine = FakeEngine(
+        _outcome(stdout=_catalog_stdout("claude-sonnet-4-6")),
+        _outcome(stdout=_print_stdout("repository answer")),
+    )
+    provider = AntigravityChatProvider(engine, IsolatedAgyAdapter())
+
+    result = provider.execute(
+        ProviderRequest(
+            message="Explain this repository",
+            model_id="claude-sonnet-4-6",
+            cwd=str(repo),
+            metadata={
+                "capability_role": "coding_analysis",
+                "project_path": str(repo),
+            },
+        )
+    )
+
+    assert result.status == "complete"
+    assert Path(engine.calls[-1][1]["cwd"]) == repo.resolve()
+    adapter = engine.calls[-1][1]["adapter"]
+    assert adapter.attached_workspace is True
+    assert "--dangerously-skip-permissions" not in adapter.build_command("hello")
+
+
+def test_invalid_attached_coding_repository_fails_closed_without_scratch_fallback(tmp_path):
+    missing = tmp_path / "missing"
+    engine = FakeEngine()
+    provider = AntigravityChatProvider(engine, IsolatedAgyAdapter())
+
+    result = provider.execute(
+        ProviderRequest(
+            message="Explain this repository",
+            model_id="claude-sonnet-4-6",
+            cwd=str(missing),
+            metadata={
+                "capability_role": "coding_analysis",
+                "project_path": str(missing),
+            },
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.error is not None
+    assert result.error.category == "invalid_request"
+    assert "repository" in result.error.message.lower()
+    assert engine.calls == []
+
+
 def test_antigravity_scratch_is_private_external_and_not_a_git_worktree(
     tmp_path, monkeypatch
 ):

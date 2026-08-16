@@ -86,13 +86,15 @@ it for local-only Chat and some research roles.
 
 ## First use
 
-1. Open Chat.
-2. Optionally attach a repository path if the work is about that repo.
-3. Write the goal. Leave routing on Automatic unless you need a specific
-   provider.
-4. Open Controls only when you need a cognitive policy, local-only, or a
-   manual provider.
-5. Inspect Routes, Missions, or Ledger when you want the decision record.
+1. Open Chat and start typing, or click New.
+2. Write the goal. Automatic routing is on unless you choose Manual.
+3. Open Controls only for persona, approach, privacy, local-only, a
+   manual provider, or an optional repository path. Those draft choices
+   apply to the first send. A repository can be attached before any
+   message; the path is stored with the conversation when it is created.
+4. Open Details on a response, or Missions, when you want the decision
+   record. Routes, Ledger, Skills, Providers, and Settings stay under
+   System.
 
 Research starts when the cognitive policy is Research or Research synthesis.
 Coding-agent work starts when Chat can classify a mutating repo task and a

@@ -671,6 +671,7 @@ def test_repository_code_explanation_makes_coding_analysis_eligible():
     assert cursor.eligible is True
     assert cursor.score_components["role_fit"] == 24
     assert plan.record.metadata["capability_role"] == "coding_analysis"
+    assert plan.record.metadata["project_path"] == repo
 
 
 def test_repository_refactor_prefers_coding_agent_runtime():

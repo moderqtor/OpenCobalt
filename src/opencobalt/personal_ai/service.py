@@ -22,6 +22,7 @@ from opencobalt.execution.runner import redact_text
 from .conversation_routing import ConversationRoutingUpdate
 from .lifecycle import RequestLifecycle, outcome_status_for_phase, phase_label
 from .models import (
+    DEFAULT_CONVERSATION_TITLE,
     ChatExecution,
     ChatMessage,
     Conversation,
@@ -31,6 +32,7 @@ from .models import (
     RouteCandidate,
     RouteRecord,
     StreamEvent,
+    derive_conversation_title,
 )
 from .personas import ensure_builtin_personas, render_persona_policy
 from .providers import (
@@ -180,7 +182,7 @@ class ChatService:
     def create_conversation(
         self,
         *,
-        title: str = "New conversation",
+        title: str = DEFAULT_CONVERSATION_TITLE,
         project_path: str | None = None,
     ) -> Conversation:
         from .conversation_routing import (
@@ -202,6 +204,25 @@ class ChatService:
         if conversation is None:
             raise KeyError(conversation_id)
         return parse_conversation_routing(conversation.metadata, self.store.get_settings())
+
+    def update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: str | None = None,
+        project_path: Any = ...,
+    ) -> Conversation:
+        conversation = self.store.get_conversation(conversation_id)
+        if conversation is None:
+            raise KeyError(conversation_id)
+        kwargs: dict[str, Any] = {}
+        if title is not None:
+            kwargs["title"] = title
+        if project_path is not ...:
+            kwargs["project_path"] = project_path
+        if not kwargs:
+            return conversation
+        return self.store.update_conversation(conversation_id, **kwargs)
 
     def update_conversation_routing(
         self, conversation_id: str, update: ConversationRoutingUpdate
@@ -234,6 +255,13 @@ class ChatService:
                 **request.metadata,
             },
         )
+        if conversation.title == DEFAULT_CONVERSATION_TITLE:
+            derived = derive_conversation_title(request.message)
+            if derived != conversation.title:
+                conversation = self.store.update_conversation(
+                    conversation.conversation_id,
+                    title=derived,
+                )
         accepted = ChatLifecycleEvent(
             event_type="request_accepted",
             request_id=request_id,
@@ -241,6 +269,7 @@ class ChatService:
             sequence=1,
             payload={
                 "message_id": user_message.message_id,
+                "conversation_title": conversation.title,
                 "lifecycle": lifecycle.snapshot(),
                 "phase_label": phase_label(lifecycle.phase),
             },
@@ -913,6 +942,7 @@ class ChatService:
                     "reasoning_effort": request.reasoning_effort,
                     "cognitive_policy": cognitive_policy,
                     "capability_role": route.metadata.get("capability_role"),
+                    "project_path": conversation.project_path,
                     "chat_surface": (
                         "coding_mission"
                         if route.metadata.get("coding_mission_id")
@@ -2155,6 +2185,13 @@ class ChatService:
         sections.extend(
             [
                 "OpenCobalt interaction policy:",
+                "Identity:",
+                "OpenCobalt is the product. Answer as the selected persona inside OpenCobalt.",
+                'Answer ordinary identity questions naturally and concisely, normally as "I\'m OpenCobalt"; mention the selected persona only when useful.',
+                "Do not present the provider or runtime as OpenCobalt's product identity, and do not volunteer identity disclaimers or provider-denial lists.",
+                "Do not claim to be an agentic coding assistant or to have repository or shell authority unless this route selected those capabilities.",
+                "Provider and model details remain available in provenance and may be discussed when the user asks.",
+                "Keep the selected persona's style and tone.",
                 persona_policy,
                 "",
                 "Execution constraints:",
@@ -2171,6 +2208,8 @@ class ChatService:
                 f"Local-only: {bool(route.metadata.get('local_only', False))}",
             ]
         )
+        if conversation.project_path:
+            sections.append(f"Attached repository: {conversation.project_path}")
         if route.persona_provider_mismatch:
             sections.append(f"Persona/provider disclosure: {route.persona_provider_mismatch}")
         from opencobalt.personal_ai.builtin_skills import skill_policy_addendum

@@ -216,6 +216,15 @@ def _safe_text(value: str) -> str:
     return redact_text(value).replace(str(Path.home()), "<home>")
 
 
+def _normalize_project_path_input(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if "\x00" in value:
+        raise ValueError("project path cannot contain a null byte")
+    stripped = value.strip()
+    return stripped or None
+
+
 class ConversationCreate(BaseModel):
     title: str = Field(default="New conversation", max_length=200)
     project_path: str | None = Field(default=None, max_length=4096)
@@ -230,9 +239,42 @@ class ConversationCreate(BaseModel):
     @field_validator("project_path")
     @classmethod
     def _valid_project_path(cls, value: str | None) -> str | None:
-        if value is not None and "\x00" in value:
-            raise ValueError("project path cannot contain a null byte")
-        return value
+        return _normalize_project_path_input(value)
+
+
+class ConversationUpdate(BaseModel):
+    title: str | None = Field(default=None, max_length=200)
+    project_path: str | None = Field(default=None, max_length=4096)
+
+    @field_validator("title")
+    @classmethod
+    def _valid_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not value.strip():
+            raise ValueError("conversation title cannot be blank")
+        return value.strip()
+
+    @field_validator("project_path")
+    @classmethod
+    def _valid_project_path(cls, value: str | None) -> str | None:
+        return _normalize_project_path_input(value)
+
+
+class RepositoryCanonicalizeRequest(BaseModel):
+    project_path: str = Field(min_length=1, max_length=4096)
+
+    @field_validator("project_path")
+    @classmethod
+    def _valid_project_path(cls, value: str) -> str:
+        normalized = _normalize_project_path_input(value)
+        if normalized is None:
+            raise ValueError("project path cannot be blank")
+        return normalized
+
+
+class RepositoryCanonicalizeResponse(BaseModel):
+    project_path: str
 
 
 class RouteListItem(RouteRecord):
@@ -848,6 +890,19 @@ def list_conversations(
 
 
 @router.post(
+    "/repositories/canonicalize",
+    response_model=RepositoryCanonicalizeResponse,
+)
+def canonicalize_repository(
+    request: RepositoryCanonicalizeRequest,
+) -> RepositoryCanonicalizeResponse:
+    path = _canonical_project_path(request.project_path)
+    if path is None:
+        raise _unprocessable("project path cannot be blank")
+    return RepositoryCanonicalizeResponse(project_path=path)
+
+
+@router.post(
     "/conversations",
     response_model=Conversation,
     status_code=status.HTTP_201_CREATED,
@@ -939,6 +994,27 @@ def get_conversation(conversation_id: str) -> Conversation:
     return conversation
 
 
+@router.patch("/conversations/{conversation_id}", response_model=Conversation)
+def update_conversation(conversation_id: str, request: ConversationUpdate) -> Conversation:
+    context = _api_context()
+    conversation = context.store.get_conversation(conversation_id)
+    if conversation is None:
+        raise _not_found("conversation", conversation_id)
+    kwargs: dict[str, Any] = {}
+    if "title" in request.model_fields_set and request.title is not None:
+        kwargs["title"] = request.title
+    if "project_path" in request.model_fields_set:
+        kwargs["project_path"] = (
+            _canonical_project_path(request.project_path) if request.project_path else None
+        )
+    if not kwargs:
+        return conversation
+    try:
+        return context.store.update_conversation(conversation_id, **kwargs)
+    except KeyError as exc:
+        raise _not_found("conversation", conversation_id) from exc
+
+
 @router.get(
     "/conversations/{conversation_id}/routing",
     response_model=ConversationRoutingView,
@@ -1010,7 +1086,7 @@ def _canonical_project_path(project_path: str | None) -> str | None:
     from opencobalt.personal_ai.cursor_acp import validate_repository_path
 
     try:
-        return str(validate_repository_path(project_path))
+        return str(validate_repository_path(project_path.strip()))
     except ValueError as exc:
         raise _unprocessable(str(exc)) from exc
 

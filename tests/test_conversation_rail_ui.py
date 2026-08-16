@@ -15,21 +15,37 @@ def _function_body(source: str, signature: str, end_marker: str) -> str:
 
 
 def test_desktop_select_does_not_collapse_the_conversation_rail():
-    body = _function_body(COMPONENTS, "const select = (conversationId) => {", "const create = async")
-    assert "onSelect(conversationId);" in body
-    assert "onClose" not in body
+    assert "onClick={() => onSelect(conversationId)}" in COMPONENTS
     assert "setConversationOpen(false);" in APP
     assert "if (!isNarrow) setRailCollapsed(true);" in APP
+    rail = COMPONENTS[COMPONENTS.index("export function ConversationRail") :]
+    rail = rail[: rail.index("export const panelIcons")]
+    assert "onClose?.()" in rail
+    assert 'onClick={() => onSelect(conversationId)}' in rail
+    assert "onClose" not in rail.split("onClick={() => onSelect(conversationId)}")[1].split("</button>")[0]
 
 
 def test_new_conversation_ui_does_not_copy_active_chat_routing():
-    create = _function_body(APP, "const createConversation = async (input = {}) => {", "const ensureConversation")
+    start = _function_body(APP, "const startConversation = () => {", "const ensureConversation")
     ensure = _function_body(APP, "const ensureConversation = async () => {", "const persistConversationRouting")
-    assert "updateConversationRouting" not in create
-    assert "updateConversationRouting" not in ensure
-    assert "routingPatchFromControls" not in create
-    assert "routingPatchFromControls" not in ensure
+    send = _function_body(APP, "const send = async (content) => {", "const cancel = async")
+    assert "api.createConversation" not in start
+    assert "updateConversationRouting" not in start
+    assert "routingPatchFromControls" not in start
+    assert "defaultComposerControls(settingsRef.current)" in start
+    assert "setDrafting(true)" in start
+    assert "setDraftProjectPath(\"\")" in start
+    assert "updateConversationRouting" in ensure
+    assert "routingPatchFromControls(draftControls)" in ensure
+    assert "write_seq: 1" in ensure
+    assert "draftControls" in ensure
+    assert "controlsRef.current" in ensure
+    assert "project_path" in ensure
     assert "created: true" in ensure
+    assert "setDrafting(false)" in ensure
+    assert "ensured.created ? defaultComposerControls" not in send
+    assert "const sendControls = { ...controlsRef.current };" in send
+    assert "runGenerationRef.current === generation" in send
     persist = _function_body(APP, "const persistConversationRouting = (nextControls, conversationId) => {", "const updateControls")
     assert "write_seq: seq" in persist
     assert "Conversation routing was not saved" in persist
@@ -37,14 +53,49 @@ def test_new_conversation_ui_does_not_copy_active_chat_routing():
     assert 'from "./routingPersist"' in APP
     assert "queued.generation !== generation" in PERSIST
     assert "createPerConversationWriteQueue" in PERSIST
+    patch = _function_body(APP, "function routingPatchFromControls(controls) {", "function routingControlsEqual")
+    assert "personaId" not in patch
+    assert "cognitivePolicy" not in patch
+    assert "persona_id" not in patch
+    assert "cognitive_policy" not in patch
 
 
-def test_create_form_title_is_empty_with_placeholder_not_prefilled_text():
-    assert 'useState({ title: "", project_path: "" })' in COMPONENTS
-    assert 'placeholder="New conversation"' in COMPONENTS
-    assert 'value={draft.title}' in COMPONENTS
-    create_form = COMPONENTS[COMPONENTS.index("id=\"conversation-create\"") :]
-    assert 'disabled={isCreating || !draft.title.trim()}' not in create_form
+def test_draft_repository_stays_local_until_conversation_creation():
+    start = _function_body(APP, "const startConversation = () => {", "const ensureConversation")
+    ensure = _function_body(APP, "const ensureConversation = async () => {", "const persistConversationRouting")
+    attach = _function_body(APP, "const attachRepository = async (", "const openMission")
+    assert "api.canonicalizeRepository" in attach
+    assert "setDraftProjectPath(bound)" in attach
+    assert "api.createConversation" not in attach
+    assert "api.createConversation" not in start
+    assert "payload.project_path = projectPath" in ensure
+    assert "canAttachRepository" in APP
+    assert "draftingRef.current" in APP
+    assert "if (!draftingRef.current && !draftTransferRef.current)" in APP
+    assert "attachedProjectPath" in APP
+    assert "composerSession" in APP
+    select = _function_body(APP, "const selectConversation = useCallback((conversationId) => {", "}, []);")
+    assert "setDraftProjectPath(\"\")" in select
+    assert "setDrafting(false)" in select
+
+
+def test_repository_attach_is_not_a_nested_submit_form():
+    composer = _function_body(APP, "function Composer(", "const MESSAGE_STATUS")
+    attach = _function_body(APP, "const attachRepository = async (", "const openMission")
+    assert '<form className="repo-compact-form"' not in composer
+    assert '<div className="repo-compact-form"' in composer
+    assert 'type="button" className="button secondary"' in composer
+    assert "onClick={onAttachRepository}" in composer
+    assert "event.preventDefault()" not in attach
+
+
+def test_new_conversation_is_instant_without_title_or_repo_form():
+    assert "id=\"conversation-create\"" not in COMPONENTS
+    assert 'onClick={() => onCreate({})}' in COMPONENTS
+    assert "startConversation" in APP
+    assert "Attach a local repository" in APP
+    assert 'placeholder="Ask OpenCobalt"' in APP
+    assert "Write a goal. OpenCobalt will choose how to handle it." in APP
 
 
 def test_desktop_chat_layout_is_named_grid_not_stacked_panes():
