@@ -181,6 +181,20 @@ def test_relay_ignores_command_from_other_author(tmp_path: Path) -> None:
     assert event is not None and event.status == "ignored"
 
 
+def test_unauthorized_malformed_command_is_inert(tmp_path: Path) -> None:
+    malformed = f"{COMMAND_MARKER}\n```json\nnot-json\n```"
+    github = FakeGitHub([comment(106, malformed, author="someone-else")])
+    relay, broker, store = make_relay(tmp_path, github)
+
+    result = relay.run_once()
+
+    assert result == {"processed": 0, "ignored": 1, "posted": 0}
+    assert broker.starts == []
+    assert github.posts == []
+    event = store.get_relay_event("moderqtor/OpenCobalt", 42, 106)
+    assert event is not None and event.status == "ignored"
+
+
 def test_pending_result_is_retried_without_reexecuting_agent(tmp_path: Path) -> None:
     body = command_comment(action="start", prompt="one turn", command_id="cmd-retry")
     github = FakeGitHub([comment(103, body)], fail_posts=1)
@@ -196,6 +210,22 @@ def test_pending_result_is_retried_without_reexecuting_agent(tmp_path: Path) -> 
     assert second == {"processed": 0, "ignored": 0, "posted": 1}
     assert len(broker.starts) == 1
     assert len(github.posts) == 1
+
+
+def test_duplicate_command_id_is_not_reexecuted(tmp_path: Path) -> None:
+    first = command_comment(action="start", prompt="one", command_id="cmd-same")
+    second = command_comment(action="start", prompt="two", command_id="cmd-same")
+    github = FakeGitHub([comment(107, first), comment(108, second)])
+    relay, broker, store = make_relay(tmp_path, github)
+
+    result = relay.run_once()
+
+    assert result == {"processed": 1, "ignored": 1, "posted": 1}
+    assert len(broker.starts) == 1
+    assert broker.starts[0]["objective"] == "one"
+    duplicate = store.get_relay_event("moderqtor/OpenCobalt", 42, 108)
+    assert duplicate is not None and duplicate.status == "ignored"
+    assert duplicate.action == "duplicate"
 
 
 def test_continue_and_status_use_existing_session(tmp_path: Path) -> None:
