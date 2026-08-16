@@ -50,10 +50,30 @@ def _load_sdk():
     return Codex, ApprovalMode, Sandbox
 
 
+def _install_decline_handler(codex: Any) -> None:
+    """Fail closed on any SDK server request for additional authority.
+
+    ``ApprovalMode.deny_all`` maps turns to an approval policy of ``never``.
+    This explicit handler is defense in depth for current SDK versions whose
+    low-level default request handler may otherwise accept command/file approval
+    requests. We deliberately fail if the high-level client no longer exposes
+    the expected handler slot rather than silently losing this boundary.
+    """
+    client = getattr(codex, "_client", None)
+    if client is None or not hasattr(client, "_approval_handler"):
+        raise RuntimeError("Codex SDK approval boundary could not be installed")
+
+    def decline(_method: str, _params: Any) -> dict[str, str]:
+        return {"decision": "decline"}
+
+    client._approval_handler = decline
+
+
 def _turn(*, prompt: str, thread_id: str | None, model: str | None) -> dict[str, Any]:
     Codex, ApprovalMode, Sandbox = _load_sdk()
     cwd = os.getcwd()
     with Codex() as codex:
+        _install_decline_handler(codex)
         if thread_id:
             thread = codex.thread_resume(
                 thread_id,
@@ -92,6 +112,7 @@ def _turn(*, prompt: str, thread_id: str | None, model: str | None) -> dict[str,
 def _archive(*, thread_id: str) -> dict[str, Any]:
     Codex, _ApprovalMode, _Sandbox = _load_sdk()
     with Codex() as codex:
+        _install_decline_handler(codex)
         response = codex.thread_archive(thread_id)
     return {
         "ok": True,
