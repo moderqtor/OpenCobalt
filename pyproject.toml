@@ -35,6 +35,9 @@ server = [
 shell = [
     "watchdog>=4.0",
 ]
+codex = [
+    "openai-codex>=0.1",
+]
 
 [tool.ruff]
 line-length = 100
@@ -46,6 +49,7 @@ ignore = ["E501"]
 
 [project.scripts]
 opencobalt = "opencobalt.cli:app"
+opencobalt-broker = "opencobalt.agent_broker.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
