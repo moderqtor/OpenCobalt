@@ -1,4 +1,4 @@
-"""SQLite persistence for durable agent-broker sessions and turns."""
+"""SQLite persistence for durable agent-broker sessions, turns, and relay events."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .models import AgentBrokerSession, AgentBrokerTurn
+from .models import AgentBrokerSession, AgentBrokerTurn, AgentRelayEvent
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_broker_sessions (
@@ -50,6 +50,30 @@ CREATE TABLE IF NOT EXISTS agent_broker_turns (
 
 CREATE INDEX IF NOT EXISTS idx_agent_broker_turns_session
 ON agent_broker_turns (session_id, sequence);
+
+CREATE TABLE IF NOT EXISTS agent_broker_relay_events (
+    relay_event_id      TEXT PRIMARY KEY,
+    repository          TEXT NOT NULL,
+    issue_number        INTEGER NOT NULL,
+    source_comment_id   INTEGER NOT NULL,
+    command_id          TEXT NOT NULL,
+    author              TEXT NOT NULL,
+    action              TEXT NOT NULL,
+    session_id          TEXT,
+    receipt_id          TEXT,
+    result_comment_id   INTEGER,
+    status              TEXT NOT NULL,
+    command_json        TEXT NOT NULL DEFAULT '{}',
+    result_json         TEXT NOT NULL DEFAULT '{}',
+    result_body         TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    UNIQUE (repository, issue_number, source_comment_id),
+    UNIQUE (repository, issue_number, command_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_broker_relay_pending
+ON agent_broker_relay_events (repository, issue_number, status, updated_at);
 """
 
 
@@ -151,6 +175,65 @@ class AgentBrokerStore:
             ).fetchall()
         return [self._turn_from_row(row) for row in rows]
 
+    def save_relay_event(self, event: AgentRelayEvent) -> AgentRelayEvent:
+        payload = event.model_dump(mode="json")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO agent_broker_relay_events (
+                    relay_event_id, repository, issue_number, source_comment_id,
+                    command_id, author, action, session_id, receipt_id,
+                    result_comment_id, status, command_json, result_json,
+                    result_body, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(repository, issue_number, source_comment_id) DO UPDATE SET
+                    session_id=excluded.session_id,
+                    receipt_id=excluded.receipt_id,
+                    result_comment_id=excluded.result_comment_id,
+                    status=excluded.status,
+                    result_json=excluded.result_json,
+                    result_body=excluded.result_body,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    payload["relay_event_id"], payload["repository"], payload["issue_number"],
+                    payload["source_comment_id"], payload["command_id"], payload["author"],
+                    payload["action"], payload["session_id"], payload["receipt_id"],
+                    payload["result_comment_id"], payload["status"],
+                    json.dumps(payload["command_json"], sort_keys=True),
+                    json.dumps(payload["result_json"], sort_keys=True), payload["result_body"],
+                    payload["created_at"], payload["updated_at"],
+                ),
+            )
+        return event
+
+    def get_relay_event(
+        self, repository: str, issue_number: int, source_comment_id: int
+    ) -> AgentRelayEvent | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM agent_broker_relay_events
+                WHERE repository = ? AND issue_number = ? AND source_comment_id = ?
+                """,
+                (repository, issue_number, source_comment_id),
+            ).fetchone()
+        return self._relay_from_row(row) if row else None
+
+    def list_pending_relay_results(
+        self, repository: str, issue_number: int
+    ) -> list[AgentRelayEvent]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_broker_relay_events
+                WHERE repository = ? AND issue_number = ? AND status = 'result_pending'
+                ORDER BY created_at
+                """,
+                (repository, issue_number),
+            ).fetchall()
+        return [self._relay_from_row(row) for row in rows]
+
     @staticmethod
     def _session_from_row(row: sqlite3.Row) -> AgentBrokerSession:
         return AgentBrokerSession.model_validate({
@@ -187,4 +270,25 @@ class AgentBrokerStore:
             "status": row["status"],
             "created_at": row["created_at"],
             "metadata": json.loads(row["metadata_json"] or "{}"),
+        })
+
+    @staticmethod
+    def _relay_from_row(row: sqlite3.Row) -> AgentRelayEvent:
+        return AgentRelayEvent.model_validate({
+            "relay_event_id": row["relay_event_id"],
+            "repository": row["repository"],
+            "issue_number": row["issue_number"],
+            "source_comment_id": row["source_comment_id"],
+            "command_id": row["command_id"],
+            "author": row["author"],
+            "action": row["action"],
+            "session_id": row["session_id"],
+            "receipt_id": row["receipt_id"],
+            "result_comment_id": row["result_comment_id"],
+            "status": row["status"],
+            "command_json": json.loads(row["command_json"] or "{}"),
+            "result_json": json.loads(row["result_json"] or "{}"),
+            "result_body": row["result_body"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
         })
