@@ -220,6 +220,19 @@ class AgentBrokerStore:
             ).fetchone()
         return self._relay_from_row(row) if row else None
 
+    def get_relay_event_by_command(
+        self, repository: str, issue_number: int, command_id: str
+    ) -> AgentRelayEvent | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM agent_broker_relay_events
+                WHERE repository = ? AND issue_number = ? AND command_id = ?
+                """,
+                (repository, issue_number, command_id),
+            ).fetchone()
+        return self._relay_from_row(row) if row else None
+
     def list_pending_relay_results(
         self, repository: str, issue_number: int
     ) -> list[AgentRelayEvent]:
