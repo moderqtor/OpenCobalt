@@ -1,4 +1,4 @@
-"""SQLite persistence for durable agent-broker sessions, turns, and relay events."""
+"""SQLite persistence for durable agent-broker sessions, turns, and relay state."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .models import AgentBrokerSession, AgentBrokerTurn, AgentRelayEvent
+from .models import AgentBrokerSession, AgentBrokerTurn, AgentRelayChannel, AgentRelayEvent
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_broker_sessions (
@@ -50,6 +50,16 @@ CREATE TABLE IF NOT EXISTS agent_broker_turns (
 
 CREATE INDEX IF NOT EXISTS idx_agent_broker_turns_session
 ON agent_broker_turns (session_id, sequence);
+
+CREATE TABLE IF NOT EXISTS agent_broker_relay_channels (
+    repository           TEXT NOT NULL,
+    issue_number         INTEGER NOT NULL,
+    allowed_author       TEXT NOT NULL,
+    last_seen_comment_id INTEGER NOT NULL DEFAULT 0,
+    initialized_at       TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    PRIMARY KEY (repository, issue_number)
+);
 
 CREATE TABLE IF NOT EXISTS agent_broker_relay_events (
     relay_event_id      TEXT PRIMARY KEY,
@@ -175,6 +185,38 @@ class AgentBrokerStore:
             ).fetchall()
         return [self._turn_from_row(row) for row in rows]
 
+    def save_relay_channel(self, channel: AgentRelayChannel) -> AgentRelayChannel:
+        payload = channel.model_dump(mode="json")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO agent_broker_relay_channels (
+                    repository, issue_number, allowed_author, last_seen_comment_id,
+                    initialized_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(repository, issue_number) DO UPDATE SET
+                    allowed_author=excluded.allowed_author,
+                    last_seen_comment_id=excluded.last_seen_comment_id,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    payload["repository"], payload["issue_number"], payload["allowed_author"],
+                    payload["last_seen_comment_id"], payload["initialized_at"], payload["updated_at"],
+                ),
+            )
+        return channel
+
+    def get_relay_channel(self, repository: str, issue_number: int) -> AgentRelayChannel | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM agent_broker_relay_channels
+                WHERE repository = ? AND issue_number = ?
+                """,
+                (repository, issue_number),
+            ).fetchone()
+        return self._relay_channel_from_row(row) if row else None
+
     def save_relay_event(self, event: AgentRelayEvent) -> AgentRelayEvent:
         payload = event.model_dump(mode="json")
         with self._connect() as connection:
@@ -283,6 +325,17 @@ class AgentBrokerStore:
             "status": row["status"],
             "created_at": row["created_at"],
             "metadata": json.loads(row["metadata_json"] or "{}"),
+        })
+
+    @staticmethod
+    def _relay_channel_from_row(row: sqlite3.Row) -> AgentRelayChannel:
+        return AgentRelayChannel.model_validate({
+            "repository": row["repository"],
+            "issue_number": row["issue_number"],
+            "allowed_author": row["allowed_author"],
+            "last_seen_comment_id": row["last_seen_comment_id"],
+            "initialized_at": row["initialized_at"],
+            "updated_at": row["updated_at"],
         })
 
     @staticmethod
