@@ -488,7 +488,7 @@ export function ConversationRail({ conversations, selectedId, onSelect, onCreate
               <input value={titleDraft} maxLength="200" aria-label="Conversation title" autoFocus onChange={(event) => setTitleDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setRenamingId(""); } }} />
             </form>
           : <>
-              <button type="button" className="conversation-item-select" aria-current={selected ? "true" : undefined} disabled={disabled} onClick={() => onSelect(conversationId)}><b>{conversation.title || "Untitled conversation"}</b><span>{conversation.updated_at ? new Date(conversation.updated_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "local"}</span></button>
+              <button type="button" className="conversation-item-select" title={conversation.title || "Untitled conversation"} aria-current={selected ? "true" : undefined} disabled={disabled} onClick={() => onSelect(conversationId)}><b>{conversation.title || "Untitled conversation"}</b><span>{conversation.updated_at ? new Date(conversation.updated_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "local"}</span></button>
               {onRename && <IconButton className="conversation-rename" label="Rename conversation" disabled={disabled} onClick={(event) => { event.stopPropagation(); setTitleDraft(conversation.title || ""); setRenamingId(conversationId); }}><Pencil size={13} /></IconButton>}
             </>}
       </div>;

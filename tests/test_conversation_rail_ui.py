@@ -63,7 +63,7 @@ def test_new_conversation_ui_does_not_copy_active_chat_routing():
 def test_draft_repository_stays_local_until_conversation_creation():
     start = _function_body(APP, "const startConversation = () => {", "const ensureConversation")
     ensure = _function_body(APP, "const ensureConversation = async () => {", "const persistConversationRouting")
-    attach = _function_body(APP, "const attachRepository = async (event) => {", "const openMission")
+    attach = _function_body(APP, "const attachRepository = async (", "const openMission")
     assert "api.canonicalizeRepository" in attach
     assert "setDraftProjectPath(bound)" in attach
     assert "api.createConversation" not in attach
@@ -77,6 +77,16 @@ def test_draft_repository_stays_local_until_conversation_creation():
     select = _function_body(APP, "const selectConversation = useCallback((conversationId) => {", "}, []);")
     assert "setDraftProjectPath(\"\")" in select
     assert "setDrafting(false)" in select
+
+
+def test_repository_attach_is_not_a_nested_submit_form():
+    composer = _function_body(APP, "function Composer(", "const MESSAGE_STATUS")
+    attach = _function_body(APP, "const attachRepository = async (", "const openMission")
+    assert '<form className="repo-compact-form"' not in composer
+    assert '<div className="repo-compact-form"' in composer
+    assert 'type="button" className="button secondary"' in composer
+    assert "onClick={onAttachRepository}" in composer
+    assert "event.preventDefault()" not in attach
 
 
 def test_new_conversation_is_instant_without_title_or_repo_form():

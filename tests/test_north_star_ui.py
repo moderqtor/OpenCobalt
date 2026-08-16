@@ -90,6 +90,14 @@ def test_repository_rename_navigation_and_memory_followup_contracts():
     assert "memoryScopeLabel" in memory
 
 
+def test_conversation_rail_titles_are_two_line_clamped_with_full_title_tooltips():
+    rail = COMPONENTS[COMPONENTS.index("export function ConversationRail") : COMPONENTS.index("export const panelIcons")]
+    assert 'title={conversation.title || "Untitled conversation"}' in rail
+    assert "-webkit-line-clamp: 2" in CSS
+    title_rule = CSS[CSS.index(".conversation-item b") : CSS.index(".conversation-item span")]
+    assert "white-space: nowrap" not in title_rule
+
+
 def test_conversation_patch_client_exists():
     assert "updateConversation:" in API
 

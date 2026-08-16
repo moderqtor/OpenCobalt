@@ -315,7 +315,10 @@ def test_bound_repository_reaches_provider_request_and_identity_policy(tmp_path)
     assert request.cwd == str(repo.resolve())
     assert request.metadata["project_path"] == str(repo.resolve())
     assert "OpenCobalt is the product" in request.system_policy
-    assert "Provider and model names belong in OpenCobalt provenance" in request.system_policy
+    assert "Answer ordinary identity questions naturally and concisely" in request.system_policy
+    assert "Provider and model details remain available in provenance" in request.system_policy
+    assert "Do not speak in the first person as Antigravity, Claude" not in request.system_policy
+    assert "I am not Antigravity" not in request.system_policy
     assert f"Attached repository: {repo.resolve()}" in request.system_policy
 
 

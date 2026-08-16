@@ -361,14 +361,14 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
               {onToggleRepository && <button type="button" className="text-button" onClick={onToggleRepository}>Change</button>}
               {onDetachRepository && <button type="button" className="text-button" onClick={onDetachRepository} disabled={repoBusy}>Detach</button>}
             </div>
-          : <form className="repo-compact-form" onSubmit={onAttachRepository}>
+          : <div className="repo-compact-form">
               <label>
                 <span>Repository path</span>
                 <input value={repoDraft} maxLength="4096" placeholder="~/dev/OpenCobalt" autoComplete="off" onChange={(event) => onRepoDraftChange?.(event.target.value)} />
               </label>
-              <button type="submit" className="button secondary" disabled={repoBusy || !repoDraft.trim()}>{repoBusy ? "Saving…" : "Attach"}</button>
+              <button type="button" className="button secondary" onClick={onAttachRepository} disabled={repoBusy || !repoDraft.trim()}>{repoBusy ? "Saving…" : "Attach"}</button>
               {projectPath && onToggleRepository && <button type="button" className="text-button" onClick={onToggleRepository}>Cancel</button>}
-            </form>}
+            </div>}
         <p className="composer-note">{projectPath ? "Coding work stays inside this bound repository." : "Attach a local repository. Optional, for coding work in a specific workspace."}</p>
       </div>}
     </div>}
@@ -1179,8 +1179,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     }
   };
 
-  const attachRepository = async (event) => {
-    event.preventDefault();
+  const attachRepository = async () => {
     const path = repoDraft.trim();
     if (!path || repoBusy) return;
     setRepoBusy(true);
