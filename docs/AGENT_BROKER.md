@@ -72,12 +72,20 @@ Broker records are additive tables in the shared `.opencobalt/ledger.db`:
 
 - `agent_broker_sessions`
 - `agent_broker_turns`
+- `agent_broker_relay_channels`
 - `agent_broker_relay_events`
 
 A session stores OpenCobalt's broker id separately from the provider thread id. This
 allows provider sessions to disappear or change without making provider state the
 primary record.
 
+A dry-run session may exist before a provider thread exists. When the first later
+`--execute` turn starts that provider thread, the broker includes the durable objective and
+prior plan-only prompts as context so the first live turn does not silently lose the plan.
+The local turn record still stores the user's current instruction rather than the synthesized
+context envelope.
+
+Relay channels persist the configured author and a `last_seen_comment_id` watermark.
 Relay events persist the source comment and command id before execution. A GitHub result
 write failure therefore leaves a `result_pending` record that can be retried without
 executing the agent turn again.
@@ -143,19 +151,41 @@ Only comments that satisfy all of these conditions can become commands:
 4. it contains a valid bounded JSON command;
 5. its `command_id` has not already been processed on that relay channel.
 
+The author binding is durable. Restarting a relay with a different `--author` for an
+already initialized channel fails instead of silently changing who can issue commands.
+
 Example controller message:
 
-```text
 <!-- opencobalt-agent-command:v1 -->
+
 ```json
 {"action":"continue","command_id":"cmd-...","prompt":"Review the failing test and fix only that regression.","session_id":"agent-..."}
-```
 ```
 
 Supported actions are `start`, `continue`, `status`, and `stop`. Remote commands cannot
 select a local filesystem path. `start` is always bound to the `--local-repo` chosen when
 the user launched the relay. Model selection is likewise fixed by the local relay process
 when configured.
+
+### First bind and restart behavior
+
+A newly bound relay records the highest existing GitHub comment id and starts **after** it.
+Historical command comments are therefore inert by default on a fresh machine or ledger.
+This avoids unexpectedly replaying an old instruction just because a relay was started.
+
+After initialization, every observed comment advances the durable channel watermark,
+including ordinary non-command comments. If the relay stops, commands posted while it is
+down remain newer than the stored watermark and are processed when the relay restarts.
+
+`--replay-existing` is an explicit first-bind escape hatch for deliberate testing or
+migration. It starts a new channel at cursor zero so existing valid commands are considered.
+The flag does not rewind a channel that is already initialized.
+
+Source comment ids and command ids are also deduplicated independently. If a command result
+cannot be posted to GitHub, the completed local execution is retained as `result_pending`.
+The next poll retries only the result comment and does not execute the coding turn again.
+
+### Result visibility
 
 Results are posted with a separate v1 result marker and include the broker session id,
 provider thread id when available, execution status, and WorkReceipt id. Response text is
