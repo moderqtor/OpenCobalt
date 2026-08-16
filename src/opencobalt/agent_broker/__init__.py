@@ -1,7 +1,12 @@
 """Durable external-agent session supervision for OpenCobalt."""
 
 from .broker import AgentBroker, BrokerExecution
-from .models import AgentBrokerSession, AgentBrokerTurn, AgentRelayEvent
+from .models import (
+    AgentBrokerSession,
+    AgentBrokerTurn,
+    AgentRelayChannel,
+    AgentRelayEvent,
+)
 from .relay import GitHubAgentRelay, RelayCommand, command_comment
 from .store import AgentBrokerStore
 
@@ -10,6 +15,7 @@ __all__ = [
     "AgentBrokerSession",
     "AgentBrokerStore",
     "AgentBrokerTurn",
+    "AgentRelayChannel",
     "AgentRelayEvent",
     "BrokerExecution",
     "GitHubAgentRelay",
