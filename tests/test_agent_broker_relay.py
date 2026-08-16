@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from opencobalt.agent_broker.broker import BrokerExecution
 from opencobalt.agent_broker.models import AgentBrokerSession
 from opencobalt.agent_broker.relay import (
@@ -106,7 +108,14 @@ def comment(comment_id: int, body: str, author: str = "moderqtor") -> dict:
     return {"id": comment_id, "body": body, "user": {"login": author}}
 
 
-def make_relay(tmp_path: Path, github: FakeGitHub, *, execute_agent: bool = True):
+def make_relay(
+    tmp_path: Path,
+    github: FakeGitHub,
+    *,
+    execute_agent: bool = True,
+    initialize: bool = True,
+    replay_existing: bool = True,
+):
     store = AgentBrokerStore(tmp_path / "ledger.db")
     broker = FakeBroker(store, tmp_path)
     relay = GitHubAgentRelay(
@@ -120,6 +129,8 @@ def make_relay(tmp_path: Path, github: FakeGitHub, *, execute_agent: bool = True
         execute_agent=execute_agent,
         allow_comment_writes=True,
     )
+    if initialize:
+        relay.initialize_channel(replay_existing=replay_existing)
     return relay, broker, store
 
 
@@ -165,6 +176,79 @@ def test_relay_executes_allowlisted_start_once_and_posts_result(tmp_path: Path) 
     assert event.status == "complete"
     assert event.session_id == "agent-relay-test"
     assert event.result_comment_id == 9001
+
+
+def test_fresh_channel_starts_after_existing_comments_by_default(tmp_path: Path) -> None:
+    old = command_comment(action="start", prompt="historical", command_id="cmd-old")
+    github = FakeGitHub([comment(201, old)])
+    relay, broker, store = make_relay(tmp_path, github, initialize=False)
+
+    channel = relay.initialize_channel()
+    first = relay.run_once()
+    github.comments.append(
+        comment(
+            202,
+            command_comment(action="start", prompt="new", command_id="cmd-new"),
+        )
+    )
+    second = relay.run_once()
+
+    assert channel.last_seen_comment_id == 201
+    assert first == {"processed": 0, "ignored": 0, "posted": 0}
+    assert second == {"processed": 1, "ignored": 0, "posted": 1}
+    assert [item["objective"] for item in broker.starts] == ["new"]
+    stored = store.get_relay_channel("moderqtor/OpenCobalt", 42)
+    assert stored is not None and stored.last_seen_comment_id == 202
+
+
+def test_restart_processes_commands_posted_while_relay_was_down(tmp_path: Path) -> None:
+    github = FakeGitHub([comment(301, "ordinary setup discussion")])
+    relay, broker, store = make_relay(tmp_path, github, initialize=False)
+    relay.initialize_channel()
+    github.comments.append(
+        comment(
+            302,
+            command_comment(action="start", prompt="while down", command_id="cmd-down"),
+        )
+    )
+
+    restarted = GitHubAgentRelay(
+        repository="moderqtor/OpenCobalt",
+        issue_number=42,
+        allowed_author="moderqtor",
+        local_repository=str(tmp_path / "repo"),
+        broker=broker,
+        store=store,
+        github=github,
+        execute_agent=True,
+        allow_comment_writes=True,
+    )
+    existing = restarted.initialize_channel()
+    result = restarted.run_once()
+
+    assert existing.last_seen_comment_id == 301
+    assert result == {"processed": 1, "ignored": 0, "posted": 1}
+    assert broker.starts[0]["objective"] == "while down"
+
+
+def test_existing_channel_rejects_author_rebinding(tmp_path: Path) -> None:
+    github = FakeGitHub([])
+    relay, broker, store = make_relay(tmp_path, github, initialize=False)
+    relay.initialize_channel()
+    changed = GitHubAgentRelay(
+        repository="moderqtor/OpenCobalt",
+        issue_number=42,
+        allowed_author="someone-else",
+        local_repository=str(tmp_path / "repo"),
+        broker=broker,
+        store=store,
+        github=github,
+        execute_agent=True,
+        allow_comment_writes=True,
+    )
+
+    with pytest.raises(ValueError, match="different allowed GitHub author"):
+        changed.initialize_channel()
 
 
 def test_relay_ignores_command_from_other_author(tmp_path: Path) -> None:
