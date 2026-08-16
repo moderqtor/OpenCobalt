@@ -50,7 +50,7 @@ the conversation, routes work through capability adapters, and keeps state in lo
 | Local-only request constraint | Implemented |
 | Approvals for provider tool use and coding promotion | Implemented |
 | CLI routing, receipts, missions, and `auto` planning | Implemented |
-| Autonomous Creation v0 | Under active implementation (IntentContract + WorkGraph + supervisor) |
+| Autonomous Creation v0 | Implemented (`opencobalt do "INTENT"` compiles intent into `IntentContract`, builds adaptive `WorkGraph`, executes multi-agent divergence/critique, synthesizes design, stages prototype, and performs evidence-driven graph revision) |
 | Tauri desktop wrapper | Usable via `opencobalt desktop` if Cargo/Tauri tooling is installed. The web UI is canonical. |
 
 Claude Code and Codex are real execution adapters, but ordinary Chat currently

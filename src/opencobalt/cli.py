@@ -931,6 +931,170 @@ def orch(
     )
 
 
+@app.command(name="do")
+def do(
+    intent: str = typer.Argument(..., help="What you want OpenCobalt to build, explore, or achieve"),
+    autonomy: str = typer.Option(
+        "high",
+        "--autonomy",
+        "-a",
+        help="Autonomy envelope: observe, plan, standard, high, or yolo",
+    ),
+    budget: str = typer.Option(
+        "4h",
+        "--budget",
+        "-b",
+        help="Resource and time budget (e.g. 15m, 1h, 4h, low, medium, high, xhigh)",
+    ),
+    max_workers: int = typer.Option(
+        4,
+        "--max-workers",
+        "-w",
+        help="Maximum concurrent workers / subagents",
+    ),
+    max_iterations: int = typer.Option(
+        10,
+        "--max-iterations",
+        "-n",
+        help="Maximum supervisor loop iterations",
+    ),
+    execute: bool = typer.Option(
+        True,
+        "--execute/--no-execute",
+        help="Execute the WorkGraph through bounded agents and engines",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit machine-readable JSON output",
+    ),
+    project_path: str | None = typer.Option(
+        None,
+        "--project-path",
+        help="Optional bound target project directory",
+    ),
+) -> None:
+    """Execute autonomous creation and intent fulfillment.
+
+    Compiles intent into an IntentContract, constructs an adaptive WorkGraph,
+    runs multi-agent creative exploration and adversarial critique, synthesizes
+    an authoritative specification, stages runnable implementation, and verifies outcomes.
+    """
+    import json
+    import time
+    from pathlib import Path
+
+    from .creation.intent_compiler import IntentCompiler
+    from .creation.store import CreationStore
+    from .creation.supervisor import AutonomousSupervisor, SupervisorProgressEvent
+    from .creation.work_graph import WorkGraphPlanner
+
+    console = make_console()
+    start_time = time.time()
+
+    envelope_map = {
+        "observe": "observe",
+        "plan": "plan",
+        "standard": "sandbox_exec",
+        "high": "autonomous_lab",
+        "yolo": "operator_yolo",
+    }
+    autonomy_level = envelope_map.get(autonomy.lower(), "autonomous_lab")
+
+    contract = IntentCompiler.compile(
+        raw_request=intent,
+        autonomy=autonomy_level,
+        budget=budget,
+        max_iterations=max_iterations,
+        max_workers=max_workers,
+        project_path=project_path,
+    )
+
+    db_path = Path(".opencobalt/ledger.db")
+    store = CreationStore(db_path)
+
+    if not execute:
+        graph = WorkGraphPlanner.plan(contract)
+        store.save_intent(contract)
+        store.save_work_graph(graph)
+        if json_output:
+            typer.echo(json.dumps({"intent": contract.to_dict(), "graph": graph.to_dict()}, indent=2))
+            return
+        console.print(
+            Panel(
+                f"[bold cyan]Intent Contract:[/bold cyan] {contract.contract_id}\n"
+                f"[bold]Goal:[/bold] {contract.literal_request}\n"
+                f"[bold]Hard Constraints:[/bold] {len(contract.hard_constraints)}\n"
+                f"[bold]Inferred Objectives:[/bold] {len(contract.inferred_objectives)}\n"
+                f"[bold]Open Dimensions:[/bold] {len(contract.open_creative_dimensions)}\n"
+                f"[bold]Planned Nodes:[/bold] {len(graph.nodes)}\n"
+                f"[dim]Run with --execute to supervise autonomous fulfillment.[/dim]",
+                title="[bold blue]OpenCobalt Autonomous Creation (Plan-Only)[/bold blue]",
+                box=box.ROUNDED,
+            )
+        )
+        return
+
+    supervisor = AutonomousSupervisor(store=store)
+
+    def on_progress(event: SupervisorProgressEvent) -> None:
+        if json_output:
+            return
+        if event.phase == "initialized":
+            console.print(f"[bold cyan]●[/bold cyan] [bold]{event.message}[/bold]")
+        elif event.phase == "node_start":
+            console.print(f"  [dim]▶[/dim] {event.message}")
+        elif event.phase == "node_complete":
+            summary_part = event.message.split(": ", 1)[-1] if ": " in event.message else event.message
+            console.print(f"  [green]✓[/green] [bold]{event.node_title}[/bold]: {summary_part}")
+        elif event.phase == "graph_revision":
+            console.print(f"  [bold yellow]⚡ {event.message}[/bold yellow]")
+        elif event.phase == "finished":
+            console.print(f"[bold green]✔ {event.message}[/bold green]")
+
+    if not json_output:
+        console.print(
+            Panel(
+                f"[bold]Intent:[/bold] \"{contract.literal_request}\"\n"
+                f"[bold]Contract ID:[/bold] {contract.contract_id} | [bold]Autonomy:[/bold] {autonomy_level} | [bold]Budget:[/bold] {budget}\n"
+                f"[dim]Distinguishing explicit constraints, inferred objectives, and open creative freedom...[/dim]",
+                title="[bold blue]OpenCobalt Autonomous Creation v0[/bold blue]",
+                box=box.ROUNDED,
+            )
+        )
+
+    final_graph, summary = supervisor.run(intent=contract, progress_callback=on_progress)
+    elapsed = time.time() - start_time
+
+    if json_output:
+        summary["elapsed_seconds"] = elapsed
+        typer.echo(json.dumps(summary, indent=2))
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan")
+    table.add_column("Node ID", style="dim")
+    table.add_column("Type")
+    table.add_column("Executor")
+    table.add_column("Status")
+    table.add_column("Result Summary")
+
+    for node in final_graph.nodes.values():
+        status_style = "green" if node.status.value == "completed" else "yellow"
+        table.add_row(
+            node.node_id,
+            node.work_type.value,
+            node.assigned_executor or "unassigned",
+            f"[{status_style}]{node.status.value}[/{status_style}]",
+            node.result_summary or "",
+        )
+
+    console.print("\n", table)
+    console.print(
+        f"\n[bold green]Autonomous intent fulfillment complete[/bold green] "
+        f"[dim]({elapsed:.1f}s · {len(final_graph.nodes)} nodes · status: {final_graph.status})[/dim]\n"
+    )
+
+
 @app.command()
 def auto(
     goal: str = typer.Argument(..., help="Natural-language goal to plan automatically"),
