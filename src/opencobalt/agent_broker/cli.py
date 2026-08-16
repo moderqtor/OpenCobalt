@@ -10,6 +10,7 @@ import typer
 
 from .broker import AgentBroker, BrokerExecution
 from .models import AgentBrokerSession
+from .relay import GitHubAgentRelay, command_comment
 
 app = typer.Typer(
     name="opencobalt-broker",
@@ -145,6 +146,76 @@ def stop_cmd(
     except Exception as exc:
         raise typer.Exit(code=_error(exc, json_output=json_output)) from exc
     _emit(_payload(session, execution), json_output=json_output)
+
+
+@app.command("relay")
+def relay_cmd(
+    github_repo: str = typer.Option(..., "--github-repo", help="GitHub owner/name relay repository."),
+    issue: int = typer.Option(..., "--issue", min=1, help="Issue or PR number used as the relay channel."),
+    author: str = typer.Option(..., "--author", help="Only this GitHub login may issue commands."),
+    local_repo: Path = typer.Option(Path("."), "--local-repo", help="Authoritative local repository bound to start commands."),
+    execute_agent: bool = typer.Option(False, "--execute-agent", help="Allow accepted start/continue commands to invoke Codex."),
+    allow_github_comments: bool = typer.Option(
+        False,
+        "--allow-github-comments",
+        help="Explicitly allow relay result comments through existing gh authentication.",
+    ),
+    model: str | None = typer.Option(None, "--model"),
+    interval: float = typer.Option(5.0, "--interval", min=1.0, max=300.0),
+    once: bool = typer.Option(False, "--once", help="Process one poll cycle and exit."),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Bridge allowlisted GitHub comments to local durable Codex sessions."""
+    if not allow_github_comments:
+        raise typer.BadParameter(
+            "relay requires --allow-github-comments because command results are written to GitHub"
+        )
+    try:
+        relay = GitHubAgentRelay(
+            repository=github_repo,
+            issue_number=issue,
+            allowed_author=author,
+            local_repository=str(local_repo),
+            execute_agent=execute_agent,
+            allow_comment_writes=allow_github_comments,
+            model=model,
+        )
+        relay.github.check_auth()
+        if once:
+            _emit(relay.run_once(), json_output=json_output)
+            return
+        typer.echo(
+            f"Relay active: {github_repo}#{issue} · author {author} · "
+            f"agent execution {'enabled' if execute_agent else 'dry-run'}"
+        )
+        typer.echo(
+            "Accepted commands can modify only staged workspaces. Results are posted to the configured GitHub thread. Ctrl+C stops the relay."
+        )
+        relay.run_forever(interval_seconds=interval)
+    except KeyboardInterrupt:
+        typer.echo("Relay stopped.")
+    except Exception as exc:
+        raise typer.Exit(code=_error(exc, json_output=json_output)) from exc
+
+
+@app.command("command")
+def command_cmd(
+    action: str = typer.Argument(..., help="start, continue, status, or stop"),
+    prompt: str | None = typer.Option(None, "--prompt"),
+    session_id: str | None = typer.Option(None, "--session"),
+) -> None:
+    """Render a relay command comment for inspection or manual use."""
+    if action not in {"start", "continue", "status", "stop"}:
+        raise typer.BadParameter("action must be start, continue, status, or stop")
+    try:
+        body = command_comment(
+            action=action,  # type: ignore[arg-type]
+            prompt=prompt,
+            session_id=session_id,
+        )
+    except Exception as exc:
+        raise typer.Exit(code=_error(exc, json_output=False)) from exc
+    typer.echo(body)
 
 
 def _error(exc: Exception, *, json_output: bool) -> int:
