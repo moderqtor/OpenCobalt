@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   ArrowRight, Check, ChevronDown, CircleStop, Loader2, MessageSquareText,
-  Paperclip, PanelRightOpen, RefreshCw, Save, Send, SlidersHorizontal,
+  Paperclip, PanelRightOpen, Pencil, RefreshCw, Save, Send, SlidersHorizontal,
 } from "lucide-react";
 import { ApiError, api, eventPayload, eventType, streamChat } from "./api";
 import Markdown from "./Markdown";
@@ -60,6 +60,18 @@ function relativeTime(value) {
       ? [Math.round(seconds / 60), "minute"]
       : [Math.round(seconds / 3600), "hour"];
   return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(unit[0], unit[1]);
+}
+
+function repositoryLabel(path) {
+  const trimmed = String(path || "").trim();
+  if (!trimmed) return "";
+  const parts = trimmed.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts.at(-1) || trimmed;
+}
+
+function memoryScopeLabel(scope) {
+  if (scope === "temporary") return "saved";
+  return scope || "user";
 }
 
 function errorMessage(payload, fallback = "The route did not complete.") {
@@ -227,7 +239,7 @@ function mergeRoutingIntoControls(current, routing, settings = DEFAULT_SETTINGS)
   };
 }
 
-function Composer({ controls, personas, providers, models: discoveredModels, modelError, onChange, onSend, busy, cancelling = false, onCancel, attachments = [], onAttach, onRemoveAttachment, attachmentError, executableAvailable = true, routingAvailability = null, projectPath = "", onToggleRepository, repositoryOpen = false }) {
+function Composer({ controls, personas, providers, models: discoveredModels, modelError, onChange, onSend, busy, cancelling = false, onCancel, attachments = [], onAttach, onRemoveAttachment, attachmentError, executableAvailable = true, routingAvailability = null, projectPath = "", repoDraft = "", onRepoDraftChange, onAttachRepository, onDetachRepository, onToggleRepository, repositoryOpen = false, repoBusy = false }) {
   const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState("");
   const fileRef = useRef(null);
@@ -269,6 +281,9 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
   useEffect(() => {
     if (!controls.automatic) setExpanded(true);
   }, [controls.automatic]);
+  useEffect(() => {
+    if (repositoryOpen) setExpanded(true);
+  }, [repositoryOpen]);
 
   const submit = (event) => {
     event.preventDefault();
@@ -339,7 +354,23 @@ function Composer({ controls, personas, providers, models: discoveredModels, mod
         </SelectField>
         {modelError && <p className="inline-error model-error" role="alert">Model catalog unavailable: {modelError.message}</p>}
       </>}
-      {onToggleRepository && !projectPath && <p className="composer-note"><button type="button" className="text-button" onClick={onToggleRepository}>{repositoryOpen ? "Cancel repository" : "Attach a local repository"}</button> Optional, for coding work in a specific workspace.</p>}
+      {onAttachRepository && <div className="repo-compact">
+        {projectPath && !repositoryOpen
+          ? <div className="repo-compact-bound">
+              <span className="repo-compact-path" title={projectPath}>{repositoryLabel(projectPath)}</span>
+              {onToggleRepository && <button type="button" className="text-button" onClick={onToggleRepository}>Change</button>}
+              {onDetachRepository && <button type="button" className="text-button" onClick={onDetachRepository} disabled={repoBusy}>Detach</button>}
+            </div>
+          : <form className="repo-compact-form" onSubmit={onAttachRepository}>
+              <label>
+                <span>Repository path</span>
+                <input value={repoDraft} maxLength="4096" placeholder="~/dev/OpenCobalt" autoComplete="off" onChange={(event) => onRepoDraftChange?.(event.target.value)} />
+              </label>
+              <button type="submit" className="button secondary" disabled={repoBusy || !repoDraft.trim()}>{repoBusy ? "Saving…" : "Attach"}</button>
+              {projectPath && onToggleRepository && <button type="button" className="text-button" onClick={onToggleRepository}>Cancel</button>}
+            </form>}
+        <p className="composer-note">{projectPath ? "Coding work stays inside this bound repository." : "Attach a local repository. Optional, for coding work in a specific workspace."}</p>
+      </div>}
     </div>}
   </form>;
 }
@@ -457,7 +488,7 @@ function MessageBubble({ message, route, onInspect, onOpenMission, approvals = [
   </article>;
 }
 
-function ChatPage({ conversations, refreshConversations, personas, providers, settings, settingsReady, openRoute, refreshSignal = 0 }) {
+function ChatPage({ conversations, refreshConversations, personas, providers, settings, settingsReady, openRoute, refreshSignal = 0, navCollapsed = false, onOpenNavigation }) {
   // Settings defaults initialize a local unsaved Chat draft. Creating, attaching
   // a file, or sending promotes that draft into durable conversation state.
   // Request payloads use the controls currently visible. Previous conversations
@@ -486,6 +517,9 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const [repoOpen, setRepoOpen] = useState(false);
   const [repoDraft, setRepoDraft] = useState("");
   const [draftProjectPath, setDraftProjectPath] = useState("");
+  const [draftTitle, setDraftTitle] = useState("New conversation");
+  const [renaming, setRenaming] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
   const [repoBusy, setRepoBusy] = useState(false);
   const abortRef = useRef(null);
   const executionRef = useRef(null);
@@ -501,6 +535,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   const settingsRef = useRef(settings);
   const controlsRef = useRef(null);
   const draftProjectPathRef = useRef("");
+  const draftTitleRef = useRef("New conversation");
   const draftTransferRef = useRef(null);
   const routingEpochRef = useRef(0);
   const writeSeqRef = useRef(new Map());
@@ -514,6 +549,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
   settingsRef.current = settings;
   controlsRef.current = controls;
   draftProjectPathRef.current = draftProjectPath;
+  draftTitleRef.current = draftTitle;
   draftingRef.current = drafting;
   if (persistQueueRef.current == null) {
     persistQueueRef.current = createPerConversationWriteQueue({
@@ -532,6 +568,9 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     draftingRef.current = false;
     setDrafting(false);
     setDraftProjectPath("");
+    setDraftTitle("New conversation");
+    setRenaming(false);
+    setTitleDraft("");
     setRepoDraft("");
     setRepoOpen(false);
     draftTransferRef.current = null;
@@ -752,6 +791,9 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     setRepoOpen(false);
     setRepoDraft("");
     setDraftProjectPath("");
+    setDraftTitle("New conversation");
+    setRenaming(false);
+    setTitleDraft("");
     setPendingApprovals([]);
     setAttachments([]);
     setControls(defaultComposerControls(settingsRef.current));
@@ -764,7 +806,8 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       return { conversationId: selectedId, created: false };
     }
     const projectPath = (draftProjectPathRef.current || "").trim();
-    const payload = { title: "New conversation" };
+    const title = (draftTitleRef.current || "").trim() || "New conversation";
+    const payload = { title };
     if (projectPath) payload.project_path = projectPath;
     const conversation = await api.createConversation(payload);
     const createdId = conversationIdOf(conversation);
@@ -1140,17 +1183,19 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
     event.preventDefault();
     const path = repoDraft.trim();
     if (!path || repoBusy) return;
-    if (!selectedId) {
-      setDraftProjectPath(path);
-      setRepoDraft("");
-      setRepoOpen(false);
-      setNotice(null);
-      return;
-    }
     setRepoBusy(true);
     setNotice(null);
     try {
-      const updated = await api.updateConversation(selectedId, { project_path: path });
+      const canonical = await api.canonicalizeRepository({ project_path: path });
+      const bound = canonical?.project_path;
+      if (!bound) throw new ApiError("The repository path was not saved.");
+      if (!selectedId) {
+        setDraftProjectPath(bound);
+        setRepoDraft("");
+        setRepoOpen(false);
+        return;
+      }
+      const updated = await api.updateConversation(selectedId, { project_path: bound });
       await refreshConversations();
       setRepoDraft("");
       setRepoOpen(false);
@@ -1161,6 +1206,64 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       setNotice({ tone: "error", text: error.message || "The repository path was not saved." });
     } finally {
       setRepoBusy(false);
+    }
+  };
+
+  const detachRepository = async () => {
+    if (repoBusy) return;
+    if (!selectedId) {
+      setDraftProjectPath("");
+      setRepoDraft("");
+      setRepoOpen(false);
+      return;
+    }
+    setRepoBusy(true);
+    setNotice(null);
+    try {
+      await api.updateConversation(selectedId, { project_path: null });
+      await refreshConversations();
+      setRepoOpen(false);
+      setRepoDraft("");
+    } catch (error) {
+      setNotice({ tone: "error", text: error.message || "The repository could not be detached." });
+    } finally {
+      setRepoBusy(false);
+    }
+  };
+
+  const beginRename = () => {
+    setTitleDraft(selected?.title || draftTitle || "New conversation");
+    setRenaming(true);
+  };
+
+  const saveRename = async (event) => {
+    event?.preventDefault?.();
+    const next = titleDraft.trim();
+    setRenaming(false);
+    if (!next) return;
+    const current = selected?.title || draftTitle || "New conversation";
+    if (next === current) return;
+    if (!selectedId) {
+      setDraftTitle(next);
+      return;
+    }
+    try {
+      await api.updateConversation(selectedId, { title: next });
+      await refreshConversations();
+    } catch (error) {
+      setNotice({ tone: "error", text: error.message || "The conversation title was not saved." });
+    }
+  };
+
+  const renameExistingConversation = async (conversationId, title) => {
+    const next = String(title || "").trim();
+    if (!next || !conversationId) return;
+    try {
+      await api.updateConversation(conversationId, { title: next });
+      await refreshConversations();
+      if (!selectedId) setDraftTitle("New conversation");
+    } catch (error) {
+      setNotice({ tone: "error", text: error.message || "The conversation title was not saved." });
     }
   };
 
@@ -1215,28 +1318,30 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
 
   return <div className={`chat-layout ${railCollapsed ? "rail-collapsed" : ""} ${isNarrow && conversationOpen ? "rail-drawer-open" : ""}`}>
     {isNarrow && conversationOpen && <button type="button" className="drawer-backdrop conversation-backdrop" aria-label="Close conversations" onClick={() => setConversationOpen(false)} />}
-    <ConversationRail conversations={conversations} selectedId={selectedId} onSelect={selectConversation} onCreate={startConversation} isCreating={false} disabled={interactionBusy} mobileOpen={isNarrow && conversationOpen} onClose={closeConversations} />
+    <ConversationRail conversations={conversations} selectedId={selectedId} onSelect={selectConversation} onCreate={startConversation} onRename={renameExistingConversation} isCreating={false} disabled={interactionBusy} mobileOpen={isNarrow && conversationOpen} onClose={closeConversations} />
     <section className="chat-main" aria-labelledby="chat-title">
       <header className="chat-header">
         <div className="chat-heading">
+          {navCollapsed && onOpenNavigation && <IconButton className="nav-reopen-inline" label="Open navigation" aria-expanded={!navCollapsed} aria-controls="primary-navigation" onClick={onOpenNavigation}><PanelRightOpen size={18} /></IconButton>}
           <IconButton className="conversation-open" label="Open conversations" aria-expanded={!railCollapsed || conversationOpen} aria-controls="conversation-navigation" onClick={openConversations}><MessageSquareText size={17} /></IconButton>
-          <div>
-            <h1 id="chat-title">{selected?.title || "New conversation"}</h1>
+          <div className="chat-title-block">
+            {renaming
+              ? <form className="chat-rename" onSubmit={saveRename}>
+                  <input value={titleDraft} maxLength="200" aria-label="Conversation title" autoFocus onChange={(event) => setTitleDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setRenaming(false); } }} />
+                  <button type="submit" className="text-button">Save</button>
+                  <button type="button" className="text-button" onClick={() => setRenaming(false)}>Cancel</button>
+                </form>
+              : <h1 id="chat-title">{selected?.title || draftTitle || "New conversation"}</h1>}
             <p className="chat-status">{routeHint} · {statusHint}</p>
-            {attachedProjectPath
-              ? <p className="project-path" title={attachedProjectPath}>Repository {attachedProjectPath}</p>
-              : null}
           </div>
         </div>
+        <div className="chat-header-meta">
+          {attachedProjectPath
+            ? <button type="button" className="repo-chip" title={attachedProjectPath} onClick={() => setRepoOpen(true)}>{repositoryLabel(attachedProjectPath)}</button>
+            : null}
+          <IconButton className="conversation-rename-header" label="Rename conversation" onClick={beginRename}><Pencil size={15} /></IconButton>
+        </div>
       </header>
-      {repoOpen && canAttachRepository && <form className="repo-form" onSubmit={attachRepository}>
-        <label>
-          <span>Repository path</span>
-          <input value={repoDraft} maxLength="4096" placeholder="Existing local repository" autoFocus onChange={(event) => setRepoDraft(event.target.value)} />
-        </label>
-        <p>Optional. Coding work stays inside this repository after the path is canonicalized.</p>
-        <button type="submit" className="button secondary" disabled={repoBusy || !repoDraft.trim()}>{repoBusy ? "Saving…" : "Attach"}</button>
-      </form>}
       <div ref={scrollRef} className="chat-scroll" onScroll={(event) => {
         const node = event.currentTarget;
         shouldAutoScrollRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 72;
@@ -1262,7 +1367,7 @@ function ChatPage({ conversations, refreshConversations, personas, providers, se
       </div>
       <div className="chat-live" aria-live="polite" aria-atomic="true">{liveStatus}</div>
       {notice && <div className={`stream-notice ${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}>{notice.text}</div>}
-      <Composer key={composerSession} controls={controls} personas={personas} providers={providers} models={modelCatalog} modelError={modelError} onChange={updateControls} onSend={send} busy={interactionBusy} cancelling={cancelling} onCancel={cancel} attachments={attachments} onAttach={attachFile} onRemoveAttachment={removeAttachment} attachmentError={attachmentError} executableAvailable={executableAvailable} routingAvailability={routingAvailability} projectPath={attachedProjectPath} onToggleRepository={canAttachRepository ? () => setRepoOpen((current) => !current) : undefined} repositoryOpen={repoOpen} />
+      <Composer key={composerSession} controls={controls} personas={personas} providers={providers} models={modelCatalog} modelError={modelError} onChange={updateControls} onSend={send} busy={interactionBusy} cancelling={cancelling} onCancel={cancel} attachments={attachments} onAttach={attachFile} onRemoveAttachment={removeAttachment} attachmentError={attachmentError} executableAvailable={executableAvailable} routingAvailability={routingAvailability} projectPath={attachedProjectPath} repoDraft={repoDraft} onRepoDraftChange={setRepoDraft} onAttachRepository={canAttachRepository ? attachRepository : undefined} onDetachRepository={canAttachRepository ? detachRepository : undefined} onToggleRepository={canAttachRepository ? () => setRepoOpen((current) => !current) : undefined} repositoryOpen={repoOpen} repoBusy={repoBusy} />
     </section>
   </div>;
 }
@@ -1366,12 +1471,49 @@ function missionStatusLabel(status) {
   return labels[status] || label(status || "planned");
 }
 
+function isEarlierPlanningRecord(mission) {
+  if (missionUserStatus(mission) === "decision") return false;
+  const type = String(mission.mission_type || "");
+  const summary = String(mission.summary || "").toLowerCase();
+  if (mission.auto_plan_id || type === "auto") return true;
+  return summary.includes("persisted without execution");
+}
+
+function MissionCard({ mission, groupKey, onOpenConversation, onChanged }) {
+  const steps = Array.isArray(mission.steps) ? mission.steps : [];
+  const research = mission.research && typeof mission.research === "object" ? mission.research : null;
+  const coding = mission.coding && typeof mission.coding === "object" ? mission.coding : null;
+  const sources = Array.isArray(research?.sources) ? research.sources : [];
+  const evidence = Array.isArray(research?.evidence) ? research.evidence : [];
+  const conversationId = mission.conversation_id;
+  return <article className="record-card mission-card" id={`mission-${missionIdOf(mission)}`}>
+    <div className="card-top">
+      <div className="pill-row">
+        <Pill tone={groupKey === "completed" ? "green" : groupKey === "decision" || groupKey === "failed" ? "amber" : "neutral"}>{missionStatusLabel(mission.status)}</Pill>
+        <Pill>{label(mission.mission_type || "mission")}</Pill>
+        {research && <Pill>{sources.length} sources</Pill>}
+        {research && <Pill>{evidence.length} evidence</Pill>}
+        {coding && <Pill>{label(coding.capability_role === "coding_agent" ? "coding" : coding.capability_role || "coding")}</Pill>}
+      </div>
+      <small>{relativeTime(mission.created_at || mission.updated_at)}</small>
+    </div>
+    <h2>{mission.goal || mission.title || "Untitled mission"}</h2>
+    <p>{mission.current_state || mission.summary || research?.synthesis || coding?.outcome || "No current state has been recorded."}</p>
+    {conversationId && onOpenConversation && <button type="button" className="text-button" onClick={() => onOpenConversation(conversationId)}>Open conversation</button>}
+    <details><summary>Plan, checkpoints, and provenance</summary><div className="mission-detail"><dl><dt>Type</dt><dd>{label(mission.mission_type || "mission")}</dd><dt>Created</dt><dd>{mission.created_at || "not recorded"}</dd><dt>Linked conversation</dt><dd>{conversationId || "not linked"}</dd><dt>Active plan</dt><dd>{mission.active_plan_id || mission.auto_plan_id || "not recorded"}</dd><dt>Last receipt</dt><dd>{mission.last_receipt_id || "not recorded"}</dd><dt>Source route</dt><dd>{mission.route_id || research?.route_id || "not promoted from chat"}</dd><dt>Outcome</dt><dd>{mission.outcome || "not final"}</dd><dt>Mission ID</dt><dd>{mission.mission_id || mission.id}</dd></dl>{steps.length ? <ol>{steps.map((step) => <li key={step.step_id}><b>{step.title}</b><span>{label(step.execution_state)} · approval {label(step.approval_state)} · risk {label(step.risk_level)}</span>{step.receipt_id && <code>{step.receipt_id}</code>}</li>)}</ol> : <p>No durable steps were returned for this mission.</p>}</div></details>
+    {research && <ResearchInspector research={research} onChanged={onChanged} />}
+    {coding && <details open={["running", "pending"].includes(coding.status)}><summary>Coding work</summary><div className="mission-detail"><dl><dt>Objective</dt><dd>{coding.objective || mission.goal || "not recorded"}</dd><dt>Status</dt><dd>{label(coding.status || mission.status)}</dd><dt>Repository</dt><dd><code>{coding.repository_path || "not recorded"}</code></dd><dt>Provider</dt><dd>{coding.provider_id || "not recorded"}{coding.model_id ? ` · ${coding.model_id}` : ""}</dd><dt>Receipt</dt><dd><code>{coding.receipt_id || "not recorded"}</code></dd></dl>{Array.isArray(coding.approvals) && coding.approvals.length > 0 && <section><h3>Approvals</h3><ol>{coding.approvals.map((item, index) => <li key={item.request_id || item.approval_request_id || index}><b>{item.headline || item.tool || item.policy_decision || "permission"}</b><span>{label(item.state || item.policy_decision)} · {label(item.risk_level)}{item.command ? ` · ${item.command}` : item.path ? ` · ${item.path}` : ""}</span></li>)}</ol></section>}{Array.isArray(coding.files_changed) && coding.files_changed.length > 0 && <section><h3>Staged files</h3><ol>{coding.files_changed.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.terminal_operations) && coding.terminal_operations.length > 0 && <section><h3>Commands</h3><ol>{coding.terminal_operations.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.tests) && coding.tests.length > 0 && <section><h3>Verification</h3><ol>{coding.tests.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{coding.changeset && <section><h3>Staged ChangeSet</h3><p>{label(coding.changeset.promotion_state)} · {(coding.changeset.summary && coding.changeset.summary.files_changed) || 0} files</p><PromotionCard changeset={coding.changeset} onApply={async (item) => { await api.applyChangeset(item.changeset_id); await onChanged?.(); }} onReject={async (item) => { await api.rejectChangeset(item.changeset_id); await onChanged?.(); }} /></section>}{coding.outcome && <section><h3>Outcome</h3><p>{coding.outcome}</p></section>}</div></details>}
+  </article>;
+}
+
 function MissionsPage({ onOpenConversation }) {
   const state = useLoad(api.missions);
   const groups = { decision: [], ongoing: [], completed: [], failed: [] };
+  const earlier = [];
   if (state.data) {
     state.data.forEach((mission) => {
-      groups[missionUserStatus(mission)].push(mission);
+      if (isEarlierPlanningRecord(mission)) earlier.push(mission);
+      else groups[missionUserStatus(mission)].push(mission);
     });
   }
   useEffect(() => {
@@ -1392,37 +1534,16 @@ function MissionsPage({ onOpenConversation }) {
     ["completed", "Completed", groups.completed],
     ["failed", "Failed", groups.failed],
   ];
-  return <section className="page"><PageTitle eyebrow="Work" title="Missions">Durable research and coding work that can resume later.</PageTitle>
+  const currentEmpty = sections.every(([, , items]) => !items.length);
+  return <section className="page"><PageTitle eyebrow="Work" title="Missions">Durable research and coding work that can resume later. Auto-plan records stay inspectable under earlier planning.</PageTitle>
+    {currentEmpty && earlier.length > 0 && <p className="mission-current-empty">No current actionable missions. Earlier planning records remain below.</p>}
     {sections.filter(([, , items]) => items.length).map(([key, heading, items]) => (
       <div className="mission-group" key={key}>
         <h2>{heading}</h2>
-        <div className="record-list">{items.map((mission) => {
-          const steps = Array.isArray(mission.steps) ? mission.steps : [];
-          const research = mission.research && typeof mission.research === "object" ? mission.research : null;
-          const coding = mission.coding && typeof mission.coding === "object" ? mission.coding : null;
-          const sources = Array.isArray(research?.sources) ? research.sources : [];
-          const evidence = Array.isArray(research?.evidence) ? research.evidence : [];
-          const conversationId = mission.conversation_id;
-          return <article className="record-card mission-card" id={`mission-${missionIdOf(mission)}`} key={missionIdOf(mission)}>
-            <div className="card-top">
-              <div className="pill-row">
-                <Pill tone={key === "completed" ? "green" : key === "decision" || key === "failed" ? "amber" : "neutral"}>{missionStatusLabel(mission.status)}</Pill>
-                <Pill>{label(mission.mission_type || "mission")}</Pill>
-                {research && <Pill>{sources.length} sources</Pill>}
-                {research && <Pill>{evidence.length} evidence</Pill>}
-                {coding && <Pill>{label(coding.capability_role === "coding_agent" ? "coding" : coding.capability_role || "coding")}</Pill>}
-              </div>
-            </div>
-            <h2>{mission.goal || mission.title || "Untitled mission"}</h2>
-            <p>{mission.current_state || mission.summary || research?.synthesis || coding?.outcome || "No current state has been recorded."}</p>
-            {conversationId && onOpenConversation && <button type="button" className="text-button" onClick={() => onOpenConversation(conversationId)}>Open conversation</button>}
-            <details><summary>Plan, checkpoints, and provenance</summary><div className="mission-detail"><dl><dt>Active plan</dt><dd>{mission.active_plan_id || "not recorded"}</dd><dt>Last receipt</dt><dd>{mission.last_receipt_id || "not recorded"}</dd><dt>Source route</dt><dd>{mission.route_id || research?.route_id || "not promoted from chat"}</dd><dt>Outcome</dt><dd>{mission.outcome || "not final"}</dd><dt>Mission ID</dt><dd>{mission.mission_id || mission.id}</dd></dl>{steps.length ? <ol>{steps.map((step) => <li key={step.step_id}><b>{step.title}</b><span>{label(step.execution_state)} · approval {label(step.approval_state)} · risk {label(step.risk_level)}</span>{step.receipt_id && <code>{step.receipt_id}</code>}</li>)}</ol> : <p>No durable steps were returned for this mission.</p>}</div></details>
-            {research && <ResearchInspector research={research} onChanged={state.reload} />}
-            {coding && <details open={["running", "pending"].includes(coding.status)}><summary>Coding work</summary><div className="mission-detail"><dl><dt>Objective</dt><dd>{coding.objective || mission.goal || "not recorded"}</dd><dt>Status</dt><dd>{label(coding.status || mission.status)}</dd><dt>Repository</dt><dd><code>{coding.repository_path || "not recorded"}</code></dd><dt>Provider</dt><dd>{coding.provider_id || "not recorded"}{coding.model_id ? ` · ${coding.model_id}` : ""}</dd><dt>Receipt</dt><dd><code>{coding.receipt_id || "not recorded"}</code></dd></dl>{Array.isArray(coding.approvals) && coding.approvals.length > 0 && <section><h3>Approvals</h3><ol>{coding.approvals.map((item, index) => <li key={item.request_id || item.approval_request_id || index}><b>{item.headline || item.tool || item.policy_decision || "permission"}</b><span>{label(item.state || item.policy_decision)} · {label(item.risk_level)}{item.command ? ` · ${item.command}` : item.path ? ` · ${item.path}` : ""}</span></li>)}</ol></section>}{Array.isArray(coding.files_changed) && coding.files_changed.length > 0 && <section><h3>Staged files</h3><ol>{coding.files_changed.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.terminal_operations) && coding.terminal_operations.length > 0 && <section><h3>Commands</h3><ol>{coding.terminal_operations.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{Array.isArray(coding.tests) && coding.tests.length > 0 && <section><h3>Verification</h3><ol>{coding.tests.map((item) => <li key={item}><code>{item}</code></li>)}</ol></section>}{coding.changeset && <section><h3>Staged ChangeSet</h3><p>{label(coding.changeset.promotion_state)} · {(coding.changeset.summary && coding.changeset.summary.files_changed) || 0} files</p><PromotionCard changeset={coding.changeset} onApply={async (item) => { await api.applyChangeset(item.changeset_id); await state.reload(); }} onReject={async (item) => { await api.rejectChangeset(item.changeset_id); await state.reload(); }} /></section>}{coding.outcome && <section><h3>Outcome</h3><p>{coding.outcome}</p></section>}</div></details>}
-          </article>;
-        })}</div>
+        <div className="record-list">{items.map((mission) => <MissionCard key={missionIdOf(mission)} mission={mission} groupKey={key} onOpenConversation={onOpenConversation} onChanged={state.reload} />)}</div>
       </div>
     ))}
+    {earlier.length > 0 && <details className="mission-earlier"><summary>Earlier planning records ({earlier.length})</summary><p className="mission-earlier-note">Auto-plan and other non-executing planning records. They remain durable; they are not current work.</p><div className="record-list">{earlier.map((mission) => <MissionCard key={missionIdOf(mission)} mission={mission} groupKey={missionUserStatus(mission)} onOpenConversation={onOpenConversation} onChanged={state.reload} />)}</div></details>}
   </section>;
 }
 
@@ -1496,9 +1617,9 @@ function MemoryRecord({ memory, onUpdate, onRemove }) {
     setEditing(false);
   };
 
-  if (editing) return <article className="memory-row memory-edit"><form onSubmit={save}><label><span>Memory</span><textarea rows="3" maxLength="20000" value={draft.content} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} /></label><label><span>Why it exists</span><input maxLength="1000" value={draft.reason} onChange={(event) => setDraft((current) => ({ ...current, reason: event.target.value }))} /></label><div className="memory-edit-grid"><SelectField label="Scope" value={draft.scope} onChange={(scope) => setDraft((current) => ({ ...current, scope }))}><option value="user">User</option><option value="project" disabled>Project — requires a bound project</option><option value="conversation" disabled>Conversation — requires a bound conversation</option><option value="temporary">Temporary</option></SelectField><SelectField label="State" value={draft.status} onChange={(status) => setDraft((current) => ({ ...current, status }))}><option value="proposed">Proposed</option><option value="active">Active</option><option value="rejected">Rejected</option></SelectField><SelectField label="Sensitivity" value={draft.sensitivity} onChange={(sensitivity) => setDraft((current) => ({ ...current, sensitivity }))}><option value="normal">Normal</option><option value="sensitive">Sensitive</option></SelectField></div><div className="memory-edit-actions"><button type="button" className="text-button" onClick={cancelEdit}>Cancel</button><button type="submit" className="button primary" disabled={saving || !draft.content.trim() || !draft.reason.trim()}>{saving ? "Saving…" : "Save changes"}</button></div></form></article>;
+  if (editing) return <article className="memory-row memory-edit"><form onSubmit={save}><label><span>Memory</span><textarea rows="3" maxLength="20000" value={draft.content} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} /></label><label><span>Why it exists</span><input maxLength="1000" value={draft.reason} onChange={(event) => setDraft((current) => ({ ...current, reason: event.target.value }))} /></label><div className="memory-edit-grid"><SelectField label="Scope" value={draft.scope === "temporary" ? "user" : draft.scope} onChange={(scope) => setDraft((current) => ({ ...current, scope }))}><option value="user">User</option><option value="project" disabled>Project — requires a bound project</option><option value="conversation" disabled>Conversation — requires a bound conversation</option></SelectField><SelectField label="State" value={draft.status} onChange={(status) => setDraft((current) => ({ ...current, status }))}><option value="proposed">Proposed</option><option value="active">Active</option><option value="rejected">Rejected</option></SelectField><SelectField label="Sensitivity" value={draft.sensitivity} onChange={(sensitivity) => setDraft((current) => ({ ...current, sensitivity }))}><option value="normal">Normal</option><option value="sensitive">Sensitive</option></SelectField></div><div className="memory-edit-actions"><button type="button" className="text-button" onClick={cancelEdit}>Cancel</button><button type="submit" className="button primary" disabled={saving || !draft.content.trim() || !draft.reason.trim()}>{saving ? "Saving…" : "Save changes"}</button></div></form></article>;
 
-  return <article className="memory-row"><div><div className="card-top"><div className="pill-row"><Pill tone={memory.pinned ? "amber" : "neutral"}>{memory.pinned ? "pinned" : memory.scope || "user"}</Pill>{memory.sensitivity === "sensitive" && <Pill tone="amber">sensitive</Pill>}</div><span>{label(memory.status)}</span></div><h2>{memory.content}</h2><p>Why: {memory.reason || "No reason recorded."}</p><small>Source: {memory.source_ref || memory.source_type || "explicit"} · {relativeTime(memory.updated_at || memory.created_at)}</small></div><div className="memory-actions"><button type="button" className="text-button" onClick={() => setEditing(true)}>Edit</button><button type="button" className="text-button" onClick={() => onUpdate(memory, { pinned: !memory.pinned })}>{memory.pinned ? "Unpin" : "Pin"}</button>{confirmDelete ? <><span className="delete-confirm">Delete permanently?</span><button type="button" className="text-button danger" onClick={() => onRemove(memory)}>Confirm delete</button><button type="button" className="text-button" onClick={() => setConfirmDelete(false)}>Keep</button></> : <button type="button" className="text-button danger" onClick={() => setConfirmDelete(true)}>Delete</button>}</div></article>;
+  return <article className="memory-row"><div><div className="card-top"><div className="pill-row"><Pill tone={memory.pinned ? "amber" : "neutral"}>{memory.pinned ? "pinned" : memoryScopeLabel(memory.scope)}</Pill>{memory.sensitivity === "sensitive" && <Pill tone="amber">sensitive</Pill>}</div><span>{label(memory.status)}</span></div><h2>{memory.content}</h2><p>Why: {memory.reason || "No reason recorded."}</p><small>Source: {memory.source_ref || memory.source_type || "explicit"} · {relativeTime(memory.updated_at || memory.created_at)}</small></div><div className="memory-actions"><button type="button" className="text-button" onClick={() => setEditing(true)}>Edit</button><button type="button" className="text-button" onClick={() => onUpdate(memory, { pinned: !memory.pinned })}>{memory.pinned ? "Unpin" : "Pin"}</button>{confirmDelete ? <><span className="delete-confirm">Delete permanently?</span><button type="button" className="text-button danger" onClick={() => onRemove(memory)}>Confirm delete</button><button type="button" className="text-button" onClick={() => setConfirmDelete(false)}>Keep</button></> : <button type="button" className="text-button danger" onClick={() => setConfirmDelete(true)}>Delete</button>}</div></article>;
 }
 
 function MemoryPage() {
@@ -1543,7 +1664,7 @@ function MemoryPage() {
   };
   if (state.loading) return <section className="page"><PageTitle eyebrow="Context" title="Memory">Saved facts you chose to keep. This is not the conversation history.</PageTitle><Loading /></section>;
   if (state.error) return <section className="page"><PageTitle eyebrow="Context" title="Memory">Saved facts you chose to keep. This is not the conversation history.</PageTitle><ErrorState error={state.error} retry={state.reload} /></section>;
-  return <section className="page"><PageTitle eyebrow="Context" title="Memory">Saved facts you chose to keep. This is not the conversation history.</PageTitle>{actionError && <ErrorState error={actionError} title="The memory change was not saved." />}<form className="memory-add" onSubmit={add}><input value={draft.content} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} placeholder="Save a fact or preference explicitly" aria-label="New memory" /><SelectField label="Scope" value={draft.scope} onChange={(scope) => setDraft((current) => ({ ...current, scope }))}><option value="user">User</option><option value="project" disabled>Project — requires a bound project</option><option value="conversation" disabled>Conversation — requires a bound conversation</option><option value="temporary">Temporary</option></SelectField><SelectField label="Sensitivity" value={draft.sensitivity} onChange={(sensitivity) => setDraft((current) => ({ ...current, sensitivity }))}><option value="normal">Normal</option><option value="sensitive">Sensitive</option></SelectField><button type="submit" className="button primary" disabled={saving || !draft.content.trim()}>{saving ? "Saving…" : "Save memory"}</button></form>{state.data.length ? <div className="record-list">{state.data.map((memory) => <MemoryRecord key={memoryIdOf(memory)} memory={memory} onUpdate={update} onRemove={remove} />)}</div> : <EmptyState title="No saved facts yet">OpenCobalt proposes memory from explicit requests. You decide what persists.</EmptyState>}</section>;
+  return <section className="page"><PageTitle eyebrow="Context" title="Memory">Saved facts you chose to keep. This is not the conversation history.</PageTitle>{actionError && <ErrorState error={actionError} title="The memory change was not saved." />}<form className="memory-add" onSubmit={add}><input value={draft.content} onChange={(event) => setDraft((current) => ({ ...current, content: event.target.value }))} placeholder="Save a fact or preference explicitly" aria-label="New memory" /><SelectField label="Scope" value={draft.scope === "temporary" ? "user" : draft.scope} onChange={(scope) => setDraft((current) => ({ ...current, scope }))}><option value="user">User</option><option value="project" disabled>Project — requires a bound project</option><option value="conversation" disabled>Conversation — requires a bound conversation</option></SelectField><SelectField label="Sensitivity" value={draft.sensitivity} onChange={(sensitivity) => setDraft((current) => ({ ...current, sensitivity }))}><option value="normal">Normal</option><option value="sensitive">Sensitive</option></SelectField><button type="submit" className="button primary" disabled={saving || !draft.content.trim()}>{saving ? "Saving…" : "Save memory"}</button></form>{state.data.length ? <div className="record-list">{state.data.map((memory) => <MemoryRecord key={memoryIdOf(memory)} memory={memory} onUpdate={update} onRemove={remove} />)}</div> : <EmptyState title="No saved facts yet">OpenCobalt proposes memory from explicit requests. You decide what persists.</EmptyState>}</section>;
 }
 
 function LedgerPage() {
@@ -1901,7 +2022,7 @@ export default function App() {
       ? <Loading label="Opening local control plane" />
       : chatError
         ? <CoreUnavailable error={chatError} retry={retryCore} />
-        : <ChatPage conversations={conversations.data || []} refreshConversations={conversations.reload} personas={personas.data || []} providers={providers.data || []} settings={settings} settingsReady={Boolean(settingsRecord.data)} openRoute={openRoute} refreshSignal={dataEpoch} />;
+        : <ChatPage conversations={conversations.data || []} refreshConversations={conversations.reload} personas={personas.data || []} providers={providers.data || []} settings={settings} settingsReady={Boolean(settingsRecord.data)} openRoute={openRoute} refreshSignal={dataEpoch} navCollapsed={navCollapsed} onOpenNavigation={() => { setNavCollapsed(false); setNavOpen(true); }} />;
   } else if (page === "routes") {
     view = <RoutesPage key={`routes-${dataEpoch}`} openRoute={openRoute} />;
   } else if (page === "missions") {

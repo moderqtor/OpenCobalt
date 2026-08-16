@@ -322,6 +322,7 @@ class PersonalAIRouter:
             metadata={
                 "routing": "deterministic_snapshot_v1",
                 "capability_role": capability_role,
+                "project_path": request.project_path,
                 "risk_classification": risk,
                 "local_only": local_only,
                 "privacy_mode": request.privacy_mode,

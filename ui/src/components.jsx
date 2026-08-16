@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import {
   BookOpen, Bot, BrainCircuit, Clock3, Database,
-  FileKey2, Layers3, MessageSquareText, Network, PanelRight, Plus,
+  FileKey2, Layers3, MessageSquareText, Network, PanelRight, Pencil, Plus,
   Route, Settings2, ShieldCheck, Wrench, X,
 } from "lucide-react";
 
@@ -438,8 +438,10 @@ export function RouteInspector({ route, candidates = [], providers = [], persona
   </div>;
 }
 
-export function ConversationRail({ conversations, selectedId, onSelect, onCreate, isCreating, disabled = false, mobileOpen = false, onClose }) {
+export function ConversationRail({ conversations, selectedId, onSelect, onCreate, onRename, isCreating, disabled = false, mobileOpen = false, onClose }) {
   const railRef = useRef(null);
+  const [renamingId, setRenamingId] = useState("");
+  const [titleDraft, setTitleDraft] = useState("");
   useEffect(() => {
     if (!mobileOpen) return undefined;
     const previouslyFocused = document.activeElement;
@@ -474,7 +476,22 @@ export function ConversationRail({ conversations, selectedId, onSelect, onCreate
     <div className="conversation-list">{conversations.map((conversation) => {
       const conversationId = conversation.conversation_id || conversation.id;
       const selected = conversationId === selectedId;
-      return <button type="button" key={conversationId} className={`conversation-item ${selected ? "is-selected" : ""}`} aria-current={selected ? "true" : undefined} disabled={disabled} onClick={() => onSelect(conversationId)}><b>{conversation.title || "Untitled conversation"}</b><span>{conversation.updated_at ? new Date(conversation.updated_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "local"}</span></button>;
+      const renaming = renamingId === conversationId;
+      return <div key={conversationId} className={`conversation-item ${selected ? "is-selected" : ""}`}>
+        {renaming
+          ? <form className="conversation-rename-form" onSubmit={(event) => {
+              event.preventDefault();
+              const next = titleDraft.trim();
+              setRenamingId("");
+              if (next && next !== (conversation.title || "")) onRename?.(conversationId, next);
+            }}>
+              <input value={titleDraft} maxLength="200" aria-label="Conversation title" autoFocus onChange={(event) => setTitleDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setRenamingId(""); } }} />
+            </form>
+          : <>
+              <button type="button" className="conversation-item-select" aria-current={selected ? "true" : undefined} disabled={disabled} onClick={() => onSelect(conversationId)}><b>{conversation.title || "Untitled conversation"}</b><span>{conversation.updated_at ? new Date(conversation.updated_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "local"}</span></button>
+              {onRename && <IconButton className="conversation-rename" label="Rename conversation" disabled={disabled} onClick={(event) => { event.stopPropagation(); setTitleDraft(conversation.title || ""); setRenamingId(conversationId); }}><Pencil size={13} /></IconButton>}
+            </>}
+      </div>;
     })}</div>
     {!conversations.length && <p className="rail-empty">Write a goal below, or click New. Conversations stay on this machine.</p>}
   </aside>;

@@ -13,12 +13,18 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from opencobalt.api_server import app
+from opencobalt.personal_ai.models import ProviderPreference
 from opencobalt.personal_ai.store import PersonalAIStore
 
 
 def _client(tmp_path: Path, monkeypatch) -> TestClient:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENCOBALT_ENABLE_DEVELOPMENT_MOCK", "1")
+    store = PersonalAIStore(tmp_path / ".opencobalt" / "ledger.db")
+    for provider_id in ("antigravity", "claude", "codex", "cursor", "gemini", "ollama"):
+        store.save_provider_preference(
+            ProviderPreference(provider_id=provider_id, enabled=False)
+        )
     return TestClient(app)
 
 
@@ -161,6 +167,11 @@ def test_draft_private_local_only_first_send_persists_and_executes(tmp_path, mon
         "model_id": None,
     }
     with _client(tmp_path, monkeypatch) as client:
+        disabled = client.patch(
+            "/api/v1/providers/ollama/preference",
+            json={"enabled": False},
+        )
+        assert disabled.status_code == 200, disabled.text
         created, _, streamed = _promote_draft(
             client,
             controls=controls,
@@ -356,6 +367,24 @@ def test_draft_repository_is_available_on_first_coding_like_send(tmp_path, monke
             f"/api/v1/conversations/{conversation['conversation_id']}/messages"
         ).json()
         assert messages, "first coding-like send must record a request after repo attach"
+
+
+def test_repository_canonicalization_expands_home_without_creating_conversation(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    repo = home / "dev" / "OpenCobalt"
+    repo.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    with _client(tmp_path, monkeypatch) as client:
+        canonicalized = client.post(
+            "/api/v1/repositories/canonicalize",
+            json={"project_path": "  ~/dev/OpenCobalt  "},
+        )
+
+        assert canonicalized.status_code == 200, canonicalized.text
+        assert canonicalized.json() == {"project_path": str(repo.resolve())}
+        assert client.get("/api/v1/conversations").json() == []
 
 
 def test_invalid_draft_repository_does_not_create_or_send(tmp_path, monkeypatch):

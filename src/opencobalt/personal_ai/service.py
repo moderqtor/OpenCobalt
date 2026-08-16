@@ -942,6 +942,7 @@ class ChatService:
                     "reasoning_effort": request.reasoning_effort,
                     "cognitive_policy": cognitive_policy,
                     "capability_role": route.metadata.get("capability_role"),
+                    "project_path": conversation.project_path,
                     "chat_surface": (
                         "coding_mission"
                         if route.metadata.get("coding_mission_id")
@@ -2184,6 +2185,12 @@ class ChatService:
         sections.extend(
             [
                 "OpenCobalt interaction policy:",
+                "Identity:",
+                "OpenCobalt is the product. Answer as the selected persona inside OpenCobalt.",
+                "Do not speak in the first person as Antigravity, Claude, ChatGPT, Gemini, Cursor, Ollama, or any other provider product.",
+                "Do not claim to be an agentic coding assistant or to have repository or shell authority unless this route selected those capabilities.",
+                "Provider and model names belong in OpenCobalt provenance, not first-person identity.",
+                "Keep the selected persona's style and tone.",
                 persona_policy,
                 "",
                 "Execution constraints:",
@@ -2200,6 +2207,8 @@ class ChatService:
                 f"Local-only: {bool(route.metadata.get('local_only', False))}",
             ]
         )
+        if conversation.project_path:
+            sections.append(f"Attached repository: {conversation.project_path}")
         if route.persona_provider_mismatch:
             sections.append(f"Persona/provider disclosure: {route.persona_provider_mismatch}")
         from opencobalt.personal_ai.builtin_skills import skill_policy_addendum

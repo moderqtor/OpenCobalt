@@ -280,6 +280,45 @@ def test_first_short_request_policy_is_small_and_does_not_duplicate_the_user_mes
     assert len(policy) < 4000
 
 
+def test_bound_repository_reaches_provider_request_and_identity_policy(tmp_path):
+    service, store, _ = _real_mock_service(tmp_path)
+    repo = tmp_path / "OpenCobalt"
+    repo.mkdir()
+    conversation = service.create_conversation(
+        title="Repository analysis",
+        project_path=str(repo.resolve()),
+    )
+    captured = {}
+    provider = service.providers.get("mock")
+    original = provider.execute
+
+    def wrapped(request, cancellation=None):
+        captured["request"] = request
+        return original(request, cancellation)
+
+    provider.execute = wrapped
+    events = list(
+        service.stream_request(
+            ChatRequest(
+                conversation_id=conversation.conversation_id,
+                message="What is TCP?",
+                provider_override="mock",
+            )
+        )
+    )
+
+    assert events[-1].event_type == "completed", events[-1].payload
+    route = store.list_routes(conversation_id=conversation.conversation_id)[0]
+    request = captured["request"]
+    assert route.metadata["capability_role"] == "cheap_local"
+    assert route.metadata["project_path"] == str(repo.resolve())
+    assert request.cwd == str(repo.resolve())
+    assert request.metadata["project_path"] == str(repo.resolve())
+    assert "OpenCobalt is the product" in request.system_policy
+    assert "Provider and model names belong in OpenCobalt provenance" in request.system_policy
+    assert f"Attached repository: {repo.resolve()}" in request.system_policy
+
+
 def test_provider_policy_history_is_capped_and_excludes_the_current_user_message(tmp_path):
     service, store, _ = _real_mock_service(tmp_path)
     conversation = service.create_conversation(title="History cap")

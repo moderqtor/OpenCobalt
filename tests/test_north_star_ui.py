@@ -71,6 +71,23 @@ def test_missions_connect_to_conversations_without_fake_autonomy():
     assert "In progress" in APP
     assert "Continue as Mission creates a durable planning record" in COMPONENTS
     assert "It does not execute the work." in COMPONENTS
+    assert "Earlier planning records" in APP
+    assert "isEarlierPlanningRecord" in APP
+    assert "auto_plan_id" in APP
+
+
+def test_repository_rename_navigation_and_memory_followup_contracts():
+    assert "canonicalizeRepository" in API
+    assert "repo-compact" in APP
+    assert "repo-chip" in APP
+    assert "Rename conversation" in APP
+    assert "Rename conversation" in COMPONENTS
+    assert "nav-reopen-inline" in APP
+    assert 'onOpenNavigation={() => { setNavCollapsed(false); setNavOpen(true); }}' in APP
+    assert "position: sticky" in CSS
+    memory = APP[APP.index("function MemoryRecord") : APP.index("function LedgerPage")]
+    assert '<option value="temporary">Temporary</option>' not in memory
+    assert "memoryScopeLabel" in memory
 
 
 def test_conversation_patch_client_exists():
@@ -83,3 +100,4 @@ def test_narrow_viewports_overlay_rail_and_navigation():
     assert "@media (max-width: 1024px)" in CSS
     assert "@media (min-width: 1181px)" in CSS
     assert "inset: 0 auto 0 228px" in CSS
+    assert ".conversation-list { display: grid" in CSS

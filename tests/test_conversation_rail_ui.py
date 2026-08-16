@@ -64,7 +64,8 @@ def test_draft_repository_stays_local_until_conversation_creation():
     start = _function_body(APP, "const startConversation = () => {", "const ensureConversation")
     ensure = _function_body(APP, "const ensureConversation = async () => {", "const persistConversationRouting")
     attach = _function_body(APP, "const attachRepository = async (event) => {", "const openMission")
-    assert "setDraftProjectPath(path)" in attach
+    assert "api.canonicalizeRepository" in attach
+    assert "setDraftProjectPath(bound)" in attach
     assert "api.createConversation" not in attach
     assert "api.createConversation" not in start
     assert "payload.project_path = projectPath" in ensure
