@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 BrokerStatus = Literal["planned", "active", "stopped", "failed"]
 TurnStatus = Literal["planned", "complete", "failed"]
+RelayStatus = Literal["processing", "result_pending", "complete", "failed", "ignored"]
 
 
 def _now() -> datetime:
@@ -56,3 +57,24 @@ class AgentBrokerTurn(BaseModel):
     status: TurnStatus = "planned"
     created_at: datetime = Field(default_factory=_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentRelayEvent(BaseModel):
+    """One deduplicated command/result exchange on an external relay channel."""
+
+    relay_event_id: str = Field(default_factory=lambda: _uid("relay"))
+    repository: str
+    issue_number: int = Field(gt=0)
+    source_comment_id: int = Field(gt=0)
+    command_id: str
+    author: str
+    action: str
+    session_id: str | None = None
+    receipt_id: str | None = None
+    result_comment_id: int | None = None
+    status: RelayStatus = "processing"
+    command_json: dict[str, Any] = Field(default_factory=dict)
+    result_json: dict[str, Any] = Field(default_factory=dict)
+    result_body: str = ""
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
