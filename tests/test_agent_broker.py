@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from opencobalt.agent_broker.broker import AgentBroker, BrokerExecution
+from opencobalt.agent_broker.broker import (
+    AgentBroker,
+    BrokerExecution,
+    ExecutionEngineCodexRunner,
+)
 from opencobalt.agent_broker.codex_adapter import CodexSdkBrokerAdapter
 from opencobalt.agent_broker.store import AgentBrokerStore
 from opencobalt.agent_broker.worker import _install_decline_handler
@@ -37,6 +42,16 @@ class FakeRunner:
             receipt_id="receipt-archive",
             provider_session_id=kwargs["provider_session_id"],
         )
+
+
+class FakeEngine:
+    def __init__(self, outcome) -> None:
+        self.outcome = outcome
+        self.calls: list[dict] = []
+
+    def run_task(self, task, **kwargs):
+        self.calls.append({"task": task, **kwargs})
+        return self.outcome
 
 
 def workspace_factory(tmp_path: Path):
@@ -145,6 +160,55 @@ def test_dry_run_records_plan_without_provider_thread(tmp_path: Path) -> None:
     assert session.status == "planned"
     assert session.provider_session_id is None
     assert session.last_receipt_id == "receipt-plan"
+
+
+def test_requested_execution_block_is_failure_with_receipt(monkeypatch) -> None:
+    monkeypatch.setattr(CodexSdkBrokerAdapter, "_sdk_available", staticmethod(lambda: True))
+    outcome = SimpleNamespace(
+        result=None,
+        policy=SimpleNamespace(allowed=False, reason="explicit approval required"),
+        receipt=SimpleNamespace(receipt_id="receipt-blocked", limitations=[]),
+    )
+    runner = ExecutionEngineCodexRunner(FakeEngine(outcome))
+
+    result = runner.run_turn(
+        prompt="push the branch",
+        workspace_path="/tmp/staging",
+        provider_session_id=None,
+        model=None,
+        execute=True,
+        approved=False,
+        timeout_seconds=30,
+    )
+
+    assert result.status == "failed"
+    assert result.executed is False
+    assert result.receipt_id == "receipt-blocked"
+    assert "blocked by OpenCobalt policy" in (result.error or "")
+
+
+def test_dry_run_without_result_remains_planned(monkeypatch) -> None:
+    monkeypatch.setattr(CodexSdkBrokerAdapter, "_sdk_available", staticmethod(lambda: True))
+    outcome = SimpleNamespace(
+        result=None,
+        policy=SimpleNamespace(allowed=True, reason="dry run"),
+        receipt=SimpleNamespace(receipt_id="receipt-plan", limitations=[]),
+    )
+    runner = ExecutionEngineCodexRunner(FakeEngine(outcome))
+
+    result = runner.run_turn(
+        prompt="inspect tests",
+        workspace_path="/tmp/staging",
+        provider_session_id=None,
+        model=None,
+        execute=False,
+        approved=False,
+        timeout_seconds=30,
+    )
+
+    assert result.status == "planned"
+    assert result.executed is False
+    assert result.receipt_id == "receipt-plan"
 
 
 def test_stop_blocks_future_continuation(tmp_path: Path) -> None:
