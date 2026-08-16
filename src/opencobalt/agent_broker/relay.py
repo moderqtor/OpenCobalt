@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from opencobalt.execution.runner import redact_text
 
 from .broker import AgentBroker, BrokerExecution
-from .models import AgentBrokerSession, AgentRelayEvent
+from .models import AgentBrokerSession, AgentRelayChannel, AgentRelayEvent
 from .store import AgentBrokerStore
 
 COMMAND_MARKER = "<!-- opencobalt-agent-command:v1 -->"
@@ -268,19 +268,51 @@ class GitHubAgentRelay:
         self.execute_agent = bool(execute_agent)
         self.model = model
 
+    def initialize_channel(self, *, replay_existing: bool = False) -> AgentRelayChannel:
+        """Bind the relay cursor without silently replaying historical comments."""
+        existing = self.store.get_relay_channel(self.repository, self.issue_number)
+        if existing is not None:
+            if existing.allowed_author.casefold() != self.allowed_author:
+                raise ValueError(
+                    "relay channel is already bound to a different allowed GitHub author"
+                )
+            return existing
+        comments = self.github.list_comments()
+        baseline = 0 if replay_existing else max(
+            (int(comment.get("id") or 0) for comment in comments),
+            default=0,
+        )
+        channel = AgentRelayChannel(
+            repository=self.repository,
+            issue_number=self.issue_number,
+            allowed_author=self.allowed_author,
+            last_seen_comment_id=baseline,
+        )
+        return self.store.save_relay_channel(channel)
+
     def run_once(self) -> dict[str, int]:
-        """Flush pending results, then process each unseen command exactly once."""
+        """Flush pending results, then process each new command exactly once."""
+        channel = self.store.get_relay_channel(self.repository, self.issue_number)
+        if channel is None:
+            channel = self.initialize_channel()
         posted = self._flush_pending_results()
         processed = 0
         ignored = 0
         for comment in self.github.list_comments():
             comment_id = int(comment.get("id") or 0)
+            if comment_id <= channel.last_seen_comment_id:
+                continue
             if comment_id <= 0:
                 continue
-            if self.store.get_relay_event(self.repository, self.issue_number, comment_id):
+            existing_event = self.store.get_relay_event(
+                self.repository, self.issue_number, comment_id
+            )
+            if existing_event is not None:
+                channel = self._advance_channel(channel, comment_id)
                 continue
             body = str(comment.get("body") or "")
             if COMMAND_MARKER not in body:
+                channel = self._advance_channel(channel, comment_id)
                 continue
             author = str((comment.get("user") or {}).get("login") or "")
             if author.casefold() != self.allowed_author:
@@ -295,10 +327,12 @@ class GitHubAgentRelay:
                 )
                 self.store.save_relay_event(event)
                 ignored += 1
+                channel = self._advance_channel(channel, comment_id)
                 continue
             try:
                 command = parse_command_comment(body)
                 if command is None:
+                    channel = self._advance_channel(channel, comment_id)
                     continue
             except Exception as exc:
                 command = RelayCommand(command_id=f"invalid-{comment_id}", action="status")
@@ -312,12 +346,14 @@ class GitHubAgentRelay:
                     status="result_pending",
                     result_json={"ok": False, "error": str(exc)},
                     result_body=render_result_comment(
-                        command, {"ok": False, "status": "invalid", "error": str(exc)}
+                        command,
+                        {"ok": False, "status": "invalid", "error": str(exc)},
                     ),
                 )
                 self.store.save_relay_event(event)
                 posted += self._post_event_result(event)
                 processed += 1
+                channel = self._advance_channel(channel, comment_id)
                 continue
 
             duplicate = self.store.get_relay_event_by_command(
@@ -340,6 +376,7 @@ class GitHubAgentRelay:
                 )
                 self.store.save_relay_event(event)
                 ignored += 1
+                channel = self._advance_channel(channel, comment_id)
                 continue
 
             event = AgentRelayEvent(
@@ -371,12 +408,19 @@ class GitHubAgentRelay:
             self.store.save_relay_event(event)
             posted += self._post_event_result(event)
             processed += 1
+            channel = self._advance_channel(channel, comment_id)
         return {"processed": processed, "ignored": ignored, "posted": posted}
 
-    def run_forever(self, *, interval_seconds: float = 5.0) -> None:
+    def run_forever(
+        self,
+        *,
+        interval_seconds: float = 5.0,
+        replay_existing: bool = False,
+    ) -> None:
         """Foreground poll loop. Ctrl+C remains the deliberate stop control."""
         interval = max(1.0, min(float(interval_seconds), 300.0))
         self.github.check_auth()
+        self.initialize_channel(replay_existing=replay_existing)
         while True:
             self.run_once()
             time.sleep(interval)
@@ -433,6 +477,18 @@ class GitHubAgentRelay:
             "response": execution_view.get("response") or "",
             "error": execution_view.get("error"),
         }
+
+    def _advance_channel(
+        self,
+        channel: AgentRelayChannel,
+        comment_id: int,
+    ) -> AgentRelayChannel:
+        if comment_id <= channel.last_seen_comment_id:
+            return channel
+        updated = channel.model_copy(
+            update={"last_seen_comment_id": comment_id, "updated_at": _now()}
+        )
+        return self.store.save_relay_channel(updated)
 
     def _flush_pending_results(self) -> int:
         posted = 0
