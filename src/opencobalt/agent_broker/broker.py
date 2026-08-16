@@ -236,8 +236,11 @@ class AgentBroker:
         session = self.require_session(session_id)
         if session.status == "stopped":
             raise ValueError(f"broker session is stopped: {session_id}")
+        provider_prompt = prompt
+        if execute and session.provider_session_id is None:
+            provider_prompt = self._first_live_prompt(session, prompt)
         execution = self.runner.run_turn(
-            prompt=prompt,
+            prompt=provider_prompt,
             workspace_path=session.workspace_path,
             provider_session_id=session.provider_session_id,
             model=session.model,
@@ -245,6 +248,11 @@ class AgentBroker:
             approved=approved,
             timeout_seconds=timeout_seconds,
         )
+        if provider_prompt != prompt:
+            execution.metadata = {
+                **execution.metadata,
+                "first_live_turn_replayed_planned_context": True,
+            }
         return self._record_turn(session, prompt, execution)
 
     def stop(
@@ -285,6 +293,32 @@ class AgentBroker:
         self.require_session(session_id)
         return self.store.list_turns(session_id)
 
+    def _first_live_prompt(self, session: AgentBrokerSession, prompt: str) -> str:
+        """Give the first real provider thread the durable plan-only context."""
+        context: list[str] = []
+        for candidate in [
+            session.objective,
+            *[turn.prompt for turn in self.store.list_turns(session.session_id)],
+        ]:
+            text = str(candidate or "").strip()
+            if text and text not in context:
+                context.append(text)
+        current = prompt.strip()
+        if current and current not in context:
+            context.append(current)
+        if len(context) <= 1:
+            return current or session.objective
+        prior = "\n\n".join(
+            f"Planned instruction {index}:\n{text}"
+            for index, text in enumerate(context[:-1], start=1)
+        )
+        return (
+            "This is the first live provider turn for an existing OpenCobalt broker session. "
+            "No provider thread existed during the earlier dry-run planning records. Preserve "
+            "their intent as context, then follow the current instruction.\n\n"
+            f"{prior}\n\nCurrent instruction:\n{context[-1]}"
+        )
+
     def _record_turn(
         self,
         session: AgentBrokerSession,
@@ -293,9 +327,11 @@ class AgentBroker:
     ) -> tuple[AgentBrokerSession, BrokerExecution]:
         sequence = session.turn_count + 1
         turn_status = (
-            "complete" if execution.status == "complete" else
-            "failed" if execution.status == "failed" else
-            "planned"
+            "complete"
+            if execution.status == "complete"
+            else "failed"
+            if execution.status == "failed"
+            else "planned"
         )
         turn = AgentBrokerTurn(
             session_id=session.session_id,
@@ -305,22 +341,30 @@ class AgentBroker:
             provider_session_id=execution.provider_session_id,
             receipt_id=execution.receipt_id,
             status=turn_status,
-            metadata={**execution.metadata, **({"error": execution.error} if execution.error else {})},
+            metadata={
+                **execution.metadata,
+                **({"error": execution.error} if execution.error else {}),
+            },
         )
         self.store.save_turn(turn)
         next_status = (
-            "active" if execution.status == "complete" else
-            "failed" if execution.status == "failed" else
-            "planned"
+            "active"
+            if execution.status == "complete"
+            else "failed"
+            if execution.status == "failed"
+            else "planned"
         )
-        session = session.model_copy(update={
-            "provider_session_id": execution.provider_session_id or session.provider_session_id,
-            "status": next_status,
-            "turn_count": sequence,
-            "last_prompt": prompt,
-            "last_response": execution.response or execution.error,
-            "last_receipt_id": execution.receipt_id,
-            "updated_at": _now(),
-        })
+        session = session.model_copy(
+            update={
+                "provider_session_id": execution.provider_session_id
+                or session.provider_session_id,
+                "status": next_status,
+                "turn_count": sequence,
+                "last_prompt": prompt,
+                "last_response": execution.response or execution.error,
+                "last_receipt_id": execution.receipt_id,
+                "updated_at": _now(),
+            }
+        )
         self.store.save_session(session)
         return session, execution
