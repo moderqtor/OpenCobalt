@@ -58,6 +58,18 @@ class ExecutionEngineCodexRunner:
                 return payload
         return {}
 
+    @staticmethod
+    def _not_executed_error(outcome: Any) -> str:
+        policy = getattr(outcome, "policy", None)
+        if policy is not None and not bool(getattr(policy, "allowed", False)):
+            reason = str(getattr(policy, "reason", "execution blocked by policy"))
+            return f"execution blocked by OpenCobalt policy: {reason}"[:1000]
+        receipt = getattr(outcome, "receipt", None)
+        limitations = list(getattr(receipt, "limitations", []) or [])
+        if limitations:
+            return f"runtime did not execute: {limitations[-1]}"[:1000]
+        return "runtime did not execute; inspect the linked WorkReceipt"
+
     def run_turn(
         self,
         *,
@@ -85,6 +97,14 @@ class ExecutionEngineCodexRunner:
         )
         receipt_id = outcome.receipt.receipt_id
         if outcome.result is None:
+            if execute:
+                return BrokerExecution(
+                    status="failed",
+                    executed=False,
+                    receipt_id=receipt_id,
+                    provider_session_id=provider_session_id,
+                    error=self._not_executed_error(outcome),
+                )
             return BrokerExecution(status="planned", executed=False, receipt_id=receipt_id)
         payload = self._worker_payload(outcome.result.stdout_path, outcome.result.stdout_preview)
         if outcome.result.status != "succeeded" or payload.get("ok") is not True:
@@ -139,6 +159,14 @@ class ExecutionEngineCodexRunner:
         )
         receipt_id = outcome.receipt.receipt_id
         if outcome.result is None:
+            if execute:
+                return BrokerExecution(
+                    status="failed",
+                    executed=False,
+                    receipt_id=receipt_id,
+                    provider_session_id=provider_session_id,
+                    error=self._not_executed_error(outcome),
+                )
             return BrokerExecution(status="planned", executed=False, receipt_id=receipt_id)
         payload = self._worker_payload(outcome.result.stdout_path, outcome.result.stdout_preview)
         if outcome.result.status != "succeeded" or payload.get("ok") is not True:
