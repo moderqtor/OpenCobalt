@@ -102,7 +102,34 @@ def test_continue_resumes_same_provider_thread(tmp_path: Path) -> None:
     assert execution.provider_session_id == "thr-test"
     assert continued.turn_count == 2
     assert runner.calls[1]["provider_session_id"] == "thr-test"
+    assert runner.calls[1]["prompt"] == "second"
     assert [turn.sequence for turn in broker.turns(session.session_id)] == [1, 2]
+
+
+def test_first_live_turn_replays_dry_run_context(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    broker = AgentBroker(
+        store=AgentBrokerStore(tmp_path / "ledger.db"),
+        runner=runner,
+        db_path=tmp_path / "ledger.db",
+        workspace_factory=workspace_factory(tmp_path),
+    )
+    session, _ = broker.start(repository="ignored", objective="original objective")
+    session, _ = broker.continue_session(session.session_id, "planned refinement")
+    continued, execution = broker.continue_session(
+        session.session_id,
+        "implement now",
+        execute=True,
+    )
+
+    provider_prompt = runner.calls[-1]["prompt"]
+    assert runner.calls[-1]["provider_session_id"] is None
+    assert "original objective" in provider_prompt
+    assert "planned refinement" in provider_prompt
+    assert provider_prompt.endswith("Current instruction:\nimplement now")
+    assert execution.metadata["first_live_turn_replayed_planned_context"] is True
+    assert continued.provider_session_id == "thr-test"
+    assert broker.turns(session.session_id)[-1].prompt == "implement now"
 
 
 def test_dry_run_records_plan_without_provider_thread(tmp_path: Path) -> None:
